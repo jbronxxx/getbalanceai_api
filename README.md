@@ -71,7 +71,7 @@ docker compose up --build -d
 2. Сгенерируйте криптографически стойкий секретный ключ командой `openssl rand -hex 32` и вставьте его в `SECRET_KEY`.
 
 Для запуска на боевом сервере с Reverse Proxy (Nginx) и сертификатами (Certbot):
-1. Отредактируйте файл `nginx/conf.d/default.conf` и замените `example.com` на ваш домен.
+1. Отредактируйте файл `nginx/conf.d/default.conf` и убедитесь, что там указан ваш домен (например, `api.getbalanceai.app`).
 2. Запустите Docker, склеив основной и production конфигурации:
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
