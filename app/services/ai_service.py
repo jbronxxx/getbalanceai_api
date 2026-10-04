@@ -156,8 +156,8 @@ class AIService:
             logger.error(f"Error requesting insights from Gemini API: {e}")
             return InsightResponse(
                 insights=[
-                    "Не удалось сгенерировать AI-инсайты (ошибка запроса к API).",
-                    "Проверьте настройки GEMINI_API_KEY.",
+                    "К сожалению, наши умные помощники сейчас очень заняты и не могут проанализировать данные.",
+                    "Пожалуйста, загляните за советами немного позже.",
                 ],
                 generated_at=datetime.now(timezone.utc),
             )

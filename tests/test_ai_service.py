@@ -209,7 +209,7 @@ class TestAIService:
                 result = await service.get_insights(uuid.uuid4())
 
         assert isinstance(result, InsightResponse)
-        assert "Не удалось сгенерировать AI-инсайты" in result.insights[0]
+        assert "К сожалению, наши умные помощники" in result.insights[0]
         assert result.generated_at.tzinfo == timezone.utc
 
     @pytest.mark.asyncio
