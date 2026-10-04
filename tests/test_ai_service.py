@@ -7,8 +7,8 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import google.generativeai as genai
 import pytest
+from google import genai
 
 from app.models.models import Category, Transaction, TransactionType
 from app.schemas.schemas import InsightResponse
@@ -23,16 +23,16 @@ class TestAIService:
         mock_db = MagicMock()
         service = AIService(db=mock_db)
 
-        assert isinstance(service.model, genai.GenerativeModel)
+        assert isinstance(service.client, genai.Client)
         assert service.db is mock_db
 
-    def test_init_accepts_custom_model(self):
+    def test_init_accepts_custom_client(self):
         """Проверка возможности передать собственный клиент (Dependency Injection)."""
         mock_db = MagicMock()
-        custom_model = MagicMock(spec=genai.GenerativeModel)
-        service = AIService(db=mock_db, model=custom_model)
+        custom_client = MagicMock(spec=genai.Client)
+        service = AIService(db=mock_db, client=custom_client)
 
-        assert service.model is custom_model
+        assert service.client is custom_client
 
     # =========================================================================
     # TASK-1.2: Тестирование надежного парсинга JSON
@@ -80,15 +80,15 @@ class TestAIService:
 
     @pytest.mark.asyncio
     async def test_call_gemini_uses_awaited_async_client(self):
-        """Проверка, что _call_gemini асинхронно вызывает generate_content_async."""
+        """Проверка, что _call_gemini асинхронно вызывает generate_content."""
         mock_db = MagicMock()
-        mock_model = MagicMock(spec=genai.GenerativeModel)
+        mock_client = MagicMock(spec=genai.Client)
         mock_response = MagicMock()
         mock_response.text = '{"insights": ["Снизь расходы на кафе", "Откладывай 10%", "Инвестируй остаток"]}'
 
-        mock_model.generate_content_async = AsyncMock(return_value=mock_response)
+        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
-        service = AIService(db=mock_db, model=mock_model)
+        service = AIService(db=mock_db, client=mock_client)
         summary = "2026-10-01 | expense | food | 500.0 руб. | Обед"
 
         insights = await service._call_gemini(summary)
@@ -98,9 +98,9 @@ class TestAIService:
             "Откладывай 10%",
             "Инвестируй остаток",
         ]
-        mock_model.generate_content_async.assert_awaited_once()
-        create_kwargs = mock_model.generate_content_async.call_args.args
-        assert "2026-10-01" in create_kwargs[0]
+        mock_client.aio.models.generate_content.assert_awaited_once()
+        create_kwargs = mock_client.aio.models.generate_content.call_args.kwargs
+        assert "2026-10-01" in create_kwargs["contents"]
 
     @pytest.mark.asyncio
     async def test_get_insights_placeholder_api_key_returns_utc_datetime(self):
@@ -163,12 +163,12 @@ class TestAIService:
 
         mock_db.execute = AsyncMock(side_effect=[mock_count_result, mock_tx_result])
 
-        mock_model = MagicMock(spec=genai.GenerativeModel)
+        mock_client = MagicMock(spec=genai.Client)
         mock_response = MagicMock()
         mock_response.text = '{"insights": ["Траты на еду в норме", "Планируйте бюджет на неделю"]}'
-        mock_model.generate_content_async = AsyncMock(return_value=mock_response)
+        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
-        service = AIService(db=mock_db, model=mock_model)
+        service = AIService(db=mock_db, client=mock_client)
 
         with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
             with patch("app.services.ai_service.redis_client.get", AsyncMock(return_value=None)):
@@ -180,7 +180,7 @@ class TestAIService:
             "Планируйте бюджет на неделю",
         ]
         assert result.generated_at.tzinfo == timezone.utc
-        mock_model.generate_content_async.assert_awaited_once()
+        mock_client.aio.models.generate_content.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_get_insights_api_error_fallback(self):
@@ -199,10 +199,10 @@ class TestAIService:
         mock_tx_result.scalars.return_value.all.return_value = [tx1]
         mock_db.execute = AsyncMock(side_effect=[mock_count_result, mock_tx_result])
 
-        mock_model = MagicMock(spec=genai.GenerativeModel)
-        mock_model.generate_content_async = AsyncMock(side_effect=Exception("API Error"))
+        mock_client = MagicMock(spec=genai.Client)
+        mock_client.aio.models.generate_content = AsyncMock(side_effect=Exception("API Error"))
 
-        service = AIService(db=mock_db, model=mock_model)
+        service = AIService(db=mock_db, client=mock_client)
 
         with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
             with patch("app.services.ai_service.redis_client.get", AsyncMock(return_value=None)):
@@ -216,7 +216,7 @@ class TestAIService:
     async def test_concurrent_calls_do_not_block_event_loop(self):
         """Проверка, что параллельные вызовы не блокируют Event Loop."""
         mock_db = MagicMock()
-        mock_model = MagicMock(spec=genai.GenerativeModel)
+        mock_client = MagicMock(spec=genai.Client)
 
         async def simulated_async_network_call(*args, **kwargs):
             await asyncio.sleep(0.1)
@@ -224,9 +224,9 @@ class TestAIService:
             mock_resp.text = '{"insights": ["Тест параллельности"]}'
             return mock_resp
 
-        mock_model.generate_content_async = AsyncMock(side_effect=simulated_async_network_call)
+        mock_client.aio.models.generate_content = AsyncMock(side_effect=simulated_async_network_call)
 
-        service = AIService(db=mock_db, model=mock_model)
+        service = AIService(db=mock_db, client=mock_client)
 
         start_time = time.monotonic()
         results = await asyncio.gather(

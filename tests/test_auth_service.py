@@ -194,7 +194,7 @@ class TestGetCurrentUserDependency:
     @pytest.mark.asyncio
     async def test_expired_token(self, db_session: AsyncSession, test_user: User):
         """Истекший токен вызывает UnauthorizedException."""
-        from jose import jwt
+        import jwt
 
         from config_reader.config_reader import config
 

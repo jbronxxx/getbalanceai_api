@@ -7,9 +7,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Union
 
 import bcrypt
+import jwt
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
+from jwt.exceptions import InvalidTokenError as JWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 

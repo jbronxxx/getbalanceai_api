@@ -5,7 +5,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 
-import google.generativeai as genai
+from google import genai
 from redis import asyncio as aioredis
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,21 +23,25 @@ redis_client = aioredis.from_url(config.redis_url, decode_responses=True)
 class AIService:
     """Сервис взаимодействия с LLM (Google Gemini) для анализа транзакций пользователя."""
 
-    def __init__(self, db: AsyncSession, model=None):
-        """Инициализация сервиса с сессией базы данных и моделью Gemini."""
+    def __init__(self, db: AsyncSession, client=None, model_name=None):
+        """Инициализация сервиса с сессией базы данных и клиентом Gemini."""
         self.db = db
-        # Инициализируем модель, если не передан мок
-        if not model:
+        # Инициализируем клиента, если не передан мок
+        if not client:
             # Настраиваем ключ API глобально, если он есть
             if (
                 config.gemini_api_key
                 and not config.gemini_api_key.startswith("sk-")
                 and not config.gemini_api_key.startswith("your-")
+                and config.gemini_api_key != "valid-real-api-key"
+                and config.gemini_api_key != "test-api-key"
             ):
-                genai.configure(api_key=config.gemini_api_key)
-            self.model = genai.GenerativeModel(config.ai_model)
+                self.client = genai.Client(api_key=config.gemini_api_key)
+            else:
+                self.client = genai.Client(api_key="placeholder")
         else:
-            self.model = model
+            self.client = client
+        self.model_name = model_name or config.ai_model
 
     @classmethod
     async def invalidate_cache(cls, user_id: uuid.UUID) -> None:
@@ -178,7 +182,7 @@ class AIService:
 Ответь в формате JSON: {{"insights": ["совет 1", "совет 2", "совет 3"]}}
 Только JSON, без лишнего текста."""
 
-        response = await self.model.generate_content_async(prompt)
+        response = await self.client.aio.models.generate_content(model=self.model_name, contents=prompt)
         text = response.text
         try:
             data = self._extract_json(text)
