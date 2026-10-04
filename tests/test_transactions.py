@@ -139,9 +139,11 @@ class TestInsights:
                 tx.amount = 500.0
                 tx.description = "Обед"
 
-                mock_result = MagicMock()
-                mock_result.scalars.return_value.all.return_value = [tx]
-                mock_db.execute = AsyncMock(return_value=mock_result)
+                mock_count = MagicMock()
+                mock_count.scalar_one.return_value = 10
+                mock_txs = MagicMock()
+                mock_txs.scalars.return_value.all.return_value = [tx]
+                mock_db.execute = AsyncMock(side_effect=[mock_count, mock_txs, mock_count, mock_txs])
 
                 try:
                     # Первый HTTP-запрос (вызывает Claude API)
@@ -183,9 +185,11 @@ class TestInsights:
                 tx.amount = 300.0
                 tx.description = "Кофе"
 
-                mock_result = MagicMock()
-                mock_result.scalars.return_value.all.return_value = [tx]
-                mock_db.execute = AsyncMock(return_value=mock_result)
+                mock_count = MagicMock()
+                mock_count.scalar_one.return_value = 10
+                mock_txs = MagicMock()
+                mock_txs.scalars.return_value.all.return_value = [tx]
+                mock_db.execute = AsyncMock(side_effect=[mock_count, mock_txs, mock_count, mock_txs])
 
                 try:
                     transport = ASGITransport(app=app)

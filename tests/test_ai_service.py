@@ -138,7 +138,7 @@ class TestAIService:
 
         service = AIService(db=mock_db)
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-api-key"):
+        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
             result = await service.get_insights(uuid.uuid4())
 
         assert isinstance(result, InsightResponse)
