@@ -24,6 +24,9 @@ jobs:
           script: |
             cd /opt/getbalanceai_api
             
+            # Создаем или обновляем .env файл из секрета GitHub
+            echo "${{ secrets.PROD_ENV_FILE }}" > .env
+            
             # Обновляем код
             git pull origin main
             
