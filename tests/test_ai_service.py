@@ -91,7 +91,7 @@ class TestAIService:
         service = AIService(db=mock_db, client=mock_client)
         summary = "2026-10-01 | expense | food | 500.0 руб. | Обед"
 
-        insights = await service._call_gemini(summary)
+        insights = await service._call_gemini(summary, locale="ru", currency="RUB")
 
         assert insights == [
             "Снизь расходы на кафе",
@@ -230,9 +230,9 @@ class TestAIService:
 
         start_time = time.monotonic()
         results = await asyncio.gather(
-            service._call_gemini("summary 1"),
-            service._call_gemini("summary 2"),
-            service._call_gemini("summary 3"),
+            service._call_gemini("summary 1", locale="ru", currency="RUB"),
+            service._call_gemini("summary 2", locale="ru", currency="RUB"),
+            service._call_gemini("summary 3", locale="ru", currency="RUB"),
         )
         duration = time.monotonic() - start_time
 

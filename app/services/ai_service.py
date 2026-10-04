@@ -46,8 +46,12 @@ class AIService:
     @classmethod
     async def invalidate_cache(cls, user_id: uuid.UUID) -> None:
         """Инвалидировать кэш инсайтов для конкретного пользователя."""
-        await redis_client.delete(f"insights_cache:{user_id}")
-        await redis_client.delete(f"insights_tx_count:{user_id}")
+        keys = await redis_client.keys(f"insights_cache:{user_id}*")
+        if keys:
+            await redis_client.delete(*keys)
+        count_keys = await redis_client.keys(f"insights_tx_count:{user_id}*")
+        if count_keys:
+            await redis_client.delete(*count_keys)
 
     @classmethod
     async def clear_cache(cls) -> None:
@@ -75,7 +79,7 @@ class AIService:
 
         return json.loads(cleaned)
 
-    async def get_insights(self, user_id: uuid.UUID) -> InsightResponse:
+    async def get_insights(self, user_id: uuid.UUID, currency: str = "RUB", locale: str = "ru") -> InsightResponse:
         """Сформировать персональные рекомендации по расходам пользователя."""
         is_placeholder = (
             not config.gemini_api_key
@@ -104,8 +108,8 @@ class AIService:
                 generated_at=datetime.now(timezone.utc),
             )
 
-        cache_key = f"insights_cache:{user_id}"
-        count_key = f"insights_tx_count:{user_id}"
+        cache_key = f"insights_cache:{user_id}:{locale}:{currency}"
+        count_key = f"insights_tx_count:{user_id}:{locale}:{currency}"
 
         cached_data_str = await redis_client.get(cache_key)
         last_tx_count_str = await redis_client.get(count_key)
@@ -132,10 +136,10 @@ class AIService:
         result = await self.db.execute(query)
         transactions = list(result.scalars().all())
 
-        summary = self._build_summary(transactions)
+        summary = self._build_summary(transactions, currency)
 
         try:
-            insights = await self._call_gemini(summary)
+            insights = await self._call_gemini(summary, locale, currency)
             response = InsightResponse(insights=insights, generated_at=datetime.now(timezone.utc))
 
             cache_val = json.dumps(
@@ -158,7 +162,7 @@ class AIService:
                 generated_at=datetime.now(timezone.utc),
             )
 
-    def _build_summary(self, transactions: list[Transaction]) -> str:
+    def _build_summary(self, transactions: list[Transaction], currency: str) -> str:
         """Сформировать текстовую сводку транзакций для передачи в системный промпт LLM."""
         lines = []
         for tx in transactions:
@@ -166,19 +170,24 @@ class AIService:
                 tx.date.strftime("%Y-%m-%d"),
                 tx.type.value,
                 tx.category.value,
-                f"{tx.amount} руб.",
+                f"{tx.amount} {currency}",
                 tx.description,
             ]
             lines.append(" | ".join(parts))
         return "\n".join(lines)
 
-    async def _call_gemini(self, summary: str) -> list[str]:
+    async def _call_gemini(self, summary: str, locale: str, currency: str) -> list[str]:
         """Отправить запрос в Gemini API и распарсить JSON с рекомендациями."""
         prompt = f"""Вот транзакции пользователя за последнее время:
 
 {summary}
 
 Дай 3 конкретных совета по управлению бюджетом на основе этих данных.
+Выдача советов должна быть максимально простой, без сложных финансовых слов и фраз.
+Пиши доступным языком для среднестатистического человека.
+Учитывай, что валюта пользователя - {currency}. Суммы указаны в этой валюте, соразмеряй советы с реалиями этой валюты.
+Ответ сформируй на языке/локали: {locale}. Обязательно переведи названия категорий
+(например, food -> Питание, и т.д.) на этот язык.
 Ответь в формате JSON: {{"insights": ["совет 1", "совет 2", "совет 3"]}}
 Только JSON, без лишнего текста."""
 
