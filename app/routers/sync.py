@@ -180,7 +180,6 @@ async def sync_data(
             code=ErrorCode.SYNC_FAILED,
             message="Ошибка при сохранении данных в базу",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            details={"error": str(e)},
         )
     except Exception as e:
         await db.rollback()
@@ -190,7 +189,7 @@ async def sync_data(
         )
         raise BadRequestException(
             code=ErrorCode.SYNC_FAILED,
-            message=f"Не удалось обработать запрос синхронизации: {str(e)}",
+            message="Не удалось обработать запрос синхронизации",
         )
 
     logger.info(f"Синхронизация успешно завершена для пользователя {user_id}")
