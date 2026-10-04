@@ -88,12 +88,13 @@ class AIService:
             or config.gemini_api_key == "valid-real-api-key"
         )
         # Для тестов пропускаем проверку плейсхолдера, если ключ явно valid-real-key
+        lang_prefix = locale[:2].lower()
+
         if is_placeholder and config.gemini_api_key != "valid-real-key" and config.gemini_api_key != "test-api-key":
             logger.warning("GEMINI_API_KEY is not set or is a placeholder, returning stub insights")
+            stub_msg = {"ru": "В разработке...", "uz": "Ishlab chiqilmoqda...", "en": "In development..."}
             return InsightResponse(
-                insights=[
-                    "В разработке...",
-                ],
+                insights=[stub_msg.get(lang_prefix, stub_msg["en"])],
                 generated_at=datetime.now(timezone.utc),
             )
 
@@ -103,8 +104,13 @@ class AIService:
         total_tx_count = total_result.scalar_one()
 
         if total_tx_count == 0:
+            empty_msg = {
+                "ru": "Добавь первые транзакции, чтобы получить анализ.",
+                "uz": "Tahlil olish uchun birinchi tranzaksiyalarni qo'shing.",
+                "en": "Add your first transactions to get an analysis.",
+            }
             return InsightResponse(
-                insights=["Добавь первые транзакции, чтобы получить анализ."],
+                insights=[empty_msg.get(lang_prefix, empty_msg["en"])],
                 generated_at=datetime.now(timezone.utc),
             )
 
@@ -154,11 +160,22 @@ class AIService:
             return response
         except Exception as e:
             logger.error(f"Error requesting insights from Gemini API: {e}")
-            return InsightResponse(
-                insights=[
-                    "Не удалось сгенерировать AI-инсайты (ошибка запроса к API).",
-                    "Проверьте настройки GEMINI_API_KEY.",
+            fallback_messages = {
+                "ru": [
+                    "К сожалению, наши умные помощники сейчас очень заняты и не могут проанализировать данные.",
+                    "Пожалуйста, загляните за советами немного позже.",
                 ],
+                "en": [
+                    "Unfortunately, our smart assistants are currently very busy and cannot analyze the data.",
+                    "Please check back for tips a little later.",
+                ],
+                "uz": [
+                    "Afsuski, aqlli yordamchilarimiz hozir juda band va ma'lumotlarni tahlil qila olmaydilar.",
+                    "Iltimos, maslahatlar uchun biroz keyinroq qaytib keling.",
+                ],
+            }
+            return InsightResponse(
+                insights=fallback_messages.get(lang_prefix, fallback_messages["en"]),
                 generated_at=datetime.now(timezone.utc),
             )
 
