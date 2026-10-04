@@ -124,10 +124,10 @@ class TestInsights:
         app.dependency_overrides[get_current_user] = lambda: test_user
         app.dependency_overrides[get_db] = lambda: mock_db
 
-        with patch("app.services.ai_service.config.anthropic_api_key", "valid-real-key"):
+        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
             with patch.object(
                 AIService,
-                "_call_claude",
+                "_call_gemini",
                 new_callable=AsyncMock,
                 return_value=["Совет 1", "Совет 2"],
             ) as mock_claude:
@@ -139,9 +139,11 @@ class TestInsights:
                 tx.amount = 500.0
                 tx.description = "Обед"
 
-                mock_result = MagicMock()
-                mock_result.scalars.return_value.all.return_value = [tx]
-                mock_db.execute = AsyncMock(return_value=mock_result)
+                mock_count = MagicMock()
+                mock_count.scalar_one.return_value = 10
+                mock_txs = MagicMock()
+                mock_txs.scalars.return_value.all.return_value = [tx]
+                mock_db.execute = AsyncMock(side_effect=[mock_count, mock_txs, mock_count, mock_txs])
 
                 try:
                     # Первый HTTP-запрос (вызывает Claude API)
@@ -173,8 +175,8 @@ class TestInsights:
             await asyncio.sleep(0.1)
             return ["Медленный совет"]
 
-        with patch("app.services.ai_service.config.anthropic_api_key", "valid-real-key"):
-            with patch.object(AIService, "_call_claude", side_effect=slow_claude_call):
+        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
+            with patch.object(AIService, "_call_gemini", side_effect=slow_claude_call):
                 tx = MagicMock()
                 tx.date = MagicMock()
                 tx.date.strftime.return_value = "2026-10-01"
@@ -183,9 +185,11 @@ class TestInsights:
                 tx.amount = 300.0
                 tx.description = "Кофе"
 
-                mock_result = MagicMock()
-                mock_result.scalars.return_value.all.return_value = [tx]
-                mock_db.execute = AsyncMock(return_value=mock_result)
+                mock_count = MagicMock()
+                mock_count.scalar_one.return_value = 10
+                mock_txs = MagicMock()
+                mock_txs.scalars.return_value.all.return_value = [tx]
+                mock_db.execute = AsyncMock(side_effect=[mock_count, mock_txs, mock_count, mock_txs])
 
                 try:
                     transport = ASGITransport(app=app)

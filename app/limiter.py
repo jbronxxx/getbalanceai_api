@@ -3,8 +3,9 @@
 Предоставляет синглтон Limiter для защиты эндпоинтов от спама и brute-force атак.
 """
 
+import jwt
 from fastapi import Request
-from jose import JWTError, jwt
+from jwt.exceptions import InvalidTokenError as JWTError
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 

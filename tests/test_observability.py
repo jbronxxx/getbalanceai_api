@@ -147,12 +147,12 @@ class TestCorrelationId:
 
         # По умолчанию без контекста
         log_filter.filter(record)
-        assert record.request_id == "-"
+        assert getattr(record, "request_id") == "-"
 
         # При установленном контексте
         token = set_request_id("ctx-id-555")
         try:
             log_filter.filter(record)
-            assert record.request_id == "ctx-id-555"
+            assert getattr(record, "request_id") == "ctx-id-555"
         finally:
             reset_request_id(token)

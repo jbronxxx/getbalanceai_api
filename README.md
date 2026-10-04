@@ -52,12 +52,12 @@ DATABASE_URL=postgresql://your_postgres_user:your_postgres_password@db:5432/your
 SECRET_KEY=change-me-in-production-use-long-random-string
 ACCESS_TOKEN_EXPIRE_MINUTES=60
 REFRESH_TOKEN_EXPIRE_DAYS=7
-ANTHROPIC_API_KEY=sk-ant-api03-...
+GEMINI_API_KEY=sk-ant-api03-...
 GRAFANA_ADMIN_USER=admin
 GRAFANA_ADMIN_PASSWORD=admin
 ```
 > [!NOTE]
-> Если ключ `ANTHROPIC_API_KEY` не указан или оставлен пустым, сервис AI-инсайтов автоматически переключится на безопасный режим заглушек и приложение продолжит работать без ошибок.
+> Если ключ `GEMINI_API_KEY` не указан или оставлен пустым, сервис AI-инсайтов автоматически переключится на безопасный режим заглушек и приложение продолжит работать без ошибок.
 
 ### 2. Запуск контейнеров (Локальная разработка)
 ```bash
