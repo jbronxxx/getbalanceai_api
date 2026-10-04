@@ -124,10 +124,10 @@ class TestInsights:
         app.dependency_overrides[get_current_user] = lambda: test_user
         app.dependency_overrides[get_db] = lambda: mock_db
 
-        with patch("app.services.ai_service.config.anthropic_api_key", "valid-real-key"):
+        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
             with patch.object(
                 AIService,
-                "_call_claude",
+                "_call_gemini",
                 new_callable=AsyncMock,
                 return_value=["Совет 1", "Совет 2"],
             ) as mock_claude:
@@ -173,8 +173,8 @@ class TestInsights:
             await asyncio.sleep(0.1)
             return ["Медленный совет"]
 
-        with patch("app.services.ai_service.config.anthropic_api_key", "valid-real-key"):
-            with patch.object(AIService, "_call_claude", side_effect=slow_claude_call):
+        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
+            with patch.object(AIService, "_call_gemini", side_effect=slow_claude_call):
                 tx = MagicMock()
                 tx.date = MagicMock()
                 tx.date.strftime.return_value = "2026-10-01"

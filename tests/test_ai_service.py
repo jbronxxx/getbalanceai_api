@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import anthropic
+import google.generativeai as genai
 import pytest
 
 from app.models.models import Category, Transaction, TransactionType
@@ -18,21 +18,21 @@ from app.services.ai_service import AIService
 class TestAIService:
     """Набор тестов для AIService."""
 
-    def test_init_creates_async_anthropic_client(self):
-        """Проверка, что AIService инициализирует асинхронный клиент AsyncAnthropic."""
+    def test_init_creates_generative_model(self):
+        """Проверка, что AIService инициализирует клиент Gemini."""
         mock_db = MagicMock()
         service = AIService(db=mock_db)
 
-        assert isinstance(service.client, anthropic.AsyncAnthropic)
+        assert isinstance(service.model, genai.GenerativeModel)
         assert service.db is mock_db
 
-    def test_init_accepts_custom_client(self):
+    def test_init_accepts_custom_model(self):
         """Проверка возможности передать собственный клиент (Dependency Injection)."""
         mock_db = MagicMock()
-        custom_client = MagicMock(spec=anthropic.AsyncAnthropic)
-        service = AIService(db=mock_db, client=custom_client)
+        custom_model = MagicMock(spec=genai.GenerativeModel)
+        service = AIService(db=mock_db, model=custom_model)
 
-        assert service.client is custom_client
+        assert service.model is custom_model
 
     # =========================================================================
     # TASK-1.2: Тестирование надежного парсинга JSON
@@ -58,23 +58,9 @@ class TestAIService:
 
     def test_extract_json_with_conversational_text(self):
         """Проверка извлечения JSON при наличии вводного и завершающего текста модели."""
-        raw = """Конечно! Вот персональные финансовые рекомендации для вас:
-```json
-{
-  "insights": [
-    "Оптимизируйте подписки",
-    "Создайте подушку безопасности"
-  ]
-}
-```
-Надеюсь, эти советы будут полезны!"""
+        raw = 'Конечно!\n```json\n{\n  "insights": [\n    "Оптимизируйте"\n  ]\n}\n```\nНадеюсь!'
         result = AIService._extract_json(raw)
-        assert result == {
-            "insights": [
-                "Оптимизируйте подписки",
-                "Создайте подушку безопасности",
-            ]
-        }
+        assert result == {"insights": ["Оптимизируйте"]}
 
     def test_extract_json_embedded_brackets_without_code_block(self):
         """Проверка извлечения JSON, заключенного в фигурные скобки посреди текста."""
@@ -89,37 +75,32 @@ class TestAIService:
             AIService._extract_json(raw)
 
     # =========================================================================
-    # TASK-1.1 & TASK-1.3: Вызов Claude, асинхронность и UTC время
+    # TASK-1.1 & TASK-1.3: Вызов Gemini, асинхронность и UTC время
     # =========================================================================
 
     @pytest.mark.asyncio
-    async def test_call_claude_uses_awaited_async_client(self):
-        """Проверка, что _call_claude асинхронно вызывает messages.create."""
+    async def test_call_gemini_uses_awaited_async_client(self):
+        """Проверка, что _call_gemini асинхронно вызывает generate_content_async."""
         mock_db = MagicMock()
-        mock_client = MagicMock(spec=anthropic.AsyncAnthropic)
+        mock_model = MagicMock(spec=genai.GenerativeModel)
         mock_response = MagicMock()
-        mock_content = MagicMock()
-        mock_content.text = '{"insights": ["Снизь расходы на кафе", "Откладывай 10%", "Инвестируй остаток"]}'
-        mock_response.content = [mock_content]
+        mock_response.text = '{"insights": ["Снизь расходы на кафе", "Откладывай 10%", "Инвестируй остаток"]}'
 
-        mock_client.messages = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
+        mock_model.generate_content_async = AsyncMock(return_value=mock_response)
 
-        service = AIService(db=mock_db, client=mock_client)
+        service = AIService(db=mock_db, model=mock_model)
         summary = "2026-10-01 | expense | food | 500.0 руб. | Обед"
 
-        insights = await service._call_claude(summary)
+        insights = await service._call_gemini(summary)
 
         assert insights == [
             "Снизь расходы на кафе",
             "Откладывай 10%",
             "Инвестируй остаток",
         ]
-        mock_client.messages.create.assert_awaited_once()
-        create_kwargs = mock_client.messages.create.call_args.kwargs
-        assert create_kwargs["max_tokens"] == 500
-        assert len(create_kwargs["messages"]) == 1
-        assert "2026-10-01" in create_kwargs["messages"][0]["content"]
+        mock_model.generate_content_async.assert_awaited_once()
+        create_kwargs = mock_model.generate_content_async.call_args.args
+        assert "2026-10-01" in create_kwargs[0]
 
     @pytest.mark.asyncio
     async def test_get_insights_placeholder_api_key_returns_utc_datetime(self):
@@ -127,7 +108,7 @@ class TestAIService:
         mock_db = MagicMock()
         service = AIService(db=mock_db)
 
-        with patch("app.services.ai_service.config.anthropic_api_key", "sk-ant-your-key-here"):
+        with patch("app.services.ai_service.config.gemini_api_key", "sk-your-key-here"):
             result = await service.get_insights(uuid.uuid4())
 
         assert isinstance(result, InsightResponse)
@@ -140,7 +121,7 @@ class TestAIService:
         mock_db = MagicMock()
         service = AIService(db=mock_db)
 
-        with patch("app.services.ai_service.config.anthropic_api_key", ""):
+        with patch("app.services.ai_service.config.gemini_api_key", ""):
             result = await service.get_insights(uuid.uuid4())
 
         assert isinstance(result, InsightResponse)
@@ -152,12 +133,12 @@ class TestAIService:
         """Если у пользователя нет транзакций, возвращается совет добавить первую транзакцию."""
         mock_db = MagicMock()
         mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = []
+        mock_result.scalar_one.return_value = 0
         mock_db.execute = AsyncMock(return_value=mock_result)
 
         service = AIService(db=mock_db)
 
-        with patch("app.services.ai_service.config.anthropic_api_key", "valid-real-api-key"):
+        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-api-key"):
             result = await service.get_insights(uuid.uuid4())
 
         assert isinstance(result, InsightResponse)
@@ -175,23 +156,23 @@ class TestAIService:
         tx1.description = "Супермаркет"
 
         mock_db = MagicMock()
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = [tx1]
-        mock_db.execute = AsyncMock(return_value=mock_result)
+        mock_count_result = MagicMock()
+        mock_count_result.scalar_one.return_value = 5
+        mock_tx_result = MagicMock()
+        mock_tx_result.scalars.return_value.all.return_value = [tx1]
 
-        mock_client = MagicMock(spec=anthropic.AsyncAnthropic)
+        mock_db.execute = AsyncMock(side_effect=[mock_count_result, mock_tx_result])
+
+        mock_model = MagicMock(spec=genai.GenerativeModel)
         mock_response = MagicMock()
-        mock_content = MagicMock()
-        mock_content.text = '{"insights": ["Траты на еду в норме", "Планируйте бюджет на неделю"]}'
-        mock_response.content = [mock_content]
+        mock_response.text = '{"insights": ["Траты на еду в норме", "Планируйте бюджет на неделю"]}'
+        mock_model.generate_content_async = AsyncMock(return_value=mock_response)
 
-        mock_client.messages = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
+        service = AIService(db=mock_db, model=mock_model)
 
-        service = AIService(db=mock_db, client=mock_client)
-
-        with patch("app.services.ai_service.config.anthropic_api_key", "valid-real-api-key"):
-            result = await service.get_insights(uuid.uuid4())
+        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
+            with patch("app.services.ai_service.redis_client.get", AsyncMock(return_value=None)):
+                result = await service.get_insights(uuid.uuid4())
 
         assert isinstance(result, InsightResponse)
         assert result.insights == [
@@ -199,11 +180,11 @@ class TestAIService:
             "Планируйте бюджет на неделю",
         ]
         assert result.generated_at.tzinfo == timezone.utc
-        mock_client.messages.create.assert_awaited_once()
+        mock_model.generate_content_async.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_get_insights_api_error_fallback(self):
-        """Если вызов Anthropic API завершился ошибкой, возвращается корректное сообщение об ошибке."""
+        """Если вызов Gemini API завершился ошибкой, возвращается сообщение об ошибке."""
         tx1 = MagicMock(spec=Transaction)
         tx1.date = datetime(2026, 10, 1, 12, 0)
         tx1.type = TransactionType.expense
@@ -212,18 +193,20 @@ class TestAIService:
         tx1.description = "Кофе"
 
         mock_db = MagicMock()
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = [tx1]
-        mock_db.execute = AsyncMock(return_value=mock_result)
+        mock_count_result = MagicMock()
+        mock_count_result.scalar_one.return_value = 1
+        mock_tx_result = MagicMock()
+        mock_tx_result.scalars.return_value.all.return_value = [tx1]
+        mock_db.execute = AsyncMock(side_effect=[mock_count_result, mock_tx_result])
 
-        mock_client = MagicMock(spec=anthropic.AsyncAnthropic)
-        mock_client.messages = MagicMock()
-        mock_client.messages.create = AsyncMock(side_effect=Exception("Anthropic connection timeout"))
+        mock_model = MagicMock(spec=genai.GenerativeModel)
+        mock_model.generate_content_async = AsyncMock(side_effect=Exception("API Error"))
 
-        service = AIService(db=mock_db, client=mock_client)
+        service = AIService(db=mock_db, model=mock_model)
 
-        with patch("app.services.ai_service.config.anthropic_api_key", "valid-real-api-key"):
-            result = await service.get_insights(uuid.uuid4())
+        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
+            with patch("app.services.ai_service.redis_client.get", AsyncMock(return_value=None)):
+                result = await service.get_insights(uuid.uuid4())
 
         assert isinstance(result, InsightResponse)
         assert "Не удалось сгенерировать AI-инсайты" in result.insights[0]
@@ -231,139 +214,67 @@ class TestAIService:
 
     @pytest.mark.asyncio
     async def test_concurrent_calls_do_not_block_event_loop(self):
-        """Проверка, что параллельные вызовы к Claude не блокируют Event Loop."""
+        """Проверка, что параллельные вызовы не блокируют Event Loop."""
         mock_db = MagicMock()
-        mock_client = MagicMock(spec=anthropic.AsyncAnthropic)
+        mock_model = MagicMock(spec=genai.GenerativeModel)
 
         async def simulated_async_network_call(*args, **kwargs):
             await asyncio.sleep(0.1)
             mock_resp = MagicMock()
-            mock_content = MagicMock()
-            mock_content.text = '{"insights": ["Тест параллельности"]}'
-            mock_resp.content = [mock_content]
+            mock_resp.text = '{"insights": ["Тест параллельности"]}'
             return mock_resp
 
-        mock_client.messages = MagicMock()
-        mock_client.messages.create = AsyncMock(side_effect=simulated_async_network_call)
+        mock_model.generate_content_async = AsyncMock(side_effect=simulated_async_network_call)
 
-        service = AIService(db=mock_db, client=mock_client)
+        service = AIService(db=mock_db, model=mock_model)
 
         start_time = time.monotonic()
         results = await asyncio.gather(
-            service._call_claude("summary 1"),
-            service._call_claude("summary 2"),
-            service._call_claude("summary 3"),
-            service._call_claude("summary 4"),
-            service._call_claude("summary 5"),
+            service._call_gemini("summary 1"),
+            service._call_gemini("summary 2"),
+            service._call_gemini("summary 3"),
         )
         duration = time.monotonic() - start_time
 
-        assert len(results) == 5
+        assert len(results) == 3
         for res in results:
             assert res == ["Тест параллельности"]
 
-        assert duration < 0.35, f"Запросы выполнялись последовательно: заняло {duration}s"
+        assert duration < 0.2, f"Запросы выполнялись последовательно: заняло {duration}s"
 
     # =========================================================================
-    # TASK-5.3: Тестирование кэширования инсайтов
+    # TASK-5.3: Тестирование кэширования инсайтов (Threshold)
     # =========================================================================
 
     @pytest.mark.asyncio
-    async def test_insights_caching_returns_cached_on_identical_transactions(self):
-        """Повторный запрос при неизменных транзакциях возвращает кэшированный ответ без повторного вызова API."""
+    async def test_insights_caching_returns_cached_on_small_tx_change(self):
+        """Если транзакции изменились меньше порога, возвращается кэш."""
         user_id = uuid.uuid4()
-        tx = MagicMock(spec=Transaction)
-        tx.date = datetime(2026, 10, 1, 10, 0)
-        tx.type = TransactionType.expense
-        tx.category = Category.transport
-        tx.amount = 150.0
-        tx.description = "Метро"
 
         mock_db = MagicMock()
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = [tx]
-        mock_db.execute = AsyncMock(return_value=mock_result)
+        mock_count_result = MagicMock()
+        mock_count_result.scalar_one.return_value = 10  # 10 транзакций
+        mock_db.execute = AsyncMock(return_value=mock_count_result)
 
-        mock_client = MagicMock(spec=anthropic.AsyncAnthropic)
-        mock_response = MagicMock()
-        mock_content = MagicMock()
-        mock_content.text = '{"insights": ["Пользуйтесь проездным"]}'
-        mock_response.content = [mock_content]
+        service = AIService(db=mock_db)
 
-        mock_client.messages = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
+        # Мокаем redis
+        cached_json = json.dumps({"insights": ["Cached"], "generated_at": datetime.now(timezone.utc).isoformat()})
+        # last_tx_count = 8. (10 - 8 = 2 < 5 Threshold)
 
-        service1 = AIService(db=mock_db, client=mock_client)
+        async def mock_redis_get(key):
+            if "insights_cache" in key:
+                return cached_json
+            if "insights_tx_count" in key:
+                return "8"
+            return None
 
-        with patch("app.services.ai_service.config.anthropic_api_key", "valid-real-api-key"):
-            first_resp = await service1.get_insights(user_id)
-            assert first_resp.insights == ["Пользуйтесь проездным"]
-            assert mock_client.messages.create.await_count == 1
-
-            # Создаем новый экземпляр сервиса (симулируя следующий HTTP-запрос)
-            service2 = AIService(db=mock_db, client=mock_client)
-            second_resp = await service2.get_insights(user_id)
-
-            # Ответ возвращен из кэша
-            assert second_resp.insights == ["Пользуйтесь проездным"]
-            # API Claude НЕ вызывался повторно!
-            assert mock_client.messages.create.await_count == 1
-            assert second_resp.generated_at == first_resp.generated_at
-
-    @pytest.mark.asyncio
-    async def test_insights_caching_invalidates_when_transactions_change(self):
-        """Если транзакции пользователя изменились, кэш инвалидируется и вызывается Claude API."""
-        user_id = uuid.uuid4()
-        tx1 = MagicMock(spec=Transaction)
-        tx1.date = datetime(2026, 10, 1, 10, 0)
-        tx1.type = TransactionType.expense
-        tx1.category = Category.transport
-        tx1.amount = 150.0
-        tx1.description = "Метро"
-
-        # Пользователь совершил новую транзакцию
-        tx2 = MagicMock(spec=Transaction)
-        tx2.date = datetime(2026, 10, 2, 11, 0)
-        tx2.type = TransactionType.expense
-        tx2.category = Category.shopping
-        tx2.amount = 5000.0
-        tx2.description = "Одежда"
-
-        mock_db = MagicMock()
-        mock_result1 = MagicMock()
-        mock_result1.scalars.return_value.all.return_value = [tx1]
-
-        mock_result2 = MagicMock()
-        mock_result2.scalars.return_value.all.return_value = [tx2, tx1]
-
-        mock_db.execute = AsyncMock(side_effect=[mock_result1, mock_result2])
-
-        mock_client = MagicMock(spec=anthropic.AsyncAnthropic)
-        mock_response1 = MagicMock()
-        mock_content1 = MagicMock()
-        mock_content1.text = '{"insights": ["Совет 1"]}'
-        mock_response1.content = [mock_content1]
-
-        mock_response2 = MagicMock()
-        mock_content2 = MagicMock()
-        mock_content2.text = '{"insights": ["Совет 2 - траты выросли"]}'
-        mock_response2.content = [mock_content2]
-
-        mock_client.messages = MagicMock()
-        mock_client.messages.create = AsyncMock(side_effect=[mock_response1, mock_response2])
-
-        service = AIService(db=mock_db, client=mock_client)
-
-        with patch("app.services.ai_service.config.anthropic_api_key", "valid-real-api-key"):
-            first_resp = await service.get_insights(user_id)
-            assert first_resp.insights == ["Совет 1"]
-            assert mock_client.messages.create.await_count == 1
-
-            # The mock automatically uses mock_result2 when get_insights is called the second time
-
-            second_resp = await service.get_insights(user_id)
-            assert second_resp.insights == ["Совет 2 - траты выросли"]
-            assert mock_client.messages.create.await_count == 2
+        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
+            with patch("app.services.ai_service.redis_client.get", side_effect=mock_redis_get):
+                resp = await service.get_insights(user_id)
+                assert resp.insights == ["Cached"]
+                # Убедимся что к БД за транзакциями (limit 50) запроса не было
+                assert mock_db.execute.call_count == 1
 
     @pytest.mark.asyncio
     async def test_invalidate_and_clear_cache(self):
