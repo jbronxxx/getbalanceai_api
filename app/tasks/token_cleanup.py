@@ -18,6 +18,7 @@ async def run_token_cleanup(retention_days: int = 30, session_factory: Any = asy
         deleted_count = await service.cleanup_expired_tokens(retention_days=retention_days)
         logger.info(f"Регламентная очистка токенов завершена: удалено {deleted_count} записей")
         return deleted_count
+    return 0
 
 
 async def periodic_token_cleanup(
