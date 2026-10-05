@@ -137,3 +137,22 @@ async def auth_me(
 ) -> dict[str, str | User]:
     """Получить информацию о текущем пользователе."""
     return {"status": "success", "data": current_user}
+
+
+@router.delete(
+    "/me",
+    response_model=BaseResponse,
+    summary="Удаление аккаунта текущего пользователя",
+)
+async def delete_me(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    credentials: HTTPBearer = Depends(AuthService.bearer_scheme),
+) -> dict[str, str]:
+    """Удалить аккаунт и все связанные данные (токены, бюджеты, транзакции)."""
+    service = AuthService(db)
+    # Сначала инвалидируем текущий токен в памяти
+    service.logout(current_user.id, credentials.credentials)
+    # Затем удаляем пользователя из БД
+    await service.delete_account(current_user.id)
+    return {"status": "success", "message": "Account successfully deleted"}

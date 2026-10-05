@@ -176,6 +176,23 @@ class AuthService:
         """Выйти из системы, деактивируя токен в памяти."""
         self._deactivate_token(user_id, token_string)
 
+    async def delete_account(self, user_id: uuid.UUID) -> None:
+        """Удалить аккаунт пользователя и все связанные с ним данные."""
+        query = select(User).where(User.id == user_id)
+        result = await self.db.execute(query)
+        user = result.scalar_one_or_none()
+
+        if not user:
+            logger.warning(f"Попытка удаления несуществующего пользователя с ID {user_id}")
+            raise NotFoundException(
+                code=ErrorCode.USER_NOT_FOUND,
+                message="Пользователь не найден",
+            )
+
+        await self.db.delete(user)
+        # Каскадное удаление данных (transactions, budgets, tokens) отработает благодаря cascade="all, delete-orphan"
+        logger.info(f"Аккаунт пользователя {user.email} (ID: {user.id}) успешно удален")
+
     def create_access_token(self, user_id: Union[str, uuid.UUID]) -> str:
         """Сгенерировать access_token для пользователя."""
         user_id_str = str(user_id)
