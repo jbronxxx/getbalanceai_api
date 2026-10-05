@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import pytest
 from fastapi.security import HTTPAuthorizationCredentials
@@ -11,7 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.exceptions import BadRequestException, NotFoundException, UnauthorizedException
 from app.models.models import Token, User
-from app.schemas.schemas import UserLogin, UserRegister
+from app.schemas.schemas import (
+    AppleSignInRequest,
+    GoogleSignInRequest,
+    UserLogin,
+    UserRegister,
+)
 from app.services.auth_service import AuthService, get_current_user
 
 
@@ -163,6 +169,51 @@ class TestAuthServiceUnit:
         with pytest.raises(NotFoundException) as exc_info:
             service.logout(test_user.id, "nonexistent-token")
         assert exc_info.value.code == "TOKEN_NOT_FOUND"
+
+    @pytest.mark.asyncio
+    @patch("app.services.auth_service.PyJWKClient")
+    @patch("app.services.auth_service.jwt.decode")
+    async def test_google_login_success(self, mock_jwt_decode, mock_jwk_client, db_session: AsyncSession):
+        mock_jwt_decode.return_value = {
+            "email": "googleuser@example.com",
+            "name": "Google User",
+            "picture": "https://example.com/avatar.png",
+        }
+
+        service = AuthService(db_session)
+        payload = GoogleSignInRequest(id_token="mock_id_token")
+
+        tokens = await service.google_login(payload)
+        assert tokens.access_token is not None
+        assert tokens.refresh_token is not None
+
+        # Убеждаемся, что пользователь создан
+        result = await db_session.execute(select(User).where(User.email == "googleuser@example.com"))
+        user = result.scalar_one_or_none()
+        assert user is not None
+        assert user.avatar_url == "https://example.com/avatar.png"
+        assert user.hashed_password is None
+
+    @pytest.mark.asyncio
+    @patch("app.services.auth_service.PyJWKClient")
+    @patch("app.services.auth_service.jwt.decode")
+    async def test_apple_login_success(self, mock_jwt_decode, mock_jwk_client, db_session: AsyncSession):
+        mock_jwt_decode.return_value = {"email": "appleuser@example.com"}
+
+        service = AuthService(db_session)
+        payload = AppleSignInRequest(identity_token="mock_id_token")
+
+        tokens = await service.apple_login(payload)
+        assert tokens.access_token is not None
+        assert tokens.refresh_token is not None
+
+        # Убеждаемся, что пользователь создан
+        result = await db_session.execute(select(User).where(User.email == "appleuser@example.com"))
+        user = result.scalar_one_or_none()
+        assert user is not None
+        assert user.name == "appleuser"
+        assert user.avatar_url is None
+        assert user.hashed_password is None
 
 
 class TestGetCurrentUserDependency:

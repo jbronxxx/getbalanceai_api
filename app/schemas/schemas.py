@@ -142,6 +142,18 @@ class UserLogin(BaseModel):
         return v
 
 
+class GoogleSignInRequest(BaseModel):
+    """Схема запроса для аутентификации через Google."""
+
+    id_token: str = Field(..., description="Токен идентификации от Google")
+
+
+class AppleSignInRequest(BaseModel):
+    """Схема запроса для аутентификации через Apple."""
+
+    identity_token: str = Field(..., description="Токен идентификации от Apple")
+
+
 class RefreshTokenRequest(BaseModel):
     """Схема запроса на обновление access-токена с использованием refresh-токена.
 
@@ -181,6 +193,7 @@ class UserResponse(BaseModel):
     id: uuid.UUID = Field(..., description="ID пользователя")
     email: str = Field(..., description="Email пользователя")
     name: str = Field(..., description="Имя пользователя")
+    avatar_url: Optional[str] = Field(default=None, description="URL аватара пользователя")
     created_at: datetime = Field(..., description="Дата и время создания аккаунта")
 
 
