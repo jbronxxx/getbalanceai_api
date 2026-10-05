@@ -34,6 +34,9 @@ class Settings(BaseSettings):
 
     redis_url: str = Field("redis://localhost:6379/0", alias="REDIS_URL")
 
+    google_client_id: str | None = Field(None, alias="GOOGLE_CLIENT_ID")
+    apple_client_id: str | None = Field(None, alias="APPLE_CLIENT_ID")
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

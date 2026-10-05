@@ -10,6 +10,7 @@ import bcrypt
 import jwt
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jwt import PyJWKClient
 from jwt.exceptions import InvalidTokenError as JWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +23,13 @@ from app.exceptions import (
     UnauthorizedException,
 )
 from app.models.models import Token, User
-from app.schemas.schemas import TokenResponse, UserLogin, UserRegister
+from app.schemas.schemas import (
+    AppleSignInRequest,
+    GoogleSignInRequest,
+    TokenResponse,
+    UserLogin,
+    UserRegister,
+)
 from config_reader.config_reader import config
 from logger.logger import get_logger
 
@@ -72,7 +79,7 @@ class AuthService:
         user = result.scalar_one_or_none()
 
         is_valid = False
-        if user:
+        if user and user.hashed_password:
             is_valid = await asyncio.to_thread(bcrypt.checkpw, payload.password.encode(), user.hashed_password.encode())
 
         if not user or not is_valid:
@@ -90,6 +97,80 @@ class AuthService:
             refresh_token=refresh_token,
             token_type="bearer",
         )
+
+    async def _handle_oauth_user(self, email: str, name: str, avatar_url: str | None = None) -> TokenResponse:
+        query = select(User).where(User.email == email)
+        result = await self.db.execute(query)
+        user = result.scalar_one_or_none()
+
+        if not user:
+            user = User(email=email, name=name, avatar_url=avatar_url, hashed_password=None)
+            self.db.add(user)
+        else:
+            if avatar_url and user.avatar_url != avatar_url:
+                user.avatar_url = avatar_url
+        await self.db.flush()
+        await self.db.refresh(user)
+
+        access_token = self.create_access_token(user.id)
+        refresh_token = await self.create_refresh_token(user.id)
+        return TokenResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            token_type="bearer",
+        )
+
+    async def google_login(self, payload: GoogleSignInRequest) -> TokenResponse:
+        try:
+            jwks_client = PyJWKClient("https://www.googleapis.com/oauth2/v3/certs")
+            signing_key = jwks_client.get_signing_key_from_jwt(payload.id_token)
+
+            # Если в конфигурации задан client_id, проверяем audience
+            audience = config.google_client_id if config.google_client_id else None
+            data = jwt.decode(
+                payload.id_token,
+                signing_key.key,
+                algorithms=["RS256"],
+                audience=audience,
+                options={"verify_aud": bool(audience)},
+            )
+
+            email = data.get("email")
+            if not email:
+                raise ValueError("Email not provided by Google")
+
+            name = data.get("name", email.split("@")[0])
+            picture = data.get("picture")
+
+            return await self._handle_oauth_user(email, name, picture)
+        except Exception as e:
+            logger.error(f"Google login failed: {str(e)}")
+            raise UnauthorizedException(code=ErrorCode.INVALID_CREDENTIALS, message="Недействительный токен Google")
+
+    async def apple_login(self, payload: AppleSignInRequest) -> TokenResponse:
+        try:
+            jwks_client = PyJWKClient("https://appleid.apple.com/auth/keys")
+            signing_key = jwks_client.get_signing_key_from_jwt(payload.identity_token)
+
+            audience = config.apple_client_id if config.apple_client_id else None
+            data = jwt.decode(
+                payload.identity_token,
+                signing_key.key,
+                algorithms=["RS256"],
+                audience=audience,
+                options={"verify_aud": bool(audience)},
+            )
+
+            email = data.get("email")
+            if not email:
+                raise ValueError("Email not provided by Apple")
+
+            name = email.split("@")[0]  # В реальном приложении можно парсить доп. данные
+
+            return await self._handle_oauth_user(email, name, None)
+        except Exception as e:
+            logger.error(f"Apple login failed: {str(e)}")
+            raise UnauthorizedException(code=ErrorCode.INVALID_CREDENTIALS, message="Недействительный токен Apple")
 
     def logout(self, user_id: uuid.UUID, token_string: str) -> None:
         """Выйти из системы, деактивируя токен в памяти."""

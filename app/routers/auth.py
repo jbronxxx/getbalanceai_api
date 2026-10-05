@@ -9,8 +9,10 @@ from app.limiter import limiter
 from app.models.models import User
 from app.schemas.schemas import (
     ApiResponse,
+    AppleSignInRequest,
     BaseResponse,
     ErrorResponse,
+    GoogleSignInRequest,
     RefreshTokenRequest,
     TokenResponse,
     UserLogin,
@@ -43,6 +45,7 @@ router = APIRouter(
     response_model=ApiResponse[UserResponse],
     status_code=status.HTTP_201_CREATED,
     summary="Регистрация нового пользователя",
+    deprecated=True,
 )
 @limiter.limit("5/minute")
 async def register(request: Request, payload: UserRegister, db: AsyncSession = Depends(get_db)) -> dict[str, str | User]:
@@ -56,12 +59,43 @@ async def register(request: Request, payload: UserRegister, db: AsyncSession = D
     "/login",
     response_model=ApiResponse[TokenResponse],
     summary="Вход в систему и получение токенов",
+    deprecated=True,
 )
 @limiter.limit("5/minute")
 async def login(request: Request, payload: UserLogin, db: AsyncSession = Depends(get_db)) -> dict[str, str | TokenResponse]:
     """Аутентификация пользователя по email и паролю с возвратом JWT access и refresh токенов."""
     service = AuthService(db)
     tokens = await service.login(payload)
+    return {"status": "success", "data": tokens}
+
+
+@router.post(
+    "/google",
+    response_model=ApiResponse[TokenResponse],
+    summary="Вход или регистрация через Google",
+)
+@limiter.limit("5/minute")
+async def google_login(
+    request: Request, payload: GoogleSignInRequest, db: AsyncSession = Depends(get_db)
+) -> dict[str, str | TokenResponse]:
+    """Аутентификация через Google (OAuth 2.0)."""
+    service = AuthService(db)
+    tokens = await service.google_login(payload)
+    return {"status": "success", "data": tokens}
+
+
+@router.post(
+    "/apple",
+    response_model=ApiResponse[TokenResponse],
+    summary="Вход или регистрация через Apple",
+)
+@limiter.limit("5/minute")
+async def apple_login(
+    request: Request, payload: AppleSignInRequest, db: AsyncSession = Depends(get_db)
+) -> dict[str, str | TokenResponse]:
+    """Аутентификация через Apple."""
+    service = AuthService(db)
+    tokens = await service.apple_login(payload)
     return {"status": "success", "data": tokens}
 
 
