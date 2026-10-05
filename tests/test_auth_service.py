@@ -215,6 +215,25 @@ class TestAuthServiceUnit:
         assert user.avatar_url is None
         assert user.hashed_password is None
 
+    @pytest.mark.asyncio
+    async def test_delete_account_success(self, db_session: AsyncSession, test_user: User):
+        """Успешное удаление аккаунта пользователя."""
+        service = AuthService(db_session)
+        await service.delete_account(test_user.id)
+
+        await db_session.commit()
+        result = await db_session.execute(select(User).where(User.id == test_user.id))
+        deleted_user = result.scalar_one_or_none()
+        assert deleted_user is None
+
+    @pytest.mark.asyncio
+    async def test_delete_account_not_found(self, db_session: AsyncSession):
+        """Попытка удалить несуществующий аккаунт вызывает NotFoundException."""
+        service = AuthService(db_session)
+        with pytest.raises(NotFoundException) as exc_info:
+            await service.delete_account(uuid.uuid4())
+        assert exc_info.value.code == "USER_NOT_FOUND"
+
 
 class TestGetCurrentUserDependency:
     """Тесты зависимости get_current_user."""
@@ -316,3 +335,23 @@ class TestAuthEndpointsIntegration:
         # После логаута старый access token недействителен
         me_after_logout = await client.get("/api/v1/auth/me", headers=headers)
         assert me_after_logout.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_delete_me_endpoint(self, client: AsyncClient, db_session: AsyncSession):
+        """DELETE /api/v1/auth/me удаляет пользователя и возвращает 200."""
+        email = f"delete_user_{uuid.uuid4().hex[:6]}@example.com"
+        password = "Password123!"
+        await AuthService(db_session).register(UserRegister(email=email, password=password, name="Delete User"))
+
+        login_res = await client.post("/api/v1/auth/login", json={"email": email, "password": password})
+        access_token = login_res.json()["data"]["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        # Delete account
+        del_res = await client.delete("/api/v1/auth/me", headers=headers)
+        assert del_res.status_code == 200
+        assert del_res.json()["status"] == "success"
+
+        # После удаления старый access token недействителен
+        me_after_del = await client.get("/api/v1/auth/me", headers=headers)
+        assert me_after_del.status_code == 401
