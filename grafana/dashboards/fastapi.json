@@ -592,9 +592,9 @@
           },
           "editorMode": "code",
           "exemplar": true,
-          "expr": "histogram_quantile(.99,sum(rate(http_request_duration_seconds_bucket{job=\"$app_name\", handler!=\"/metrics\"}[1m])) by(path, le))",
+          "expr": "histogram_quantile(.99, sum by (handler, le) (rate(http_request_duration_seconds_bucket{job=\"$app_name\", handler!=\"/metrics\"}[$__rate_interval])))",
           "interval": "",
-          "legendFormat": "{{path}}",
+          "legendFormat": "{{handler}}",
           "range": true,
           "refId": "A"
         }
