@@ -104,7 +104,7 @@
             "uid": "Loki"
           },
           "editorMode": "builder",
-          "expr": "{container=\"finance_app-api-1\"}",
+          "expr": "{service=\"api\"}",
           "queryType": "range",
           "refId": "A"
         }
