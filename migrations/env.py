@@ -19,8 +19,9 @@ if config.config_file_name is not None:
 # Метаданные моделей для поддержки автоматической генерации миграций (--autogenerate)
 target_metadata = Base.metadata
 
-# Динамическая подстановка URL базы данных из конфигурации приложения
-config.set_main_option("sqlalchemy.url", app_config.db_url)
+# Динамическая подстановка URL базы данных из конфигурации приложения.
+# Alembic работает через синхронный Engine, поэтому async-драйвер (+asyncpg) заменяется на дефолтный синхронный.
+config.set_main_option("sqlalchemy.url", app_config.db_url.replace("postgresql+asyncpg://", "postgresql://"))
 
 
 def run_migrations_offline() -> None:
