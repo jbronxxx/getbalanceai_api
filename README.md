@@ -108,36 +108,77 @@ docker compose down -v
 
 ## 💻 Локальный запуск без Docker (Разработка)
 
-### 1. Запуск базы данных в Docker
+### Быстрый запуск с помощью скрипта автоматизации (Рекомендуется)
+
+Для полной автоматической подготовки окружения предусмотрены готовые скрипты:
+* **Windows (PowerShell):**
+  ```powershell
+  . .\scripts\setup_dev.ps1
+  ```
+  *(Символ точки перед путем сохраняет активацию виртуального окружения в текущей сессии консоли).*
+  
+  Если запуск скриптов ограничен политикой выполнения PowerShell:
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File .\scripts\setup_dev.ps1
+  ```
+
+* **macOS / Linux (Bash / Zsh):**
+  ```bash
+  chmod +x ./scripts/setup_dev.sh
+  source ./scripts/setup_dev.sh
+  ```
+  *(Команда `source` сохраняет активацию виртуального окружения в текущей оболочке).*
+
+#### Что скрипт делает автоматически в правильном порядке:
+1. Создает файл `.env` из `.env.example`, если он еще не существует.
+2. Создает и активирует виртуальное окружение `.venv`.
+3. Обновляет `pip` и устанавливает все зависимости из `requirements.txt` и `requirements-dev.txt` (с безопасным выбором готовых бинарных сборок).
+4. Устанавливает git-хуки `pre-commit` (pre-commit и pre-push проверки качества кода).
+5. Запускает контейнеры инфраструктуры (`PostgreSQL` и `Redis`) в Docker.
+6. Дожидается полной готовности базы данных (`pg_isready`).
+7. Накатывает миграции Alembic (`alembic upgrade head`).
+
+После завершения работы скрипта запустите сервер разработки:
 ```bash
-docker compose up db -d
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 2. Создание и активация виртуального окружения
+---
+
+### Альтернатива: Ручной пошаговый запуск
+
+Если вы хотите выполнить развертывание вручную:
+
+#### 1. Запуск базы данных и Redis в Docker
+```bash
+docker compose up -d db redis
+```
+
+#### 2. Создание и активация виртуального окружения
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate  # Для macOS/Linux
 # .venv\Scripts\activate   # Для Windows
 ```
 
-### 3. Установка зависимостей и хуков
+#### 3. Установка зависимостей и хуков
 ```bash
 pip install --upgrade pip
-pip install -r requirements.txt
+pip install --prefer-binary -r requirements.txt
 pip install -r requirements-dev.txt
 
-# Установка pre-commit хуков (для проверок качества кода перед коммитом и пушем)
+# Установка pre-commit хуков
 pre-commit install
 pre-commit install --hook-type pre-push
 ```
 
-### 4. Настройка `.env` для локального хоста
-В файле `.env` укажите хост `localhost` (или `127.0.0.1`) вместо имени docker-сервиса `db`:
-```env
-DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/${POSTGRES_DB}
+#### 4. Применение миграций базы данных
+```bash
+# Для локального запуска укажите локальный хост 127.0.0.1 / localhost:
+DATABASE_URL="postgresql://${POSTGRES_USER:-db_user}:${POSTGRES_PASSWORD:-db_pass}@127.0.0.1:5432/${POSTGRES_DB:-get_balance_db}" alembic upgrade head
 ```
 
-### 5. Запуск сервера разработки
+#### 5. Запуск сервера разработки
 ```bash
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
