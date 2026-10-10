@@ -2,6 +2,7 @@
 
 import contextvars
 import logging
+import os
 import sys
 
 # Контекстная переменная для хранения сквозного ID запроса (Correlation ID / Request ID)
@@ -46,6 +47,23 @@ def reset_request_id(token: contextvars.Token) -> None:
     request_id_ctx_var.reset(token)
 
 
+def _get_log_level() -> int:
+    """Определить числовой уровень логирования из конфигурации или переменных окружения."""
+    level_name = os.getenv("LOG_LEVEL")
+    if not level_name:
+        try:
+            from config_reader.config_reader import config
+
+            level_name = getattr(config, "log_level", None)
+        except Exception:
+            level_name = None
+
+    if not level_name:
+        level_name = "INFO"
+
+    return getattr(logging, str(level_name).upper(), logging.INFO)
+
+
 def get_logger(name: str) -> logging.Logger:
     """Получить или сконфигурировать логгер с единым форматом вывода.
 
@@ -61,10 +79,11 @@ def get_logger(name: str) -> logging.Logger:
     if logger.handlers:
         return logger
 
-    logger.setLevel(logging.DEBUG)
+    level = _get_log_level()
+    logger.setLevel(level)
 
     handler = logging.StreamHandler(sys.stdout)
-    handler.setLevel(logging.DEBUG)
+    handler.setLevel(level)
     handler.addFilter(RequestIdFilter())
 
     formatter = logging.Formatter(

@@ -1,5 +1,6 @@
 """Юнит и интеграционные тесты для AuthService и эндпоинтов авторизации."""
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -248,6 +249,21 @@ class TestGetCurrentUserDependency:
         user = await get_current_user(credentials=creds, db=db_session)
         assert user.id == test_user.id
         assert user.email == test_user.email
+
+    @pytest.mark.asyncio
+    async def test_valid_token_does_not_log_debug_auth_success(
+        self, db_session: AsyncSession, test_user: User, caplog: pytest.LogCaptureFixture
+    ):
+        """get_current_user не генерирует избыточных логов об успешной валидации токена."""
+        service = AuthService(db_session)
+        token_str = service.create_access_token(test_user.id)
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_str)
+
+        with caplog.at_level(logging.DEBUG):
+            user = await get_current_user(credentials=creds, db=db_session)
+            assert user.id == test_user.id
+
+        assert not any("Аутентификация успешна" in record.message for record in caplog.records)
 
     @pytest.mark.asyncio
     async def test_revoked_token(self, db_session: AsyncSession, test_user: User):

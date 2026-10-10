@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     """Класс-контейнер для хранения всех настроек приложения."""
 
     debug: bool = Field(True, alias="APP_DEBUG")
+    log_level: str = Field("INFO", alias="LOG_LEVEL")
     host: str = Field("0.0.0.0", alias="APP_HOST")
     port: int = Field(8000, alias="APP_PORT")
 
@@ -63,6 +64,16 @@ class Settings(BaseSettings):
                 data["db_url"] = db_url
 
         return data
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def assemble_log_level(cls, v: Any) -> str:
+        if isinstance(v, str) and v.strip():
+            level = v.strip().upper()
+            valid_levels = {"DEBUG", "INFO", "WARNING", "WARN", "ERROR", "CRITICAL", "FATAL"}
+            if level in valid_levels:
+                return "WARNING" if level == "WARN" else ("CRITICAL" if level == "FATAL" else level)
+        return "INFO"
 
     @field_validator("cors_origins", "cors_allow_methods", "cors_allow_headers", mode="before")
     @classmethod
