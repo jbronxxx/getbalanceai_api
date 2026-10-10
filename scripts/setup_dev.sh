@@ -31,16 +31,39 @@ fi
 # ------------------------------------------------------------------------------
 # 2. Создание и активация виртуального окружения (.venv)
 # ------------------------------------------------------------------------------
+# Проверка версии существующего .venv (требуется >= 3.11 для enum.StrEnum)
+if [ -f ".venv/bin/python" ]; then
+    PY_VER=$(.venv/bin/python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
+    MAJOR=$(echo "$PY_VER" | cut -d. -f1)
+    MINOR=$(echo "$PY_VER" | cut -d. -f2)
+    if [ "$MAJOR" -lt 3 ] || ([ "$MAJOR" -eq 3 ] && [ "$MINOR" -lt 11 ]); then
+        echo -e "\033[33m==> Текущий .venv создан на Python $PY_VER, требуется Python 3.11+. Пересоздаем .venv...\033[0m"
+        rm -rf .venv
+    fi
+fi
+
 if [ ! -f ".venv/bin/python" ]; then
     echo -e "\033[33m==> Создание виртуального окружения (.venv)...\033[0m"
-    if command -v python3 &>/dev/null; then
-        python3 -m venv .venv
-    elif command -v python &>/dev/null; then
-        python -m venv .venv
-    else
-        echo -e "\033[31mОшибка: Python 3 не найден. Установите Python 3.10+.\033[0m"
+    PYTHON_CMD=""
+    for cmd in python3.12 python3.11 python3 python; do
+        if command -v "$cmd" &>/dev/null; then
+            PY_VER=$($cmd -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
+            MAJOR=$(echo "$PY_VER" | cut -d. -f1)
+            MINOR=$(echo "$PY_VER" | cut -d. -f2)
+            if [ "$MAJOR" -gt 3 ] || ([ "$MAJOR" -eq 3 ] && [ "$MINOR" -ge 11 ]); then
+                PYTHON_CMD="$cmd"
+                break
+            fi
+        fi
+    done
+
+    if [ -z "$PYTHON_CMD" ]; then
+        echo -e "\033[31mОшибка: Не найден Python 3.11+. Установите Python 3.11 или 3.12 (в Dockerfile используется Python 3.12).\033[0m"
         exit 1
     fi
+
+    echo "    Выбран интерпретатор: $PYTHON_CMD ($PY_VER)"
+    "$PYTHON_CMD" -m venv .venv
 fi
 
 echo -e "\033[32m==> Активация виртуального окружения...\033[0m"

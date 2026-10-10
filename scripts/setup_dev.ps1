@@ -1,4 +1,4 @@
-﻿# ==============================================================================
+# ==============================================================================
 # Скрипт локального развертывания проекта для разработки (Windows / PowerShell)
 # Использование: .\scripts\setup_dev.ps1
 # Или:           . .\scripts\setup_dev.ps1  (с точкой для сохранения активации .venv в текущей консоли)
@@ -36,15 +36,44 @@ $VenvDir = Join-Path $ProjectDir ".venv"
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 $VenvActivate = Join-Path $VenvDir "Scripts\Activate.ps1"
 
+# Проверка версии существующего .venv (требуется >= 3.11 для enum.StrEnum)
+if (Test-Path $VenvPython) {
+    try {
+        $currentVer = & $VenvPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
+        $parts = $currentVer.Split('.')
+        if ($parts.Count -ge 2 -and ([int]$parts[0] -lt 3 -or ([int]$parts[0] -eq 3 -and [int]$parts[1] -lt 11))) {
+            Write-Host "==> Текущий .venv создан на Python $currentVer, а для проекта требуется Python 3.11+ (StrEnum). Пересоздаем .venv..." -ForegroundColor Yellow
+            Remove-Item -Recurse -Force $VenvDir
+        }
+    } catch {}
+}
+
 if (-not (Test-Path $VenvPython)) {
     Write-Host "==> Создание виртуального окружения (.venv)..." -ForegroundColor Yellow
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        python -m venv .venv
-    } elseif (Get-Command py -ErrorAction SilentlyContinue) {
-        py -m venv .venv
-    } else {
-        throw "Python не найден в PATH. Установите Python 3.10+ и добавьте его в PATH."
+    # Поиск подходящего интерпретатора Python 3.11+
+    $CandidatePythons = @("py -3.12", "python3.12", "C:\Python3.12\python.exe", "python", "py -3")
+    $SelectedPythonCmd = $null
+
+    foreach ($candidate in $CandidatePythons) {
+        try {
+            $testCmd = "$candidate -c `"import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')`""
+            $ver = Invoke-Expression $testCmd 2>$null
+            if ($ver) {
+                $p = $ver.Split('.')
+                if ($p.Count -ge 2 -and ([int]$p[0] -gt 3 -or ([int]$p[0] -eq 3 -and [int]$p[1] -ge 11))) {
+                    $SelectedPythonCmd = $candidate
+                    break
+                }
+            }
+        } catch {}
     }
+
+    if (-not $SelectedPythonCmd) {
+        throw "Не найден Python версии 3.11 или выше. Установите Python 3.11 или 3.12 (в Dockerfile используется Python 3.12)."
+    }
+
+    Write-Host "    Выбран интерпретатор: $SelectedPythonCmd" -ForegroundColor Gray
+    Invoke-Expression "$SelectedPythonCmd -m venv .venv"
 }
 
 Write-Host "==> Активация виртуального окружения..." -ForegroundColor Green
