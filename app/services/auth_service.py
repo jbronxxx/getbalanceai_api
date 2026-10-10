@@ -427,5 +427,4 @@ async def get_current_user(
             message="Пользователь не найден",
         )
 
-    logger.debug(f"Аутентификация успешна для пользователя: {user.email}")
     return user

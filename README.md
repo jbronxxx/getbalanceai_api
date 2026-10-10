@@ -67,7 +67,7 @@ docker compose up --build -d
 
 ### 3. Запуск в Production (на боевом сервере с Nginx и SSL)
 Перед запуском в production убедитесь, что вы подготовили `.env` файл:
-1. Обязательно установите `APP_DEBUG=false`.
+1. Обязательно установите `APP_DEBUG=false` и `LOG_LEVEL=INFO`.
 2. Сгенерируйте криптографически стойкий секретный ключ командой `openssl rand -hex 32` и вставьте его в `SECRET_KEY`.
 
 Для запуска на боевом сервере с Reverse Proxy (Nginx) и сертификатами (Certbot):

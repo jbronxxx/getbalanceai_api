@@ -12,6 +12,8 @@ from app.database import get_db
 from app.exceptions import ErrorCode
 from logger.logger import (
     RequestIdFilter,
+    _get_log_level,
+    get_logger,
     get_request_id,
     reset_request_id,
     set_request_id,
@@ -156,3 +158,37 @@ class TestCorrelationId:
             assert getattr(record, "request_id") == "ctx-id-555"
         finally:
             reset_request_id(token)
+
+
+class TestLogLevelConfiguration:
+    """Тесты управления уровнем логирования через переменные окружения и конфигурацию."""
+
+    def test_get_log_level_from_env_debug(self, monkeypatch: pytest.MonkeyPatch):
+        """Уровень DEBUG корректно извлекается из LOG_LEVEL."""
+        monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+        assert _get_log_level() == logging.DEBUG
+
+    def test_get_log_level_from_env_info(self, monkeypatch: pytest.MonkeyPatch):
+        """Уровень INFO корректно извлекается из LOG_LEVEL."""
+        monkeypatch.setenv("LOG_LEVEL", "INFO")
+        assert _get_log_level() == logging.INFO
+
+    def test_get_log_level_from_env_warning(self, monkeypatch: pytest.MonkeyPatch):
+        """Уровень WARNING корректно извлекается из LOG_LEVEL."""
+        monkeypatch.setenv("LOG_LEVEL", "WARNING")
+        assert _get_log_level() == logging.WARNING
+
+    def test_get_log_level_fallback_to_info(self, monkeypatch: pytest.MonkeyPatch):
+        """Невалидный или пустой уровень логирования откатывается на INFO."""
+        monkeypatch.setenv("LOG_LEVEL", "INVALID_LEVEL")
+        assert _get_log_level() == logging.INFO
+
+    def test_get_logger_applies_log_level(self, monkeypatch: pytest.MonkeyPatch):
+        """get_logger инициализирует логгер и обработчик с уровнем из окружения."""
+        monkeypatch.setenv("LOG_LEVEL", "WARNING")
+        test_logger_name = f"test.logger.{uuid.uuid4()}"
+        custom_logger = get_logger(test_logger_name)
+
+        assert custom_logger.level == logging.WARNING
+        assert len(custom_logger.handlers) == 1
+        assert custom_logger.handlers[0].level == logging.WARNING
