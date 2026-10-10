@@ -340,7 +340,7 @@ class AuthService:
             jti = payload.get("jti")
             if jti:
                 AuthService._revoked_jtis.add(jti)
-                logger.info(f"Токен успешно отзывен при выходе пользователя {user_id}")
+                logger.info(f"Токен успешно отозван при выходе пользователя {user_id}")
                 return
         except JWTError:
             pass
