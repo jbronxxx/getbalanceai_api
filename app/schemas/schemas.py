@@ -5,9 +5,21 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Generic, List, Optional, TypeVar
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    field_validator,
+    model_validator,
+)
 
-from app.models.models import Category, TransactionType
+from app.models.models import (
+    EXPENSE_CATEGORIES,
+    INCOME_CATEGORIES,
+    Category,
+    TransactionType,
+)
 
 # ============================================================================
 # Базовые response обертки для стандартизации ответов
@@ -219,6 +231,21 @@ class TransactionCreate(BaseModel):
     type: TransactionType = Field(..., description="Тип операции: income (доход) или expense (расход)")
     date: datetime | None = Field(default=None, description="Дата транзакции (по умолчанию текущая)")
 
+    @model_validator(mode="after")
+    def validate_category_type_compatibility(self) -> "TransactionCreate":
+        """Проверить совместимость выбранной категории с типом транзакции."""
+        if self.type == TransactionType.income and self.category not in INCOME_CATEGORIES:
+            allowed = ", ".join(sorted(c.value for c in INCOME_CATEGORIES))
+            raise ValueError(
+                f"Категория '{self.category.value}' недопустима для доходных операций. " f"Допустимые категории: {allowed}."
+            )
+        if self.type == TransactionType.expense and self.category not in EXPENSE_CATEGORIES:
+            allowed = ", ".join(sorted(c.value for c in EXPENSE_CATEGORIES))
+            raise ValueError(
+                f"Категория '{self.category.value}' недопустима для расходных операций. " f"Допустимые категории: {allowed}."
+            )
+        return self
+
 
 class TransactionResponse(BaseModel):
     """Схема ответа с данными сохраненной транзакции.
@@ -264,6 +291,17 @@ class BudgetCreate(BaseModel):
     month: int = Field(..., ge=1, le=12, description="Номер месяца (от 1 до 12)")
     year: int = Field(..., ge=2000, le=2100, description="Год")
 
+    @model_validator(mode="after")
+    def validate_expense_category(self) -> "BudgetCreate":
+        """Проверить, что категория относится к допустимым категориям расходов."""
+        if self.category not in EXPENSE_CATEGORIES:
+            allowed = ", ".join(sorted(c.value for c in EXPENSE_CATEGORIES))
+            raise ValueError(
+                f"Категория '{self.category.value}' недопустима для бюджета. "
+                f"Бюджет может быть установлен только для расходных категорий: {allowed}."
+            )
+        return self
+
 
 class BudgetResponse(BaseModel):
     """Схема ответа с информацией о бюджете и расчетом расходов.
@@ -308,6 +346,21 @@ class TransactionSyncItem(BaseModel):
     date: datetime = Field(..., description="Дата и время")
     description: str = Field(..., description="Описание")
 
+    @model_validator(mode="after")
+    def validate_category_type_compatibility(self) -> "TransactionSyncItem":
+        """Проверить совместимость выбранной категории с типом транзакции."""
+        if self.type == TransactionType.income and self.category not in INCOME_CATEGORIES:
+            allowed = ", ".join(sorted(c.value for c in INCOME_CATEGORIES))
+            raise ValueError(
+                f"Категория '{self.category.value}' недопустима для доходных операций. " f"Допустимые категории: {allowed}."
+            )
+        if self.type == TransactionType.expense and self.category not in EXPENSE_CATEGORIES:
+            allowed = ", ".join(sorted(c.value for c in EXPENSE_CATEGORIES))
+            raise ValueError(
+                f"Категория '{self.category.value}' недопустима для расходных операций. " f"Допустимые категории: {allowed}."
+            )
+        return self
+
 
 class BudgetSyncItem(BaseModel):
     """Схема отдельного бюджета при пакетной синхронизации."""
@@ -319,6 +372,17 @@ class BudgetSyncItem(BaseModel):
     year: int = Field(..., ge=2000, le=2100, description="Год")
     is_deleted: bool = Field(default=False, description="Флаг удаления бюджета на клиенте")
     deleted: Optional[bool] = Field(default=None, description="Альтернативный флаг удаления бюджета")
+
+    @model_validator(mode="after")
+    def validate_expense_category(self) -> "BudgetSyncItem":
+        """Проверить, что категория относится к допустимым категориям расходов."""
+        if self.category not in EXPENSE_CATEGORIES:
+            allowed = ", ".join(sorted(c.value for c in EXPENSE_CATEGORIES))
+            raise ValueError(
+                f"Категория '{self.category.value}' недопустима для бюджета. "
+                f"Бюджет может быть установлен только для расходных категорий: {allowed}."
+            )
+        return self
 
     @property
     def check_deleted(self) -> bool:
