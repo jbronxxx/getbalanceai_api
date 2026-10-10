@@ -9,7 +9,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.exceptions import NotFoundException
-from app.models.models import Category, TransactionType, User
+from app.models.models import Category, Transaction, TransactionType, User
 from app.schemas.schemas import BudgetCreate, TransactionCreate
 from app.services.budget_service import BudgetService
 from app.services.transaction_service import TransactionService
@@ -70,16 +70,17 @@ class TestBudgetServiceUnit:
             ),
         )
         # Доход за октябрь 2026 по категории food (не должен учитываться)
-        await tx_service.create(
-            test_user.id,
-            TransactionCreate(
-                amount=500.0,
+        db_session.add(
+            Transaction(
+                user_id=test_user.id,
+                amount=Decimal("500.00"),
                 description="Кешбэк продукты",
                 category=Category.food,
                 type=TransactionType.income,
                 date=datetime(2026, 10, 6, 12, 0, 0, tzinfo=timezone.utc),
-            ),
+            )
         )
+        await db_session.flush()
         # Расход за сентябрь 2026 (другой месяц, не должен учитываться)
         await tx_service.create(
             test_user.id,

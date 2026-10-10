@@ -25,14 +25,45 @@ class TransactionType(str, enum.Enum):
 class Category(str, enum.Enum):
     """Категории доходов и расходов."""
 
+    # Расходные категории
     food = "food"  # Продукты и питание
     transport = "transport"  # Транспорт
     entertainment = "entertainment"  # Развлечения
     health = "health"  # Здоровье и медицина
     subscriptions = "subscriptions"  # Подписки и сервисы
     shopping = "shopping"  # Покупки и одежда
+
+    # Доходные категории
     salary = "salary"  # Заработная плата
+    freelance = "freelance"  # Фриланс и подработки
+    investments = "investments"  # Инвестиции и дивиденды
+    transfers = "transfers"  # Переводы и подарки
+    cashback = "cashback"  # Кэшбэк и бонусы
+    sales = "sales"  # Продажи
+
+    # Общая категория
     other = "other"  # Прочее
+
+
+INCOME_CATEGORIES: set[Category] = {
+    Category.salary,
+    Category.freelance,
+    Category.investments,
+    Category.transfers,
+    Category.cashback,
+    Category.sales,
+    Category.other,
+}
+
+EXPENSE_CATEGORIES: set[Category] = {
+    Category.food,
+    Category.transport,
+    Category.entertainment,
+    Category.health,
+    Category.subscriptions,
+    Category.shopping,
+    Category.other,
+}
 
 
 class User(Base):

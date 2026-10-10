@@ -1,6 +1,6 @@
 name: Deploy to Production
 
-on:
+'on':
   push:
     branches:
       - main
@@ -11,26 +11,39 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          script: |
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          PROD_ENV_FILE: ${{ secrets.PROD_ENV_FILE }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          SSH_CMD="ssh -p $SSH_PORT -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+          # Создаем или обновляем .env файл из секрета GitHub (если секрет задан)
+          if [ -n "$PROD_ENV_FILE" ]; then
+            printf '%s\n' "$PROD_ENV_FILE" | $SSH_CMD "$SSH_USER@$SSH_HOST" "cat > /opt/getbalanceai_api/.env"
+          fi
+
+          # Выполняем деплой на сервере
+          $SSH_CMD "$SSH_USER@$SSH_HOST" << 'EOF'
+            set -e
             cd /opt/getbalanceai_api
-            
-            # Создаем или обновляем .env файл из секрета GitHub
-            echo "${{ secrets.PROD_ENV_FILE }}" > .env
-            
+
             # Обновляем код
             git pull origin main
-            
+
+            # Применяем миграции базы данных перед запуском сервисов
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api alembic upgrade head
+
             # Пересобираем и запускаем контейнеры в фоне
             docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
-            
+
             # Очищаем старые неиспользуемые образы Docker для экономии места
             docker image prune -f
+          EOF
