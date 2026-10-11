@@ -63,6 +63,17 @@ class Settings(BaseSettings):
             if db_url:
                 data["db_url"] = db_url
 
+            redis_url = data.get("REDIS_URL") or data.get("redis_url") or os.getenv("REDIS_URL")
+            if not redis_url:
+                redis_host = os.getenv("REDIS_HOST")
+                redis_port = os.getenv("REDIS_PORT", "6379")
+                redis_db = os.getenv("REDIS_DB", "0")
+                if redis_host:
+                    redis_url = f"redis://{redis_host}:{redis_port}/{redis_db}"
+
+            if redis_url:
+                data["redis_url"] = redis_url
+
         return data
 
     @field_validator("log_level", mode="before")

@@ -16,8 +16,9 @@
 * **Миграции**: Alembic
 * **Валидация и DTO**: Pydantic v2 (`ConfigDict`, `Field`)
 * **Аутентификация**: JWT (`python-jose`), хеширование паролей (`bcrypt`), ротация Refresh-токенов
-* **Интеграция с LLM**: Anthropic Claude API (SDK `anthropic.AsyncAnthropic`)
-* **Конфигурация**: PyYAML + `.env` (`python-dotenv`)
+* **Интеграция с LLM**: Google Gemini API
+* **Кэширование**: Redis 7 (кэширование инсайтов и аналитических рекомендаций с отказоустойчивым graceful fallback)
+* **Конфигурация**: Pydantic Settings + `.env`
 * **Контейнеризация**: Docker & Docker Compose
 * **Тестирование**: Pytest (`TestClient`, `httpx.AsyncClient`)
 

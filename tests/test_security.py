@@ -282,3 +282,11 @@ class TestDefaultSecretsValidation:
             ai_model="claude-haiku-4-5",
             redis_url="redis://localhost:6379/0",
         )
+
+    def test_assemble_redis_url_from_redis_host(self, monkeypatch):
+        """Проверяет сборку redis_url из REDIS_HOST и REDIS_PORT при отсутствии REDIS_URL."""
+        monkeypatch.delenv("REDIS_URL", raising=False)
+        monkeypatch.setenv("REDIS_HOST", "redis-custom")
+        monkeypatch.setenv("REDIS_PORT", "6380")
+        settings = Settings(_env_file=None)
+        assert settings.redis_url == "redis://redis-custom:6380/0"
