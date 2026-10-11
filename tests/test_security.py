@@ -290,3 +290,24 @@ class TestDefaultSecretsValidation:
         monkeypatch.setenv("REDIS_PORT", "6380")
         settings = Settings(_env_file=None)
         assert settings.redis_url == "redis://redis-custom:6380/0"
+
+    def test_db_pool_settings_defaults_and_env(self, monkeypatch):
+        """Проверяет значения по умолчанию и переопределение через env для параметров пула БД."""
+        settings = Settings(_env_file=None)
+        assert settings.db_pool_size == 10
+        assert settings.db_max_overflow == 20
+        assert settings.db_pool_timeout == 30
+        assert settings.db_pool_recycle == 1800
+        assert settings.db_pool_pre_ping is True
+
+        monkeypatch.setenv("DB_POOL_SIZE", "15")
+        monkeypatch.setenv("DB_MAX_OVERFLOW", "30")
+        monkeypatch.setenv("DB_POOL_TIMEOUT", "45")
+        monkeypatch.setenv("DB_POOL_RECYCLE", "900")
+        monkeypatch.setenv("DB_POOL_PRE_PING", "false")
+        custom_settings = Settings(_env_file=None)
+        assert custom_settings.db_pool_size == 15
+        assert custom_settings.db_max_overflow == 30
+        assert custom_settings.db_pool_timeout == 45
+        assert custom_settings.db_pool_recycle == 900
+        assert custom_settings.db_pool_pre_ping is False

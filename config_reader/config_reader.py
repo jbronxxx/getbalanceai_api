@@ -19,6 +19,11 @@ class Settings(BaseSettings):
         "postgresql://finance_user:finance_pass@db:5432/finance_db",
         alias="DATABASE_URL",
     )
+    db_pool_size: int = Field(10, alias="DB_POOL_SIZE")
+    db_max_overflow: int = Field(20, alias="DB_MAX_OVERFLOW")
+    db_pool_timeout: int = Field(30, alias="DB_POOL_TIMEOUT")
+    db_pool_recycle: int = Field(1800, alias="DB_POOL_RECYCLE")
+    db_pool_pre_ping: bool = Field(True, alias="DB_POOL_PRE_PING")
 
     secret_key: str = Field("change-me-in-production-use-long-random-string", alias="SECRET_KEY")
     algorithm: str = Field("HS256", alias="AUTH_ALGORITHM")
