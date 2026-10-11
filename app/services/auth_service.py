@@ -29,6 +29,7 @@ from app.schemas.schemas import (
     TokenResponse,
     UserLogin,
     UserRegister,
+    UserUpdateRequest,
 )
 from config_reader.config_reader import config
 from logger.logger import get_logger
@@ -70,6 +71,38 @@ class AuthService:
         await self.db.flush()
         await self.db.refresh(user)
         logger.info(f"Зарегистрирован новый пользователь: {user.email} (ID: {user.id})")
+        return user
+
+    async def update_profile(self, user_id: uuid.UUID, payload: UserUpdateRequest) -> User:
+        """Обновить профиль пользователя (имя, аватар, базовая валюта).
+
+        Аргументы:
+            user_id (uuid.UUID): Идентификатор пользователя.
+            payload (UserUpdateRequest): Новые данные профиля.
+
+        Возвращает:
+            User: Обновленный объект пользователя.
+        """
+        query = select(User).where(User.id == user_id)
+        result = await self.db.execute(query)
+        user = result.scalar_one_or_none()
+        if not user:
+            logger.warning(f"Попытка обновления несуществующего пользователя: {user_id}")
+            raise NotFoundException(
+                code=ErrorCode.USER_NOT_FOUND,
+                message="Пользователь не найден",
+            )
+
+        if payload.name is not None:
+            user.name = payload.name.strip()
+        if payload.avatar_url is not None:
+            user.avatar_url = payload.avatar_url.strip() if payload.avatar_url else None
+        if payload.base_currency is not None:
+            user.base_currency = payload.base_currency.strip().upper()
+
+        await self.db.flush()
+        await self.db.refresh(user)
+        logger.info(f"Профиль пользователя {user_id} успешно обновлен")
         return user
 
     async def login(self, payload: UserLogin) -> TokenResponse:

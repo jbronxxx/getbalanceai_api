@@ -4,7 +4,7 @@ import hashlib
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.exceptions import ErrorCode, NotFoundException
@@ -139,7 +139,9 @@ class BudgetService:
                 Transaction.category,
                 func.extract("month", Transaction.date).label("month"),
                 func.extract("year", Transaction.date).label("year"),
-                func.sum(Transaction.amount).label("spent"),
+                func.sum(
+                    case((Transaction.base_amount > Decimal("0.0"), Transaction.base_amount), else_=Transaction.amount)
+                ).label("spent"),
             )
             .where(
                 Transaction.user_id == user_id,

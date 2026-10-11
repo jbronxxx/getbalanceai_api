@@ -197,11 +197,18 @@ class AIService:
         """Сформировать текстовую сводку транзакций для передачи в системный промпт LLM."""
         lines = []
         for tx in transactions:
+            tx_curr = getattr(tx, "currency", None) or currency
+            base_amt = getattr(tx, "base_amount", None)
+            if tx_curr != currency and base_amt is not None:
+                amount_str = f"{tx.amount} {tx_curr} (эквивалент: {base_amt} {currency})"
+            else:
+                amount_str = f"{tx.amount} {tx_curr}"
+
             parts = [
                 tx.date.strftime("%Y-%m-%d"),
                 tx.type.value,
                 tx.category.value,
-                f"{tx.amount} {currency}",
+                amount_str,
                 tx.description,
             ]
             lines.append(" | ".join(parts))
