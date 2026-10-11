@@ -18,7 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.exceptions import HTTPException
 
-from app.database import get_db
+from app.database import engine, get_db
 from app.exceptions import AppException, ErrorCode
 from app.limiter import limiter
 from app.routers import auth, budgets, insights, sync, transactions
@@ -65,6 +65,7 @@ async def lifespan(app_instance: FastAPI):
         await cleanup_task
     except asyncio.CancelledError:
         pass
+    await engine.dispose()
     logger.info("Stopping Finance App API")
 
 

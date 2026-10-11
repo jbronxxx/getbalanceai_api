@@ -10,8 +10,23 @@ from config_reader.config_reader import config
 # Убедимся, что драйвер asyncpg используется в URL
 db_url = config.db_url.replace("postgresql://", "postgresql+asyncpg://")
 
+# Базовые параметры пула соединений для устойчивости к обрывам
+engine_kwargs: dict[str, object] = {
+    "pool_pre_ping": config.db_pool_pre_ping,
+    "pool_recycle": config.db_pool_recycle,
+}
+
+if "sqlite" not in db_url:
+    engine_kwargs.update(
+        {
+            "pool_size": config.db_pool_size,
+            "max_overflow": config.db_max_overflow,
+            "pool_timeout": config.db_pool_timeout,
+        }
+    )
+
 # Создание асинхронного движка SQLAlchemy
-engine = create_async_engine(db_url)
+engine = create_async_engine(db_url, **engine_kwargs)
 
 # Фабрика асинхронных сессий
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)

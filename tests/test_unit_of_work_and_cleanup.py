@@ -278,3 +278,11 @@ class TestTokenCleanup:
             mock_cleanup.assert_called_once_with(retention_days=30)
             captured = capsys.readouterr()
             assert "Удалено записей: 5" in captured.out
+
+    def test_database_engine_pool_configuration(self):
+        """Проверка параметров пула соединений SQLAlchemy (pre-ping и pool_recycle)."""
+        from app.database import engine
+
+        pool = engine.pool
+        assert pool._pre_ping is True
+        assert pool._recycle == 1800
