@@ -142,7 +142,7 @@ class TestAIService:
             result = await service.get_insights(uuid.uuid4())
 
         assert isinstance(result, InsightResponse)
-        assert result.insights == ["Добавь первые транзакции, чтобы получить анализ."]
+        assert result.insights == ["Добавьте первые транзакции, чтобы получить анализ."]
         assert result.generated_at.tzinfo == timezone.utc
 
     @pytest.mark.asyncio

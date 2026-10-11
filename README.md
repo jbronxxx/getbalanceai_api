@@ -192,12 +192,22 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 * **ReDoc документация:** [http://localhost:8000/redoc](http://localhost:8000/redoc)
 * **Проверка статуса сервиса:** [http://localhost:8000/health](http://localhost:8000/health)
 
-### Основные API-эндпоинты аутентификации:
-- `POST /api/v1/auth/register` — регистрация пользователя
-- `POST /api/v1/auth/login` — аутентификация и получение пары `access_token` и `refresh_token`
-- `POST /api/v1/auth/refresh` — бессрочное/бесшовное обновление `access_token` с помощью `refresh_token` (механизм Refresh Token Rotation)
-- `POST /api/v1/auth/logout` — выход из системы и отзыв активного токена
-- `GET /api/v1/auth/me` — получение данных текущего авторизованного пользователя
+### Основные API-эндпоинты:
+- **Аутентификация (`/api/v1/auth`):**
+  - `POST /api/v1/auth/register` — регистрация пользователя
+  - `POST /api/v1/auth/login` — аутентификация и получение пары `access_token` и `refresh_token`
+  - `POST /api/v1/auth/refresh` — бессрочное/бесшовное обновление `access_token` с помощью `refresh_token` (механизм Refresh Token Rotation)
+  - `POST /api/v1/auth/logout` — выход из системы и отзыв активного токена
+  - `GET /api/v1/auth/me` — получение данных текущего авторизованного пользователя
+  - `PATCH /api/v1/auth/me` — обновление профиля (имя, аватар, базовая валюта `base_currency`)
+- **Валютные котировки (`/api/v1/currencies`):**
+  - `GET /api/v1/currencies/rates` — актуальный справочник курсов валют (кэширование в Redis)
+- **Операции и Бюджеты:**
+  - `POST /api/v1/transactions/` — добавление транзакции с поддержкой мультивалютности (`currency`, `exchange_rate`, `base_amount`)
+  - `GET /api/v1/transactions/` — список транзакций с курсорной пагинацией и ETag
+  - `GET /api/v1/budgets/` — лимиты бюджетов и подсчет расходов в базовой валюте
+  - `POST /api/v1/sync/` — пакетная офлайн-синхронизация данных
+  - `GET /api/v1/insights/` — финансовая AI-аналитика расходов
 
 ---
 

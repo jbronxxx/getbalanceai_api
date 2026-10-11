@@ -62,6 +62,8 @@ erDiagram
         string email UK
         string hashed_password
         string name
+        string avatar_url
+        string base_currency
         datetime created_at
     }
 
@@ -78,6 +80,9 @@ erDiagram
         uuid id PK
         uuid user_id FK
         numeric amount
+        string currency
+        numeric exchange_rate
+        numeric base_amount
         string description
         enum category
         enum type
@@ -97,16 +102,24 @@ erDiagram
 ```
 
 ### Таблицы:
-* `users`: Пользователи системы (email, хешированный пароль, имя)
+* `users`: Пользователи системы (email, хешированный пароль, имя, аватар `avatar_url`, базовая расчетная валюта `base_currency`)
 * `tokens`: JWT access и refresh токены сессий пользователей с отслеживанием статуса (`active`, `revoked`, `expired`)
-* `transactions`: Финансовые операции (доход/расход с категорией и датой)
+* `transactions`: Финансовые операции (доход/расход с категорией, датой и мультивалютными полями: `amount`, `currency`, `exchange_rate`, `base_amount`)
 * `budgets`: Лимиты расходов по категориям (по месяцам и годам)
 * `alembic_version`: Служебная таблица для отслеживания миграций
 
-### Перечисления и категории (Category & TransactionType):
+### Перечисления и типы (Category, TransactionType, CurrencyCode):
+* **Коды валют (`CurrencyCode`)**: централизованное перечисление поддерживаемых валют системы (`RUB`, `USD`, `EUR`, `KZT`, `UZS`), используемое в моделях, Pydantic-схемах и сервисе котировок.
 Категории разделены на два множества для обеспечения валидности финансовых данных:
 * **Категории доходов (`INCOME_CATEGORIES`)**: `salary` (зарплата), `freelance` (фриланс/подработка), `investments` (инвестиции/вклады), `transfers` (переводы и подарки), `cashback` (кэшбэк и бонусы), `sales` (продажи), `other` (прочее).
 * **Категории расходов (`EXPENSE_CATEGORIES`)**: `food` (продукты и питание), `transport` (транспорт), `entertainment` (развлечения), `health` (здоровье и медицина), `subscriptions` (подписки и сервисы), `shopping` (покупки и одежда), `other` (прочее).
+
+**Мультивалютность и правила конвертации:**
+1. Поле `amount` хранит сумму в оригинальной валюте транзакции (`currency`).
+2. Поле `exchange_rate` определяет курс конвертации к базовой расчетной валюте пользователя (`base_amount = (amount * exchange_rate).quantize(0.01)`).
+3. Все бюджеты и расчеты агрегированных расходов (`spent`) рассчитываются строго по полю `base_amount`.
+4. Справочник котировок обслуживается сервисом `CurrencyService` с кэшированием в Redis (TTL 24 часа) и возвратом резервных значений при сбоях шлюза.
+5. **Автоматический пересчет финансов при смене базовой валюты**: при обновлении `base_currency` через `PATCH /api/v1/auth/me` сервис атомарно пересчитывает курсы и `base_amount` всех существующих транзакций, конвертирует лимиты бюджетов к новой валюте и инвалидирует кэш AI-инсайтов пользователя в Redis.
 
 **Правила валидации:**
 1. При создании или синхронизации транзакций категория строго сопоставляется с типом операции: доходы не могут быть отнесены к сугубо расходным статьям, а расходы — к доходным источникам.
@@ -124,6 +137,7 @@ finance_app/
 │   ├── routers/                # Эндпоинты FastAPI (Контроллеры)
 │   │   ├── auth.py             # Авторизация (/register, /login, /refresh, /logout, /me)
 │   │   ├── budgets.py          # CRUD бюджетов и расчет ETag
+│   │   ├── currencies.py       # Котировки валют (/api/v1/currencies/rates)
 │   │   ├── insights.py         # AI-аналитика расходов (/api/v1/insights)
 │   │   ├── sync.py             # Пакетная офлайн-синхронизация
 │   │   └── transactions.py     # CRUD транзакций и расчет ETag
@@ -133,6 +147,7 @@ finance_app/
 │   │   ├── ai_service.py       # Интеграция с Anthropic Claude и кэширование инсайтов
 │   │   ├── auth_service.py     # Пароли, JWT, ротация и очистка токенов
 │   │   ├── budget_service.py   # Лимиты бюджетов и подсчет расходов
+│   │   ├── currency_service.py # Получение и кэширование котировок валют (Redis, fallback)
 │   │   └── transaction_service.py # Операции с транзакциями и генерация ETag
 │   ├── tasks/                  # Фоновые и регламентные процессы
 │   │   └── token_cleanup.py    # Регламентная очистка устаревших токенов
@@ -152,11 +167,13 @@ finance_app/
 ├── tests/                      # Набор тестов Pytest
 │   ├── conftest.py             # Фикстуры тестов
 │   ├── test_ai_service.py      # Модульные тесты AIService
+│   ├── test_auth.py            # Интеграционные тесты профиля пользователя и базовой валюты
 │   ├── test_auth_service.py    # Модульные и интеграционные тесты аутентификации
 │   ├── test_budget_service.py  # Модульные тесты сервиса бюджетов
 │   ├── test_budgets.py         # Интеграционные тесты эндпоинтов бюджетов
 │   ├── test_errors.py          # Тесты контрактов ошибок
 │   ├── test_fintech_integrity.py # Тесты точности Decimal и индексов БД
+│   ├── test_multi_currency.py  # Тесты мультивалютности и пересчета бюджетов
 │   ├── test_observability.py   # Тесты healthcheck и сквозного Correlation ID
 │   ├── test_security.py        # Тесты CORS, Rate Limiting и сложности паролей
 │   ├── test_sync.py            # Интеграционные тесты офлайн-синхронизации

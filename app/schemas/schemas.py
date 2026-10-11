@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Generic, List, Optional, TypeVar
+from typing import Any, Generic, List, Optional, TypeVar
 
 from pydantic import (
     BaseModel,
@@ -17,7 +17,9 @@ from pydantic import (
 from app.models.models import (
     EXPENSE_CATEGORIES,
     INCOME_CATEGORIES,
+    SUPPORTED_CURRENCIES,
     Category,
+    CurrencyCode,
     TransactionType,
 )
 
@@ -197,6 +199,8 @@ class UserResponse(BaseModel):
         id (uuid.UUID): Уникальный ID пользователя.
         email (str): Email пользователя.
         name (str): Имя пользователя.
+        avatar_url (str | None): URL аватара пользователя.
+        base_currency (str): Основная валюта учета пользователя.
         created_at (datetime): Дата регистрации аккаунта.
     """
 
@@ -206,7 +210,32 @@ class UserResponse(BaseModel):
     email: str = Field(..., description="Email пользователя")
     name: str = Field(..., description="Имя пользователя")
     avatar_url: Optional[str] = Field(default=None, description="URL аватара пользователя")
+    base_currency: str = Field(default=CurrencyCode.RUB.value, description="Основная валюта учета пользователя")
     created_at: datetime = Field(..., description="Дата и время создания аккаунта")
+
+
+class UserUpdateRequest(BaseModel):
+    """Схема запроса на частичное обновление профиля пользователя.
+
+    Атрибуты:
+        name (str | None): Новое имя пользователя.
+        avatar_url (str | None): URL нового аватара.
+        base_currency (str | None): Базовая валюта учета (RUB, USD, EUR, KZT, UZS).
+    """
+
+    name: Optional[str] = Field(default=None, max_length=100, description="Имя пользователя")
+    avatar_url: Optional[str] = Field(default=None, max_length=500, description="URL аватара")
+    base_currency: Optional[str] = Field(default=None, max_length=10, description="Основная валюта учета")
+
+    @field_validator("base_currency")
+    @classmethod
+    def validate_base_currency(cls, v: Optional[str]) -> Optional[str]:
+        """Проверить, что код валюты входит в список разрешенных."""
+        if v is not None:
+            v = v.upper().strip()
+            if v not in SUPPORTED_CURRENCIES:
+                raise ValueError(f"Валюта {v} не поддерживается. Разрешены: {set(SUPPORTED_CURRENCIES)}")
+        return v
 
 
 # ============================================================================
@@ -219,6 +248,9 @@ class TransactionCreate(BaseModel):
 
     Атрибуты:
         amount (Decimal): Сумма операции (> 0).
+        currency (str): Код валюты операции (RUB, UZS, USD и др.).
+        exchange_rate (Decimal): Курс к базовой валюте.
+        base_amount (Decimal | None): Сумма в базовой валюте.
         description (str): Описание операции.
         category (Category): Категория транзакции.
         type (TransactionType): Тип транзакции (income / expense).
@@ -226,10 +258,25 @@ class TransactionCreate(BaseModel):
     """
 
     amount: Decimal = Field(..., gt=Decimal("0"), description="Сумма операции (должна быть больше 0)")
+    currency: str = Field(default="RUB", min_length=3, max_length=10, description="Код валюты операции (e.g. RUB, UZS, USD)")
+    exchange_rate: Decimal = Field(
+        default=Decimal("1.0"), gt=Decimal("0"), le=Decimal("1000000000"), description="Курс валюты к базовой"
+    )
+    base_amount: Optional[Decimal] = Field(default=None, gt=Decimal("0"), description="Сумма в базовой валюте")
     description: str = Field(..., min_length=1, max_length=255, description="Описание или назначение платежа")
     category: Category = Field(..., description="Категория операции")
     type: TransactionType = Field(..., description="Тип операции: income (доход) или expense (расход)")
     date: datetime | None = Field(default=None, description="Дата транзакции (по умолчанию текущая)")
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency(cls, v: Any) -> str:
+        """Нормализовать код валюты к верхнему регистру без пробелов."""
+        if isinstance(v, str):
+            code = v.strip().upper()
+            if code:
+                return code
+        return "RUB" if v is None else str(v)
 
     @model_validator(mode="after")
     def validate_category_type_compatibility(self) -> "TransactionCreate":
@@ -253,6 +300,9 @@ class TransactionResponse(BaseModel):
     Атрибуты:
         id (uuid.UUID): Уникальный идентификатор транзакции.
         amount (Decimal): Сумма операции.
+        currency (str): Код валюты операции.
+        exchange_rate (Decimal): Курс к базовой валюте.
+        base_amount (Decimal): Сумма в базовой валюте.
         description (str): Описание транзакции.
         category (Category): Категория.
         type (TransactionType): Тип (income / expense).
@@ -264,6 +314,9 @@ class TransactionResponse(BaseModel):
 
     id: uuid.UUID = Field(..., description="ID транзакции")
     amount: Decimal = Field(..., description="Сумма транзакции")
+    currency: str = Field(default="RUB", description="Код валюты операции")
+    exchange_rate: Decimal = Field(default=Decimal("1.0"), description="Курс валюты к базовой валюте")
+    base_amount: Decimal = Field(..., description="Сумма в базовой валюте")
     description: str = Field(..., description="Описание транзакции")
     category: Category = Field(..., description="Категория транзакции")
     type: TransactionType = Field(..., description="Тип операции")
@@ -343,8 +396,23 @@ class TransactionSyncItem(BaseModel):
     type: TransactionType = Field(..., description="Тип операции")
     category: Category = Field(..., description="Категория")
     amount: Decimal = Field(..., gt=Decimal("0"), description="Сумма")
+    currency: Optional[str] = Field(default="RUB", min_length=3, max_length=10, description="Код валюты операции")
+    exchange_rate: Optional[Decimal] = Field(
+        default=Decimal("1.0"), gt=Decimal("0"), le=Decimal("1000000000"), description="Курс валюты к базовой"
+    )
+    base_amount: Optional[Decimal] = Field(default=None, gt=Decimal("0"), description="Сумма в базовой валюте")
     date: datetime = Field(..., description="Дата и время")
     description: str = Field(..., description="Описание")
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency(cls, v: Any) -> str:
+        """Нормализовать код валюты к верхнему регистру без пробелов."""
+        if isinstance(v, str):
+            code = v.strip().upper()
+            if code:
+                return code
+        return "RUB" if v is None else str(v)
 
     @model_validator(mode="after")
     def validate_category_type_compatibility(self) -> "TransactionSyncItem":
@@ -426,3 +494,16 @@ class InsightResponse(BaseModel):
 
     insights: list[str] = Field(..., description="Список аналитических советов и выводов")
     generated_at: datetime = Field(..., description="Дата и время формирования аналитики")
+
+
+# ============================================================================
+# Схемы котировок валют
+# ============================================================================
+
+
+class CurrencyRatesResponse(BaseModel):
+    """Схема ответа со справочником актуальных курсов валют."""
+
+    base: str = Field(default="USD", description="Базовая валюта котировок")
+    rates: dict[str, Decimal] = Field(..., description="Словарь курсов валют к базовой (USD, EUR, RUB, UZS, KZT)")
+    updated_at: datetime = Field(..., description="Дата и время актуализации котировок")
