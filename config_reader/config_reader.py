@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     google_client_id: str | None = Field(None, alias="GOOGLE_CLIENT_ID")
     apple_client_id: str | None = Field(None, alias="APPLE_CLIENT_ID")
 
+    currency_rates_url: str = Field("https://open.er-api.com/v6/latest/USD", alias="CURRENCY_RATES_URL")
+    currency_rates_cache_ttl: int = Field(86400, alias="CURRENCY_RATES_CACHE_TTL")
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

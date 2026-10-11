@@ -95,7 +95,10 @@ async def auth_headers(auth_token: str) -> dict[str, str]:
 
 @pytest.fixture(autouse=True)
 def mock_redis_client():
-    """Фикстура для подмены redis_client в AIService на FakeAsyncRedis."""
+    """Фикстура для подмены redis_client в сервисах на FakeAsyncRedis."""
     fake_redis = fakeredis.FakeAsyncRedis(decode_responses=True)
-    with patch("app.services.ai_service.redis_client", fake_redis):
+    with (
+        patch("app.services.ai_service.redis_client", fake_redis),
+        patch("app.services.currency_service.redis_client", fake_redis),
+    ):
         yield fake_redis

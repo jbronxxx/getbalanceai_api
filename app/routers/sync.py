@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, status
 from sqlalchemy import delete, select
@@ -73,9 +74,18 @@ async def sync_data(
 
         for item in payload.transactions:
             logger.debug(f"Синхронизация транзакции: {item}")
+            curr = (item.currency or "RUB").strip().upper()
+            rate = item.exchange_rate or Decimal("1.0")
+            if item.base_amount is not None:
+                base_amt = item.base_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            else:
+                base_amt = (item.amount * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             if item.id and item.id in existing_txs_map:
                 db_transaction = existing_txs_map[item.id]
                 db_transaction.amount = item.amount
+                db_transaction.currency = curr
+                db_transaction.exchange_rate = rate
+                db_transaction.base_amount = base_amt
                 db_transaction.description = item.description
                 db_transaction.category = item.category
                 db_transaction.type = item.type
@@ -85,6 +95,9 @@ async def sync_data(
                     id=item.id or uuid.uuid4(),
                     user_id=user_id,
                     amount=item.amount,
+                    currency=curr,
+                    exchange_rate=rate,
+                    base_amount=base_amt,
                     description=item.description,
                     category=item.category,
                     type=item.type,

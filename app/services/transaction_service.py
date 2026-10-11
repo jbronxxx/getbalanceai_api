@@ -5,6 +5,7 @@ import hashlib
 import json
 import uuid
 from datetime import datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,9 +31,19 @@ class TransactionService:
 
     async def create(self, user_id: uuid.UUID, payload: TransactionCreate) -> Transaction:
         """Создать новую транзакцию (доход или расход) для пользователя."""
+        rate = payload.exchange_rate or Decimal("1.0")
+        if payload.base_amount is not None:
+            base_amt = payload.base_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        else:
+            base_amt = (payload.amount * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        curr = (payload.currency or "RUB").strip().upper()
+
         tx = Transaction(
             user_id=user_id,
             amount=payload.amount,
+            currency=curr,
+            exchange_rate=rate,
+            base_amount=base_amt,
             description=payload.description,
             category=payload.category,
             type=payload.type,

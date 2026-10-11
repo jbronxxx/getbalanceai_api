@@ -18,6 +18,7 @@ from app.schemas.schemas import (
     UserLogin,
     UserRegister,
     UserResponse,
+    UserUpdateRequest,
 )
 from app.services.auth_service import AuthService, get_current_user
 
@@ -137,6 +138,22 @@ async def auth_me(
 ) -> dict[str, str | User]:
     """Получить информацию о текущем пользователе."""
     return {"status": "success", "data": current_user}
+
+
+@router.patch(
+    "/me",
+    response_model=ApiResponse[UserResponse],
+    summary="Обновление профиля текущего пользователя",
+)
+async def update_me(
+    payload: UserUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, str | User]:
+    """Обновить профиль пользователя (имя, аватар, базовая валюта)."""
+    service = AuthService(db)
+    updated_user = await service.update_profile(current_user.id, payload)
+    return {"status": "success", "data": updated_user}
 
 
 @router.delete(

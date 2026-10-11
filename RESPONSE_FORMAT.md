@@ -48,6 +48,24 @@ API использует единообразный формат ответов 
     "id": "550e8400-e29b-41d4-a716-446655440000",
     "email": "user@example.com",
     "name": "John Doe",
+    "avatar_url": null,
+    "base_currency": "RUB",
+    "created_at": "2026-09-10T10:30:00Z"
+  }
+}
+```
+
+#### Обновление профиля пользователя (PATCH /api/v1/auth/me)
+
+```json
+{
+  "status": "success",
+  "data": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "email": "user@example.com",
+    "name": "John Doe",
+    "avatar_url": "https://example.com/avatar.png",
+    "base_currency": "UZS",
     "created_at": "2026-09-10T10:30:00Z"
   }
 }
@@ -61,11 +79,33 @@ API использует единообразный формат ответов 
   "data": {
     "id": "550e8400-e29b-41d4-a716-446655440001",
     "amount": 1500.50,
+    "currency": "RUB",
+    "exchange_rate": 1.0,
+    "base_amount": 1500.50,
     "description": "Зарплата",
-    "category": "income",
+    "category": "salary",
     "type": "income",
     "date": "2026-09-10T10:00:00Z",
     "created_at": "2026-09-10T10:30:00Z"
+  }
+}
+```
+
+#### Котировки валют (GET /api/v1/currencies/rates)
+
+```json
+{
+  "status": "success",
+  "data": {
+    "base": "USD",
+    "rates": {
+      "USD": 1.0,
+      "EUR": 0.92,
+      "RUB": 96.5,
+      "UZS": 12850.0,
+      "KZT": 490.0
+    },
+    "updated_at": "2026-10-11T19:00:00Z"
   }
 }
 ```
