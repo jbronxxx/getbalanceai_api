@@ -293,3 +293,80 @@ class TestAIService:
 
         await AIService.clear_cache()
         assert await redis_client.get(f"insights_cache:{u2}") is None
+
+    @pytest.mark.asyncio
+    async def test_get_insights_resilient_to_redis_read_failure(self):
+        """При сбое чтения из Redis сервис продолжает работу и запрашивает инсайты у LLM."""
+        tx1 = MagicMock(spec=Transaction)
+        tx1.date = datetime(2026, 10, 1, 12, 0)
+        tx1.type = TransactionType.expense
+        tx1.category = Category.food
+        tx1.amount = 1200.0
+        tx1.description = "Супермаркет"
+
+        mock_db = MagicMock()
+        mock_count_result = MagicMock()
+        mock_count_result.scalar_one.return_value = 5
+        mock_tx_result = MagicMock()
+        mock_tx_result.scalars.return_value.all.return_value = [tx1]
+        mock_db.execute = AsyncMock(side_effect=[mock_count_result, mock_tx_result])
+
+        mock_client = MagicMock(spec=genai.Client)
+        mock_response = MagicMock()
+        mock_response.text = '{"insights": ["Совет без кэша"]}'
+        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+
+        service = AIService(db=mock_db, client=mock_client)
+
+        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
+            with patch(
+                "app.services.ai_service.redis_client.get", AsyncMock(side_effect=Exception("Redis connection refused"))
+            ):
+                result = await service.get_insights(uuid.uuid4())
+
+        assert isinstance(result, InsightResponse)
+        assert result.insights == ["Совет без кэша"]
+        mock_client.aio.models.generate_content.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_insights_resilient_to_redis_write_failure(self):
+        """При сбое сохранения в Redis результат генерации успешно возвращается клиенту."""
+        tx1 = MagicMock(spec=Transaction)
+        tx1.date = datetime(2026, 10, 1, 12, 0)
+        tx1.type = TransactionType.expense
+        tx1.category = Category.food
+        tx1.amount = 500.0
+        tx1.description = "Обед"
+
+        mock_db = MagicMock()
+        mock_count_result = MagicMock()
+        mock_count_result.scalar_one.return_value = 1
+        mock_tx_result = MagicMock()
+        mock_tx_result.scalars.return_value.all.return_value = [tx1]
+        mock_db.execute = AsyncMock(side_effect=[mock_count_result, mock_tx_result])
+
+        mock_client = MagicMock(spec=genai.Client)
+        mock_response = MagicMock()
+        mock_response.text = '{"insights": ["Совет при сбое записи кэша"]}'
+        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+
+        service = AIService(db=mock_db, client=mock_client)
+
+        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
+            with patch("app.services.ai_service.redis_client.get", AsyncMock(return_value=None)):
+                with patch(
+                    "app.services.ai_service.redis_client.setex", AsyncMock(side_effect=Exception("Redis write error"))
+                ):
+                    result = await service.get_insights(uuid.uuid4())
+
+        assert isinstance(result, InsightResponse)
+        assert result.insights == ["Совет при сбое записи кэша"]
+
+    @pytest.mark.asyncio
+    async def test_invalidate_and_clear_cache_resilient_to_redis_failure(self):
+        """Проверка безопасной обработки ошибок при недоступности Redis в методах очистки."""
+        with patch("app.services.ai_service.redis_client.keys", AsyncMock(side_effect=Exception("Redis keys error"))):
+            await AIService.invalidate_cache(uuid.uuid4())
+
+        with patch("app.services.ai_service.redis_client.flushdb", AsyncMock(side_effect=Exception("Redis flushdb error"))):
+            await AIService.clear_cache()

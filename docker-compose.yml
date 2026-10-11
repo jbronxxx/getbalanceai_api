@@ -12,8 +12,12 @@ services:
       - .:/app
     env_file:
       - .env
+    environment:
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: unless-stopped
 

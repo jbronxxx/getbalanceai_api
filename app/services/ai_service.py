@@ -46,17 +46,23 @@ class AIService:
     @classmethod
     async def invalidate_cache(cls, user_id: uuid.UUID) -> None:
         """Инвалидировать кэш инсайтов для конкретного пользователя."""
-        keys = await redis_client.keys(f"insights_cache:{user_id}*")
-        if keys:
-            await redis_client.delete(*keys)
-        count_keys = await redis_client.keys(f"insights_tx_count:{user_id}*")
-        if count_keys:
-            await redis_client.delete(*count_keys)
+        try:
+            keys = await redis_client.keys(f"insights_cache:{user_id}*")
+            if keys:
+                await redis_client.delete(*keys)
+            count_keys = await redis_client.keys(f"insights_tx_count:{user_id}*")
+            if count_keys:
+                await redis_client.delete(*count_keys)
+        except Exception as err:
+            logger.warning(f"Ошибка инвалидации кэша Redis для пользователя {user_id}: {err}")
 
     @classmethod
     async def clear_cache(cls) -> None:
         """Очистить весь кэш инсайтов."""
-        await redis_client.flushdb()
+        try:
+            await redis_client.flushdb()
+        except Exception as err:
+            logger.warning(f"Ошибка полной очистки кэша Redis: {err}")
 
     @staticmethod
     def _extract_json(text: str) -> dict:
@@ -117,8 +123,13 @@ class AIService:
         cache_key = f"insights_cache:{user_id}:{locale}:{currency}"
         count_key = f"insights_tx_count:{user_id}:{locale}:{currency}"
 
-        cached_data_str = await redis_client.get(cache_key)
-        last_tx_count_str = await redis_client.get(count_key)
+        cached_data_str = None
+        last_tx_count_str = None
+        try:
+            cached_data_str = await redis_client.get(cache_key)
+            last_tx_count_str = await redis_client.get(count_key)
+        except Exception as err:
+            logger.warning(f"Не удалось прочитать кэш инсайтов из Redis для пользователя {user_id}: {err}")
 
         # Порог накопления транзакций для обновления рекомендаций
         THRESHOLD = 5
@@ -148,14 +159,17 @@ class AIService:
             insights = await self._call_gemini(summary, locale, currency)
             response = InsightResponse(insights=insights, generated_at=datetime.now(timezone.utc))
 
-            cache_val = json.dumps(
-                {
-                    "insights": insights,
-                    "generated_at": response.generated_at.isoformat(),
-                }
-            )
-            await redis_client.setex(cache_key, 7 * 86400, cache_val)
-            await redis_client.setex(count_key, 7 * 86400, str(total_tx_count))
+            try:
+                cache_val = json.dumps(
+                    {
+                        "insights": insights,
+                        "generated_at": response.generated_at.isoformat(),
+                    }
+                )
+                await redis_client.setex(cache_key, 7 * 86400, cache_val)
+                await redis_client.setex(count_key, 7 * 86400, str(total_tx_count))
+            except Exception as err:
+                logger.warning(f"Не удалось записать кэш инсайтов в Redis для пользователя {user_id}: {err}")
 
             return response
         except Exception as e:
