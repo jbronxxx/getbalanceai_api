@@ -1,9 +1,15 @@
 """Интеграционные тесты эндпоинтов профиля и управления пользователем."""
 
+from datetime import datetime, timezone
+from decimal import Decimal
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from httpx import AsyncClient
 
 from app.models.models import User
+from app.schemas.schemas import CurrencyRatesResponse
+from app.services.currency_service import CurrencyService
 
 
 class TestUserProfileAndBaseCurrency:
@@ -90,3 +96,66 @@ class TestUserProfileAndBaseCurrency:
         data = insights_res.json()
         assert data["status"] == "success"
         assert "insights" in data["data"]
+
+    @pytest.mark.asyncio
+    async def test_patch_me_recalculates_transactions_and_budgets(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Смена base_currency пересчитывает exchange_rate и base_amount транзакций и limit_amount бюджетов."""
+        # 1. Создаем транзакцию в RUB
+        tx_payload = {
+            "amount": "960.00",
+            "currency": "RUB",
+            "description": "Продукты",
+            "category": "food",
+            "type": "expense",
+        }
+        tx_res = await client.post("/api/v1/transactions/", json=tx_payload, headers=auth_headers)
+        assert tx_res.status_code == 201
+        tx_data = tx_res.json()["data"]
+        assert float(tx_data["base_amount"]) == 960.00
+
+        # 2. Создаем бюджет в RUB
+        budget_payload = {
+            "category": "food",
+            "limit_amount": "9600.00",
+            "month": 10,
+            "year": 2026,
+        }
+        b_res = await client.post("/api/v1/budgets/", json=budget_payload, headers=auth_headers)
+        assert b_res.status_code == 201
+
+        # Фиксируем котировки через мок CurrencyService.get_rates
+        mock_response = CurrencyRatesResponse(
+            base="USD",
+            rates={
+                "USD": Decimal("1.0"),
+                "EUR": Decimal("0.92"),
+                "RUB": Decimal("96.0"),
+                "UZS": Decimal("12800.0"),
+                "KZT": Decimal("495.0"),
+            },
+            updated_at=datetime.now(timezone.utc),
+        )
+        with patch.object(CurrencyService, "get_rates", new_callable=AsyncMock, return_value=mock_response):
+            # 3. Меняем базовую валюту на USD через PATCH /api/v1/auth/me
+            patch_res = await client.patch("/api/v1/auth/me", json={"base_currency": "USD"}, headers=auth_headers)
+            assert patch_res.status_code == 200
+            assert patch_res.json()["data"]["base_currency"] == "USD"
+
+            # 4. Проверяем, что транзакция пересчиталась в USD:
+            # 960 RUB по курсу к USD (1.0 / 96.0) = 10.00 USD
+            tx_list_res = await client.get("/api/v1/transactions/", headers=auth_headers)
+            assert tx_list_res.status_code == 200
+            items = tx_list_res.json()["data"]["items"]
+            assert len(items) >= 1
+            updated_tx = next(item for item in items if item["id"] == tx_data["id"])
+            assert float(updated_tx["base_amount"]) == 10.00
+
+            # 5. Проверяем, что бюджет пересчитался в USD:
+            # 9600 RUB по курсу к USD (1.0 / 96.0) = 100.00 USD
+            b_list_res = await client.get("/api/v1/budgets/?month=10&year=2026", headers=auth_headers)
+            assert b_list_res.status_code == 200
+            budgets = b_list_res.json()["data"]
+            assert len(budgets) >= 1
+            updated_b = next(b for b in budgets if b["category"] == "food")
+            assert float(updated_b["limit_amount"]) == 100.00
+            assert float(updated_b["spent"]) == 10.00

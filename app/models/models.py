@@ -66,6 +66,19 @@ EXPENSE_CATEGORIES: set[Category] = {
 }
 
 
+class CurrencyCode(str, enum.Enum):
+    """Поддерживаемые валюты системы."""
+
+    RUB = "RUB"
+    USD = "USD"
+    EUR = "EUR"
+    KZT = "KZT"
+    UZS = "UZS"
+
+
+SUPPORTED_CURRENCIES: tuple[str, ...] = tuple(c.value for c in CurrencyCode)
+
+
 class User(Base):
     """ORM-модель пользователя системы.
 
@@ -92,8 +105,8 @@ class User(Base):
     avatar_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     base_currency: Mapped[str] = mapped_column(
         String(10),
-        default="RUB",
-        server_default="RUB",
+        default=CurrencyCode.RUB.value,
+        server_default=CurrencyCode.RUB.value,
         nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

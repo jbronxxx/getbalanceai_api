@@ -8,6 +8,7 @@ from decimal import Decimal
 import httpx
 from redis import asyncio as aioredis
 
+from app.models.models import SUPPORTED_CURRENCIES, CurrencyCode
 from app.schemas.schemas import CurrencyRatesResponse
 from config_reader.config_reader import config
 from logger.logger import get_logger
@@ -16,14 +17,13 @@ logger = get_logger(__name__)
 
 # Резервная таблица курсов к USD на случай сбоя внешнего шлюза или отсутствия сети
 FALLBACK_RATES: dict[str, Decimal] = {
-    "USD": Decimal("1.0"),
-    "EUR": Decimal("0.92"),
-    "RUB": Decimal("96.0"),
-    "UZS": Decimal("12800.0"),
-    "KZT": Decimal("495.0"),
+    CurrencyCode.USD.value: Decimal("1.0"),
+    CurrencyCode.EUR.value: Decimal("0.92"),
+    CurrencyCode.RUB.value: Decimal("96.0"),
+    CurrencyCode.UZS.value: Decimal("12800.0"),
+    CurrencyCode.KZT.value: Decimal("495.0"),
 }
 
-SUPPORTED_CURRENCIES = ("USD", "EUR", "RUB", "UZS", "KZT")
 CACHE_TTL_SECONDS = config.currency_rates_cache_ttl
 REDIS_CACHE_KEY = "currency_rates:USD"
 

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Union
 
 import bcrypt
@@ -22,7 +23,7 @@ from app.exceptions import (
     NotFoundException,
     UnauthorizedException,
 )
-from app.models.models import Token, User
+from app.models.models import Budget, Token, Transaction, User
 from app.schemas.schemas import (
     AppleSignInRequest,
     GoogleSignInRequest,
@@ -31,6 +32,7 @@ from app.schemas.schemas import (
     UserRegister,
     UserUpdateRequest,
 )
+from app.services.currency_service import FALLBACK_RATES, CurrencyService
 from config_reader.config_reader import config
 from logger.logger import get_logger
 
@@ -98,12 +100,85 @@ class AuthService:
         if payload.avatar_url is not None:
             user.avatar_url = payload.avatar_url.strip() if payload.avatar_url else None
         if payload.base_currency is not None:
-            user.base_currency = payload.base_currency.strip().upper()
+            new_currency = payload.base_currency.strip().upper()
+            old_currency = user.base_currency or "RUB"
+            if new_currency != old_currency:
+                user.base_currency = new_currency
+                await self._recalculate_user_finances(
+                    user_id=user.id,
+                    old_currency=old_currency,
+                    new_currency=new_currency,
+                )
 
         await self.db.flush()
         await self.db.refresh(user)
         logger.info(f"Профиль пользователя {user_id} успешно обновлен")
         return user
+
+    async def _recalculate_user_finances(
+        self,
+        user_id: uuid.UUID,
+        old_currency: str,
+        new_currency: str,
+    ) -> None:
+        """Пересчитать базовые суммы транзакций и лимиты бюджетов при смене базовой валюты пользователя.
+
+        Аргументы:
+            user_id (uuid.UUID): Идентификатор пользователя.
+            old_currency (str): Предыдущая базовая валюта (например, 'RUB').
+            new_currency (str): Новая базовая валюта (например, 'USD').
+        """
+        logger.info(
+            f"Запущен пересчет финансов пользователя {user_id} в связи со сменой базовой валюты: "
+            f"{old_currency} -> {new_currency}"
+        )
+        currency_service = CurrencyService()
+        rates_response = await currency_service.get_rates()
+        rates = rates_response.rates
+
+        def _get_cross_rate(from_curr: str, to_curr: str) -> Decimal:
+            if from_curr == to_curr:
+                return Decimal("1.0")
+            from_usd_rate = rates.get(from_curr) or FALLBACK_RATES.get(from_curr, Decimal("1.0"))
+            to_usd_rate = rates.get(to_curr) or FALLBACK_RATES.get(to_curr, Decimal("1.0"))
+            if from_usd_rate <= Decimal("0"):
+                return Decimal("1.0")
+            return to_usd_rate / from_usd_rate
+
+        # 1. Пересчет существующих транзакций пользователя
+        tx_query = select(Transaction).where(Transaction.user_id == user_id)
+        tx_res = await self.db.execute(tx_query)
+        transactions = list(tx_res.scalars().all())
+
+        for tx in transactions:
+            tx_currency = (tx.currency or old_currency).strip().upper()
+            new_exchange_rate = _get_cross_rate(tx_currency, new_currency)
+            tx.exchange_rate = new_exchange_rate
+            tx.base_amount = (tx.amount * new_exchange_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        # 2. Пересчет лимитов бюджетов пользователя (бюджеты ведутся в базовой валюте)
+        budget_query = select(Budget).where(Budget.user_id == user_id)
+        budget_res = await self.db.execute(budget_query)
+        budgets = list(budget_res.scalars().all())
+
+        budget_rate = _get_cross_rate(old_currency, new_currency)
+        for budget in budgets:
+            budget.limit_amount = (budget.limit_amount * budget_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        logger.info(
+            f"Успешно пересчитано {len(transactions)} транзакций и {len(budgets)} бюджетов для пользователя {user_id}"
+        )
+
+        # 3. Инвалидация кэша инсайтов AI в Redis
+        try:
+            from app.services.ai_service import redis_client
+
+            keys = await redis_client.keys(f"insights_*:{user_id}:*")
+            if keys:
+                await redis_client.delete(*keys)
+                logger.info(f"Инвалидировано {len(keys)} ключей кэша инсайтов для пользователя {user_id}")
+        except Exception as err:
+            logger.warning(f"Не удалось инвалидировать кэш инсайтов в Redis при смене валюты: {err}")
 
     async def login(self, payload: UserLogin) -> TokenResponse:
         """Аутентифицировать пользователя и выдать JWT access и refresh токены."""

@@ -17,7 +17,9 @@ from pydantic import (
 from app.models.models import (
     EXPENSE_CATEGORIES,
     INCOME_CATEGORIES,
+    SUPPORTED_CURRENCIES,
     Category,
+    CurrencyCode,
     TransactionType,
 )
 
@@ -208,7 +210,7 @@ class UserResponse(BaseModel):
     email: str = Field(..., description="Email пользователя")
     name: str = Field(..., description="Имя пользователя")
     avatar_url: Optional[str] = Field(default=None, description="URL аватара пользователя")
-    base_currency: str = Field(default="RUB", description="Основная валюта учета пользователя")
+    base_currency: str = Field(default=CurrencyCode.RUB.value, description="Основная валюта учета пользователя")
     created_at: datetime = Field(..., description="Дата и время создания аккаунта")
 
 
@@ -231,9 +233,8 @@ class UserUpdateRequest(BaseModel):
         """Проверить, что код валюты входит в список разрешенных."""
         if v is not None:
             v = v.upper().strip()
-            allowed = {"RUB", "USD", "EUR", "KZT", "UZS"}
-            if v not in allowed:
-                raise ValueError(f"Валюта {v} не поддерживается. Разрешены: {sorted(allowed)}")
+            if v not in SUPPORTED_CURRENCIES:
+                raise ValueError(f"Валюта {v} не поддерживается. Разрешены: {set(SUPPORTED_CURRENCIES)}")
         return v
 
 

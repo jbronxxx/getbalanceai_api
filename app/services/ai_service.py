@@ -111,7 +111,7 @@ class AIService:
 
         if total_tx_count == 0:
             empty_msg = {
-                "ru": "Добавь первые транзакции, чтобы получить анализ.",
+                "ru": "Добавьте первые транзакции, чтобы получить анализ.",
                 "uz": "Tahlil olish uchun birinchi tranzaksiyalarni qo'shing.",
                 "en": "Add your first transactions to get an analysis.",
             }
