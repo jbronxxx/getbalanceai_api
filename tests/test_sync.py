@@ -661,3 +661,89 @@ class TestSyncEndpointIntegration:
         db_session.expire_all()
         remaining = (await db_session.execute(select(Budget).where(Budget.user_id == user_id))).scalars().all()
         assert len(remaining) == 0
+
+    @pytest.mark.asyncio
+    async def test_sync_batch_delete_transactions_idempotent(
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, str],
+        db_session: AsyncSession,
+        test_user: User,
+    ):
+        """Пакетное удаление транзакций через deleted_transaction_ids идемпотентно и изолировано."""
+        user_id = test_user.id
+        alien_user_id = uuid.uuid4()
+        alien_user = User(
+            id=alien_user_id,
+            email=f"alien_{alien_user_id.hex[:6]}@example.com",
+            name="Alien",
+            hashed_password="pwd",
+        )
+        db_session.add(alien_user)
+
+        tx1_id = uuid.uuid4()
+        tx2_id = uuid.uuid4()
+        alien_tx_id = uuid.uuid4()
+
+        tx1 = Transaction(
+            id=tx1_id,
+            user_id=user_id,
+            amount=Decimal("100.00"),
+            currency="RUB",
+            exchange_rate=Decimal("1.0"),
+            base_amount=Decimal("100.00"),
+            description="Своя транзакция 1",
+            category=Category.food,
+            type=TransactionType.expense,
+            date=datetime.now(timezone.utc),
+        )
+        tx2 = Transaction(
+            id=tx2_id,
+            user_id=user_id,
+            amount=Decimal("200.00"),
+            currency="RUB",
+            exchange_rate=Decimal("1.0"),
+            base_amount=Decimal("200.00"),
+            description="Своя транзакция 2",
+            category=Category.transport,
+            type=TransactionType.expense,
+            date=datetime.now(timezone.utc),
+        )
+        alien_tx = Transaction(
+            id=alien_tx_id,
+            user_id=alien_user_id,
+            amount=Decimal("500.00"),
+            currency="RUB",
+            exchange_rate=Decimal("1.0"),
+            base_amount=Decimal("500.00"),
+            description="Чужая транзакция",
+            category=Category.entertainment,
+            type=TransactionType.expense,
+            date=datetime.now(timezone.utc),
+        )
+        db_session.add_all([tx1, tx2, alien_tx])
+        await db_session.commit()
+
+        # 1. Запрос синхронизации с удалением своих ID, чужого ID и несуществующего ID
+        non_existent_id = uuid.uuid4()
+        payload = {
+            "transactions": [],
+            "budgets": [],
+            "deleted_transaction_ids": [str(tx1_id), str(tx2_id), str(alien_tx_id), str(non_existent_id)],
+        }
+        res1 = await client.post("/api/v1/sync/", json=payload, headers=auth_headers)
+        assert res1.status_code == 200
+
+        # Свои транзакции удалены, чужая транзакция осталась в БД
+        db_session.expire_all()
+        user_txs = (await db_session.execute(select(Transaction).where(Transaction.user_id == user_id))).scalars().all()
+        assert len(user_txs) == 0
+
+        alien_remains = (
+            await db_session.execute(select(Transaction).where(Transaction.id == alien_tx_id))
+        ).scalar_one_or_none()
+        assert alien_remains is not None
+
+        # 2. Повторный запрос идемпотентно завершается успехом (200 OK)
+        res2 = await client.post("/api/v1/sync/", json=payload, headers=auth_headers)
+        assert res2.status_code == 200

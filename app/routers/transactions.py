@@ -58,25 +58,35 @@ async def create_transaction(
     summary="Получить список транзакций",
 )
 async def list_transactions(
+    response: Response,
     limit: int = Query(50, ge=1, le=100, description="Количество транзакций на странице (макс. 100)"),
     cursor: str | None = Query(None, description="Курсор для получения следующей страницы"),
     since: datetime | None = None,
     if_none_match: str | None = Header(None, alias="If-None-Match"),
-    response: Response = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Получить пагинированный список транзакций пользователя с поддержкой ETag-кэширования."""
+    """Получить пагинированный список транзакций пользователя с поддержкой ETag-кэширования.
+
+    ETag рассчитывается по всей коллекции пользователя без привязки к параметрам limit и cursor.
+    Заголовок ETag и проверка If-None-Match применяются только к первой странице (когда cursor не передан).
+    При пагинации (cursor передан) проверка If-None-Match игнорируется и статус 304 не возвращается.
+    """
     service = TransactionService(db)
 
-    current_etag = await service.get_etag(current_user.id, since=since, limit=limit, cursor=cursor)
+    if cursor is None:
+        current_etag = await service.get_etag(current_user.id, since=since)
 
-    if if_none_match and if_none_match.strip('"') == current_etag:
-        return Response(status_code=status.HTTP_304_NOT_MODIFIED)
+        if if_none_match:
+            client_etags = [tag.strip().removeprefix("W/").strip('"') for tag in if_none_match.split(",")]
+            if current_etag in client_etags or "*" in client_etags:
+                not_modified_resp = Response(status_code=status.HTTP_304_NOT_MODIFIED)
+                not_modified_resp.headers["ETag"] = f'"{current_etag}"'
+                return not_modified_resp
+
+        response.headers["ETag"] = f'"{current_etag}"'
 
     items, has_more, next_cursor = await service.get_all(current_user.id, since=since, limit=limit, cursor=cursor)
-    if response:
-        response.headers["ETag"] = f'"{current_etag}"'
 
     return {
         "status": "success",

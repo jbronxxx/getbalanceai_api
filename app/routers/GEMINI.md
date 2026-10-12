@@ -1,39 +1,11 @@
-# Регламент слоя контроллеров (app/routers/GEMINI.md)
+# Правила роутеров (app/routers/)
 
-Данные правила применяются при разработке и рефакторинге API-эндпоинтов в директории `app/routers/`.
-
----
-
-## 1. Назначение слоя Routers
-
-Слой маршрутизаторов отвечает **исключительно** за прием HTTP-запросов, извлечение параметров, проверку прав и передачу управления в слой сервисов (`app/services/`).
-
-### Строгие запреты:
-* **Запрещены прямые запросы к БД**: никаких `await db.execute(select(...))` или вызовов ORM внутри роутеров. Все операции с данными выполняются через сервисы.
-* **Запрещена бизнес-логика**: расчет балансов, фильтрация данных, криптографические операции и вызовы сторонних API выносятся в сервисный слой.
-
----
-
-## 2. Стандарты оформления эндпоинтов
-
-* **Контракты ответов (RESPONSE_FORMAT.md)**:
-  * Все успешные ответы оборачиваются в `ApiResponse[T]`: `{"status": "success", "data": ...}`.
-  * Пагинированные ответы оборачиваются в `ApiResponse[PaginatedResponse[T]]`.
-  * Явно указывать `response_model` и `status_code` в декораторе маршрута:
-    ```python
-    @router.post(
-        "/",
-        response_model=ApiResponse[ItemResponse],
-        status_code=status.HTTP_201_CREATED,
-        summary="Краткое описание действия",
-    )
-    ```
-* **OpenAPI / Swagger документация**:
-  * Каждый роутер объявляет словарь стандартных ошибок в `APIRouter(responses={...})`.
-  * Каждый эндпоинт снабжается понятным `summary` и docstring с описанием на русском языке.
-  * Параметры пути (`Path`) и запроса (`Query`) должны содержать ограничения (`ge`, `le`, `max_length`) и `description`.
-* **Внедрение зависимостей (DI)**:
-  * Получение сессии БД: `db: AsyncSession = Depends(get_db)`.
-  * Аутентификация: `current_user: User = Depends(get_current_user)`.
-* **Rate Limiting**:
-  * Использовать лимитер `@limiter.limit("X/minute")` на критичных к спаму и брутфорсу ручках (авторизация, тяжелые отчеты, AI инсайты).
+* Только HTTP: приём запроса, параметры, права, передача в сервисы. Без запросов к БД (`db.execute(select(...))`) и бизнес-логики (балансы, фильтрация, крипто, сторонние API) — всё в `app/services/`.
+* Успех — `ApiResponse[T]`; списки — `ApiResponse[PaginatedResponse[T]]`. Явно задавать `response_model`, `status_code`, `summary`:
+  ```python
+  @router.post("/", response_model=ApiResponse[ItemResponse],
+               status_code=status.HTTP_201_CREATED, summary="Краткое описание")
+  ```
+* OpenAPI: `APIRouter(responses={...})` со стандартными ошибками; docstring на русском; `Path`/`Query` с ограничениями (`ge`, `le`, `max_length`) и `description`.
+* DI: `db: AsyncSession = Depends(get_db)`, `current_user: User = Depends(get_current_user)`.
+* `@limiter.limit("X/minute")` на ручках, чувствительных к спаму/брутфорсу (auth, тяжёлые отчёты, AI-инсайты).
