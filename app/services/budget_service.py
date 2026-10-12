@@ -2,15 +2,15 @@
 
 import hashlib
 import uuid
-from decimal import ROUND_HALF_UP, Decimal
+from datetime import datetime, timezone
+from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.exceptions import ErrorCode, NotFoundException
 from app.models.models import Budget, Category, Transaction, TransactionType, User
 from app.schemas.schemas import BudgetCreate, BudgetResponse
-from app.services.currency_service import CurrencyService
 from logger.logger import get_logger
 
 logger = get_logger(__name__)
@@ -29,37 +29,47 @@ class BudgetService:
         payload: BudgetCreate,
         user_base_currency: str | None = None,
     ) -> BudgetResponse:
-        """Создать новый бюджет или обновить существующий лимит расходов по категории на указанный период."""
-        query = select(Budget).where(
-            Budget.user_id == user_id,
-            Budget.category == payload.category,
-            Budget.month == payload.month,
-            Budget.year == payload.year,
-        )
-        result = await self.db.execute(query)
-        existing_budget = result.scalar_one_or_none()
+        """Создать новый бюджет или атомарно обновить существующий лимит (Upsert).
 
-        if existing_budget:
-            logger.info(f"Обновление существующего бюджета {existing_budget.id} для пользователя {user_id}")
-            existing_budget.limit_amount = payload.limit_amount
-            await self.db.flush()
-            await self.db.refresh(existing_budget)
-            return await self._enrich(existing_budget, user_id, user_base_currency=user_base_currency)
+        Использует dialect-aware ON CONFLICT DO UPDATE для предотвращения race condition
+        при параллельных запросах на одну категорию и период.
+        """
+        bind = getattr(self.db, "bind", None) or self.db.get_bind()
+        dialect_name = bind.dialect.name
+        if dialect_name == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert as dialect_insert
+        else:
+            from sqlalchemy.dialects.postgresql import insert as dialect_insert
 
-        budget = Budget(
-            user_id=user_id,
-            category=payload.category,
-            limit_amount=payload.limit_amount,
-            month=payload.month,
-            year=payload.year,
+        stmt = (
+            dialect_insert(Budget)
+            .values(
+                user_id=user_id,
+                category=payload.category,
+                limit_amount=payload.limit_amount,
+                month=payload.month,
+                year=payload.year,
+            )
+            .on_conflict_do_update(
+                index_elements=["user_id", "category", "month", "year"],
+                set_={"limit_amount": payload.limit_amount},
+            )
+            .returning(Budget)
         )
-        self.db.add(budget)
+        result = await self.db.execute(stmt)
+        budget = result.scalar_one()
         await self.db.flush()
         await self.db.refresh(budget)
-        logger.info(f"Создан новый бюджет: {budget}")
+        await self.invalidate_etag(user_id)
+        logger.info(f"Успешно сохранен бюджет: {budget.id} для пользователя {user_id}")
         return await self._enrich(budget, user_id, user_base_currency=user_base_currency)
 
-    async def get_by_id(self, user_id: uuid.UUID, budget_id: uuid.UUID) -> BudgetResponse:
+    async def get_by_id(
+        self,
+        user_id: uuid.UUID,
+        budget_id: uuid.UUID,
+        user_base_currency: str | None = None,
+    ) -> BudgetResponse:
         """Получить бюджет по его идентификатору."""
         query = select(Budget).where(Budget.id == budget_id, Budget.user_id == user_id)
         result = await self.db.execute(query)
@@ -71,7 +81,7 @@ class BudgetService:
                 message="Бюджет не найден",
                 details={"budget_id": str(budget_id)},
             )
-        return await self._enrich(budget, user_id)
+        return await self._enrich(budget, user_id, user_base_currency=user_base_currency)
 
     async def get_all(
         self,
@@ -107,6 +117,7 @@ class BudgetService:
             )
         await self.db.delete(budget)
         await self.db.flush()
+        await self.invalidate_etag(user_id)
         logger.info(f"Бюджет удален: {budget_id}")
 
     async def delete_by_category_period(self, user_id: uuid.UUID, category: Category, month: int, year: int) -> bool:
@@ -124,6 +135,7 @@ class BudgetService:
             return False
         await self.db.delete(budget)
         await self.db.flush()
+        await self.invalidate_etag(user_id)
         logger.info(f"Бюджет удален по категории и периоду: {category} ({month}/{year})")
         return True
 
@@ -175,10 +187,20 @@ class BudgetService:
             Transaction.type == TransactionType.expense,
         )
 
-        if month:
+        if month and year:
+            start_date = datetime(year, month, 1, tzinfo=timezone.utc)
+            end_date = (
+                datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+                if month == 12
+                else datetime(year, month + 1, 1, tzinfo=timezone.utc)
+            )
+            t_query = t_query.where(Transaction.date >= start_date, Transaction.date < end_date)
+        elif year:
+            start_date = datetime(year, 1, 1, tzinfo=timezone.utc)
+            end_date = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+            t_query = t_query.where(Transaction.date >= start_date, Transaction.date < end_date)
+        elif month:
             t_query = t_query.where(func.extract("month", Transaction.date) == month)
-        if year:
-            t_query = t_query.where(func.extract("year", Transaction.date) == year)
 
         t_res = await self.db.execute(t_query)
         t_count, t_sum_spent, t_max_created = t_res.first()
@@ -197,7 +219,7 @@ class BudgetService:
             f"{user_id}:{base_currency}:{b_count}:{b_sum_limits}:{b_max_created.isoformat() if b_max_created else ''}:"
             f"{t_count}:{t_sum_spent}:{t_max_created.isoformat() if t_max_created else ''}:{redis_version}"
         )
-        return hashlib.md5(raw_str.encode()).hexdigest()
+        return hashlib.md5(raw_str.encode(), usedforsecurity=False).hexdigest()
 
     async def enrich_multiple(
         self,
@@ -205,67 +227,50 @@ class BudgetService:
         user_id: uuid.UUID,
         user_base_currency: str | None = None,
     ) -> list[BudgetResponse]:
-        """Обогатить список бюджетов агрегированными данными о расходах с учетом валюты каждой транзакции."""
+        """Обогатить список бюджетов агрегированными данными о расходах напрямую из БД.
+
+        Расходы агрегируются через SUM(Transaction.base_amount) с группировкой по (category, month, year)
+        и диапазонными фильтрами дат, что гарантирует консистентность с ETag и задействует индекс БД.
+        """
         if not budgets:
             return []
 
-        if not user_base_currency:
-            user_res = await self.db.execute(select(User.base_currency).where(User.id == user_id))
-            user_base_currency = (user_res.scalar_one_or_none() or "RUB").strip().upper()
-        else:
-            user_base_currency = user_base_currency.strip().upper()
+        periods = {(b.month, b.year) for b in budgets}
+        categories = {b.category for b in budgets}
 
-        currency_service = CurrencyService()
-        rates_response = await currency_service.get_rates()
-        rates = rates_response.rates
+        # Диапазонные условия по датам для использования составного индекса (user_id, type, date)
+        date_conditions = []
+        for m, y in periods:
+            start_date = datetime(y, m, 1, tzinfo=timezone.utc)
+            end_date = datetime(y + 1, 1, 1, tzinfo=timezone.utc) if m == 12 else datetime(y, m + 1, 1, tzinfo=timezone.utc)
+            date_conditions.append(and_(Transaction.date >= start_date, Transaction.date < end_date))
 
-        tx_query = select(
-            Transaction.category,
-            func.extract("month", Transaction.date).label("month"),
-            func.extract("year", Transaction.date).label("year"),
-            Transaction.amount,
-            Transaction.currency,
-            Transaction.exchange_rate,
-            Transaction.base_amount,
-        ).where(
-            Transaction.user_id == user_id,
-            Transaction.type == TransactionType.expense,
+        month_expr = func.extract("month", Transaction.date)
+        year_expr = func.extract("year", Transaction.date)
+
+        tx_query = (
+            select(
+                Transaction.category,
+                month_expr.label("month"),
+                year_expr.label("year"),
+                func.coalesce(func.sum(Transaction.base_amount), Decimal("0.00")).label("spent"),
+            )
+            .where(
+                Transaction.user_id == user_id,
+                Transaction.type == TransactionType.expense,
+                Transaction.category.in_(categories),
+                or_(*date_conditions),
+            )
+            .group_by(Transaction.category, month_expr, year_expr)
         )
 
-        periods = {(b.month, b.year) for b in budgets}
-        if len(periods) == 1:
-            m, y = next(iter(periods))
-            tx_query = tx_query.where(
-                func.extract("month", Transaction.date) == m,
-                func.extract("year", Transaction.date) == y,
-            )
-
         result = await self.db.execute(tx_query)
-        transactions_records = result.all()
-
         spent_map: dict[tuple[Category, int, int], Decimal] = {}
-        for rec in transactions_records:
+        for rec in result.all():
             cat = rec.category
             m = int(rec.month)
             y = int(rec.year)
-            key = (cat, m, y)
-
-            tx_curr = (rec.currency or user_base_currency).strip().upper()
-            amt = Decimal(str(rec.amount))
-
-            if tx_curr == user_base_currency:
-                tx_spent = amt
-            else:
-                base_amt = Decimal(str(rec.base_amount)) if rec.base_amount is not None else Decimal("0.00")
-                rate = Decimal(str(rec.exchange_rate)) if rec.exchange_rate is not None else Decimal("1.0")
-
-                if base_amt > Decimal("0.00") and rate != Decimal("1.0"):
-                    tx_spent = base_amt
-                else:
-                    cross_rate = CurrencyService.calculate_cross_rate(tx_curr, user_base_currency, rates)
-                    tx_spent = (amt * cross_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-            spent_map[key] = spent_map.get(key, Decimal("0.00")) + tx_spent
+            spent_map[(cat, m, y)] = Decimal(str(rec.spent))
 
         enriched = []
         for b in budgets:

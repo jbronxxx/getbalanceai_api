@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.exceptions import ErrorCode, NotFoundException
 from app.models.models import Transaction, User
 from app.schemas.schemas import TransactionCreate
+from app.services.budget_service import BudgetService
 from app.services.currency_service import CurrencyService
 from logger.logger import get_logger
 
@@ -74,6 +75,7 @@ class TransactionService:
         self.db.add(tx)
         await self.db.flush()
         await self.db.refresh(tx)
+        await BudgetService.invalidate_etag(user_id)
         logger.info(f"Создана новая транзакция: {tx}")
         return tx
 
@@ -141,6 +143,7 @@ class TransactionService:
             )
         await self.db.delete(tx)
         await self.db.flush()
+        await BudgetService.invalidate_etag(user_id)
         logger.info(f"Транзакция удалена: {tx.id}")
 
     async def get_etag(
@@ -160,4 +163,4 @@ class TransactionService:
         max_created = result.scalar_one_or_none()
 
         raw_str = f"{user_id}:{max_created.isoformat() if max_created else ''}:{limit}:{cursor or ''}"
-        return hashlib.md5(raw_str.encode()).hexdigest()
+        return hashlib.md5(raw_str.encode(), usedforsecurity=False).hexdigest()

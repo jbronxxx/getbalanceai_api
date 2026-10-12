@@ -377,3 +377,34 @@ class TestSyncEndpointIntegration:
         budgets_in_db = list(result.scalars().all())
         assert len(budgets_in_db) == 1
         assert budgets_in_db[0].limit_amount == Decimal("3000.0")
+
+    @pytest.mark.asyncio
+    async def test_sync_lazy_currency_rates_when_only_base_currency(
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, str],
+    ):
+        """Синхронизация не обращается к курсам валют, если все транзакции в базовой валюте."""
+        from unittest.mock import AsyncMock, patch
+
+        from app.services.currency_service import CurrencyService
+
+        with patch.object(CurrencyService, "get_rates", new_callable=AsyncMock) as mock_get_rates:
+            payload = {
+                "transactions": [
+                    {
+                        "amount": 100.0,
+                        "currency": "RUB",
+                        "description": "Покупка в RUB",
+                        "category": "food",
+                        "type": "expense",
+                        "date": "2026-10-12T12:00:00Z",
+                    }
+                ],
+                "budgets": [],
+                "deleted_budget_ids": [],
+                "deleted_budgets": [],
+            }
+            res = await client.post("/api/v1/sync/", json=payload, headers=auth_headers)
+            assert res.status_code == 200
+            mock_get_rates.assert_not_called()
