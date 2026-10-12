@@ -159,3 +159,95 @@ class TestUserProfileAndBaseCurrency:
             updated_b = next(b for b in budgets if b["category"] == "food")
             assert float(updated_b["limit_amount"]) == 100.00
             assert float(updated_b["spent"]) == 10.00
+
+    @pytest.mark.asyncio
+    async def test_patch_me_invalidates_ai_insights_cache(
+        self, client: AsyncClient, auth_headers: dict[str, str], test_user: User
+    ):
+        """Смена базовой валюты пользователя инвалидирует все ключи кэша инсайтов в Redis."""
+        from app.services.ai_service import redis_client
+
+        cache_key = f"insights_cache:{test_user.id}:RUB:ru"
+        count_key = f"insights_tx_count:{test_user.id}"
+        await redis_client.set(cache_key, "cached_insights")
+        await redis_client.set(count_key, "10")
+
+        mock_response = CurrencyRatesResponse(
+            base="USD",
+            rates={"USD": Decimal("1.0"), "RUB": Decimal("96.0")},
+            updated_at=datetime.now(timezone.utc),
+        )
+        with patch.object(CurrencyService, "get_rates", new_callable=AsyncMock, return_value=mock_response):
+            patch_res = await client.patch("/api/v1/auth/me", json={"base_currency": "USD"}, headers=auth_headers)
+            assert patch_res.status_code == 200
+
+        # Ключи инсайтов должны быть удалены после смены валюты
+        assert await redis_client.get(cache_key) is None
+        assert await redis_client.get(count_key) is None
+
+    @pytest.mark.asyncio
+    async def test_patch_me_currency_change_reversible_rub_usd_rub(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Цикл смены валюты RUB -> USD -> RUB полностью обратим для транзакций в RUB без потери точности."""
+        # Создаем транзакцию в RUB
+        tx_rub_res = await client.post(
+            "/api/v1/transactions/",
+            json={
+                "amount": "1000.00",
+                "currency": "RUB",
+                "description": "Транзакция в рублях",
+                "category": "food",
+                "type": "expense",
+            },
+            headers=auth_headers,
+        )
+        assert tx_rub_res.status_code == 201
+        tx_rub_id = tx_rub_res.json()["data"]["id"]
+
+        # Создаем транзакцию в USD
+        tx_usd_res = await client.post(
+            "/api/v1/transactions/",
+            json={
+                "amount": "50.00",
+                "currency": "USD",
+                "description": "Транзакция в долларах",
+                "category": "shopping",
+                "type": "expense",
+            },
+            headers=auth_headers,
+        )
+        assert tx_usd_res.status_code == 201
+        tx_usd_id = tx_usd_res.json()["data"]["id"]
+
+        mock_response = CurrencyRatesResponse(
+            base="USD",
+            rates={"USD": Decimal("1.0"), "RUB": Decimal("100.0")},
+            updated_at=datetime.now(timezone.utc),
+        )
+
+        with patch.object(CurrencyService, "get_rates", new_callable=AsyncMock, return_value=mock_response):
+            # 1. Смена базовой валюты на USD
+            to_usd_res = await client.patch("/api/v1/auth/me", json={"base_currency": "USD"}, headers=auth_headers)
+            assert to_usd_res.status_code == 200
+
+            tx_list_usd = await client.get("/api/v1/transactions/", headers=auth_headers)
+            items_usd = {item["id"]: item for item in tx_list_usd.json()["data"]["items"]}
+
+            # Транзакция в новой базе (USD) получает exchange_rate = 1.0 и base_amount = 50.00
+            assert float(items_usd[tx_usd_id]["exchange_rate"]) == 1.0
+            assert float(items_usd[tx_usd_id]["base_amount"]) == 50.00
+            # Транзакция в RUB сконвертирована: 1000 RUB / 100 = 10.00 USD
+            assert float(items_usd[tx_rub_id]["base_amount"]) == 10.00
+
+            # 2. Смена базовой валюты обратно на RUB
+            to_rub_res = await client.patch("/api/v1/auth/me", json={"base_currency": "RUB"}, headers=auth_headers)
+            assert to_rub_res.status_code == 200
+
+            tx_list_rub = await client.get("/api/v1/transactions/", headers=auth_headers)
+            items_rub = {item["id"]: item for item in tx_list_rub.json()["data"]["items"]}
+
+            # Транзакция в RUB вернулась строго к исходному состоянию без дрейфа:
+            assert float(items_rub[tx_rub_id]["exchange_rate"]) == 1.0
+            assert float(items_rub[tx_rub_id]["base_amount"]) == 1000.00
+            # Транзакция в USD сконвертирована по актуальному курсу (50 USD * 100 = 5000.00 RUB)
+            assert float(items_rub[tx_usd_id]["exchange_rate"]) == 100.0
+            assert float(items_rub[tx_usd_id]["base_amount"]) == 5000.00
