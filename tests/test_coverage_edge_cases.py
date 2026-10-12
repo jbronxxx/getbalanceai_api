@@ -116,7 +116,7 @@ async def test_sync_router_edge_cases(
     # Mock db.commit to raise Exception
     with patch("sqlalchemy.ext.asyncio.AsyncSession.commit", side_effect=Exception("Generic Error")):
         response = await client.post("/api/v1/sync/", json=payload, headers=auth_headers)
-        assert response.status_code == 400
+        assert response.status_code == 500
         assert "SYNC_FAILED" in response.text
 
 

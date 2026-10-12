@@ -66,6 +66,9 @@ async def lifespan(app_instance: FastAPI):
     except asyncio.CancelledError:
         pass
     await engine.dispose()
+    from app.services.currency_service import close_http_client
+
+    await close_http_client()
     logger.info("Stopping Finance App API")
 
 
