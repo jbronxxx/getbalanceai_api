@@ -8,7 +8,7 @@
 
 * **Фреймворк**: `pytest`, `pytest-asyncio` для асинхронных тестов (`@pytest.mark.asyncio` или async fixtures).
 * **HTTP клиент**: `httpx.AsyncClient` с `ASGITransport(app=app)`.
-* **База данных**: Изолированная in-memory SQLite (`sqlite+aiosqlite:///:memory:`) с пулом `StaticPool`, управляемая через фикстуры `setup_test_db` и `db_session` в [tests/conftest.py](file:///c:/Projects/getbalanceai_api/tests/conftest.py).
+* **База данных**: Изолированная in-memory SQLite (`sqlite+aiosqlite:///:memory:`) с пулом `StaticPool`, управляемая через фикстуры `setup_test_db` и `db_session` в [tests/conftest.py](conftest.py).
 * **Мокирование Redis**: Использование `fakeredis.aioredis.FakeRedis` во избежание зависимости от внешнего сервера Redis.
 * **Мокирование внешних LLM (Gemini)**: Изолировать вызовы через `unittest.mock.patch` или фиктивные клиенты, не совершать реальных сетевых запросов в тестах.
 

@@ -479,20 +479,27 @@ class TestMultiCurrencyBackend:
         """При сбое шлюза возвращаются fallback-котировки и записываются в негативный кэш Redis."""
         service = CurrencyService()
         from app.services import currency_service
+        from app.services.currency_service import (
+            FALLBACK_RATES_UPDATED_AT,
+            currency_state,
+        )
 
+        currency_state.reset()
         await currency_service.redis_client.flushdb()
 
         with patch.object(service, "_fetch_rates_from_gateway", new_callable=AsyncMock) as mock_fetch:
             mock_fetch.return_value = None
 
-            # Первый вызов: шлюз недоступен, пишется в негативный кэш
+            # Первый вызов: шлюз недоступен, отдаются fallback-котировки с фиксированной датой таблицы
             res1 = await service.get_rates()
             assert res1.is_fallback is True
+            assert res1.updated_at == FALLBACK_RATES_UPDATED_AT
             assert mock_fetch.call_count == 1
 
             # Второй вызов: берется из негативного кэша Redis без повторного запроса к шлюзу
             res2 = await service.get_rates()
             assert res2.is_fallback is True
+            assert res2.updated_at == FALLBACK_RATES_UPDATED_AT
             assert mock_fetch.call_count == 1
 
     @pytest.mark.asyncio

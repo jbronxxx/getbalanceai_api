@@ -6,18 +6,24 @@ import uuid
 from datetime import datetime, timezone
 
 from google import genai
-from redis import asyncio as aioredis
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import Transaction
+from app.redis import (
+    get_insights_cache_key,
+    get_insights_count_key,
+    get_insights_user_patterns,
+    get_redis,
+)
 from app.schemas.schemas import InsightResponse
 from config_reader.config_reader import config
 from logger.logger import get_logger
 
 logger = get_logger(__name__)
 
-redis_client = aioredis.from_url(config.redis_url, decode_responses=True)
+# Единый клиент Redis приложения
+redis_client = get_redis()
 
 
 class AIService:
@@ -47,20 +53,17 @@ class AIService:
     async def invalidate_cache(cls, user_id: uuid.UUID) -> None:
         """Инвалидировать кэш инсайтов для конкретного пользователя без блокировки Redis."""
         try:
-            patterns = (
-                f"insights_cache:{user_id}*",
-                f"insights_tx_count:{user_id}*",
-                f"insights_*:{user_id}*",
-            )
+            client = get_redis()
+            patterns = get_insights_user_patterns(user_id)
             for pattern in patterns:
                 batch = []
-                async for key in redis_client.scan_iter(match=pattern, count=500):
+                async for key in client.scan_iter(match=pattern, count=500):
                     batch.append(key)
                     if len(batch) >= 500:
-                        await redis_client.unlink(*batch)
+                        await client.unlink(*batch)
                         batch.clear()
                 if batch:
-                    await redis_client.unlink(*batch)
+                    await client.unlink(*batch)
         except Exception as err:
             logger.warning(f"Ошибка инвалидации кэша Redis для пользователя {user_id}: {err}")
 
@@ -68,14 +71,15 @@ class AIService:
     async def clear_cache(cls) -> None:
         """Очистить весь кэш инсайтов без блокировки Redis и без удаления других данных."""
         try:
+            client = get_redis()
             batch = []
-            async for key in redis_client.scan_iter(match="insights_*", count=500):
+            async for key in client.scan_iter(match="insights_*", count=500):
                 batch.append(key)
                 if len(batch) >= 500:
-                    await redis_client.unlink(*batch)
+                    await client.unlink(*batch)
                     batch.clear()
             if batch:
-                await redis_client.unlink(*batch)
+                await client.unlink(*batch)
         except Exception as err:
             logger.warning(f"Ошибка полной очистки кэша Redis: {err}")
 
@@ -135,8 +139,8 @@ class AIService:
                 generated_at=datetime.now(timezone.utc),
             )
 
-        cache_key = f"insights_cache:{user_id}:{locale}:{currency}"
-        count_key = f"insights_tx_count:{user_id}:{locale}:{currency}"
+        cache_key = get_insights_cache_key(user_id, locale, currency)
+        count_key = get_insights_count_key(user_id, locale, currency)
 
         cached_data_str = None
         last_tx_count_str = None

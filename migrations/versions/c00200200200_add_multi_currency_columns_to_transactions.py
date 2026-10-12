@@ -1,9 +1,14 @@
-"""Add multi-currency columns (currency, exchange_rate, base_amount) to transactions
+"""Добавление колонок мультивалютности (currency, exchange_rate, base_amount) в таблицу transactions.
+
+Внимание по заполнению исторических данных:
+Операция UPDATE transactions SET base_amount = amount WHERE base_amount = 0.0 в upgrade()
+выполняется единой транзакцией на всей таблице. Для высоконагруженных таблиц в production
+при последующих подобных миграциях необходимо разбивать обновления на пакеты (батчи)
+с ограничением LIMIT, чтобы исключить длительные блокировки строк.
 
 Revision ID: c00200200200
 Revises: 84a0908f991c
 Create Date: 2026-10-11 19:30:00.000000
-
 """
 
 from typing import Sequence, Union
