@@ -11,8 +11,9 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.exceptions import ErrorCode, NotFoundException
-from app.models.models import Transaction
+from app.models.models import Transaction, User
 from app.schemas.schemas import TransactionCreate
+from app.services.currency_service import CurrencyService
 from logger.logger import get_logger
 
 logger = get_logger(__name__)
@@ -29,18 +30,47 @@ class TransactionService:
         """
         self.db = db
 
-    async def create(self, user_id: uuid.UUID, payload: TransactionCreate) -> Transaction:
+    async def create(
+        self,
+        user_id: uuid.UUID,
+        payload: TransactionCreate,
+        user_base_currency: str | None = None,
+    ) -> Transaction:
         """Создать новую транзакцию (доход или расход) для пользователя."""
-        rate = payload.exchange_rate or Decimal("1.0")
-        if payload.base_amount is not None:
-            base_amt = payload.base_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if not user_base_currency:
+            user_res = await self.db.execute(select(User.base_currency).where(User.id == user_id))
+            user_base_currency = (user_res.scalar_one_or_none() or "RUB").strip().upper()
         else:
-            base_amt = (payload.amount * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        curr = (payload.currency or "RUB").strip().upper()
+            user_base_currency = user_base_currency.strip().upper()
+
+        curr = (payload.currency or user_base_currency).strip().upper()
+
+        if curr == user_base_currency:
+            rate = Decimal("1.0")
+            if payload.base_amount is not None:
+                base_amt = payload.base_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            else:
+                base_amt = payload.amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        else:
+            if payload.exchange_rate is not None and payload.exchange_rate != Decimal("1.0"):
+                rate = payload.exchange_rate.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+            else:
+                currency_service = CurrencyService()
+                rates_resp = await currency_service.get_rates()
+                rate = CurrencyService.calculate_cross_rate(curr, user_base_currency, rates_resp.rates)
+
+            if (
+                payload.base_amount is not None
+                and payload.base_amount > Decimal("0.00")
+                and payload.base_amount != payload.amount
+            ):
+                base_amt = payload.base_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            else:
+                base_amt = (payload.amount * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
         tx = Transaction(
             user_id=user_id,
-            amount=payload.amount,
+            amount=payload.amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
             currency=curr,
             exchange_rate=rate,
             base_amount=base_amt,

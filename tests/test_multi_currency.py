@@ -246,3 +246,48 @@ class TestMultiCurrencyBackend:
         summary = ai_service._build_summary([tx], currency="RUB")
         assert "500000.00 UZS" in summary
         assert "3750.00 RUB" in summary
+
+    @pytest.mark.asyncio
+    async def test_large_nominal_currency_does_not_overflow_numeric_precision(
+        self, db_session: AsyncSession, test_user: User
+    ):
+        """Проверка, что суммы > 10^10 (например, при конвертации в UZS) не вызывают numeric overflow."""
+        test_user.base_currency = "UZS"
+        await db_session.flush()
+
+        tx_service = TransactionService(db_session)
+        # Симулируем ровно ту операцию из логов: 1 000 000 EUR по курсу 13298.649213 -> 13 298 649 212.61 UZS (> 10^10)
+        large_tx = await tx_service.create(
+            user_id=test_user.id,
+            payload=TransactionCreate(
+                amount=Decimal("1000000.00"),
+                currency="EUR",
+                exchange_rate=Decimal("13298.649213"),
+                base_amount=Decimal("13298649212.61"),
+                description="Крупная операция в EUR",
+                category=Category.health,
+                type=TransactionType.expense,
+            ),
+            user_base_currency="UZS",
+        )
+
+        assert large_tx.base_amount == Decimal("13298649212.61")
+        assert large_tx.amount == Decimal("1000000.00")
+        assert large_tx.exchange_rate == Decimal("13298.649213")
+
+        # Проверяем бюджет с лимитом > 10^10 в сумах
+        budget_service = BudgetService(db_session)
+        budget = await budget_service.create(
+            user_id=test_user.id,
+            payload=BudgetCreate(
+                category=Category.health,
+                limit_amount=Decimal("20000000000.00"),  # 20 миллиардов UZS
+                month=10,
+                year=2026,
+            ),
+            user_base_currency="UZS",
+        )
+
+        assert budget.limit_amount == Decimal("20000000000.00")
+        assert budget.spent == Decimal("13298649212.61")
+        assert budget.remaining == Decimal("6701350787.39")

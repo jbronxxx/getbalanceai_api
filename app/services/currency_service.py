@@ -41,6 +41,39 @@ class CurrencyService:
         self.gateway_url = config.currency_rates_url
         self.cache_ttl = config.currency_rates_cache_ttl
 
+    @classmethod
+    def calculate_cross_rate(
+        cls,
+        from_curr: str,
+        to_curr: str,
+        rates: dict[str, Decimal] | None = None,
+    ) -> Decimal:
+        """Рассчитать кросс-курс конвертации между двумя валютами.
+
+        Таблица котировок привязана к USD (1 USD = rate).
+        Кросс-курс from_curr -> to_curr рассчитывается как: to_usd_rate / from_usd_rate.
+
+        Аргументы:
+            from_curr (str): Исходная валюта (например, 'USD', 'UZS', 'RUB').
+            to_curr (str): Целевая валюта.
+            rates (dict[str, Decimal] | None): Словарь курсов валют к USD.
+
+        Возвращает:
+            Decimal: Коэффициент конвертации.
+        """
+        from_code = from_curr.strip().upper()
+        to_code = to_curr.strip().upper()
+        if from_code == to_code:
+            return Decimal("1.0")
+
+        rates_dict = rates if rates is not None else FALLBACK_RATES
+        from_usd_rate = rates_dict.get(from_code) or FALLBACK_RATES.get(from_code, Decimal("1.0"))
+        to_usd_rate = rates_dict.get(to_code) or FALLBACK_RATES.get(to_code, Decimal("1.0"))
+
+        if from_usd_rate <= Decimal("0"):
+            return Decimal("1.0")
+        return to_usd_rate / from_usd_rate
+
     async def get_rates(self) -> CurrencyRatesResponse:
         """Получить актуальные курсы валют из Redis, внешнего шлюза или резервной таблицы.
 

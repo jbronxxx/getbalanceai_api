@@ -110,6 +110,64 @@ API использует единообразный формат ответов 
 }
 ```
 
+#### Список бюджетов с мультивалютным расчетом (GET /api/v1/budgets)
+
+*Заголовки ответа:* `ETag: "9b64bc7a049d5fa9e1d8849bbfbc4a26"` (при совпадении с `If-None-Match` возвращается статус `304 Not Modified`).
+
+```json
+{
+  "status": "success",
+  "data": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440002",
+      "category": "food",
+      "limit_amount": 500.00,
+      "month": 10,
+      "year": 2026,
+      "spent": 250.00,
+      "remaining": 250.00
+    }
+  ]
+}
+```
+
+#### Пакетная синхронизация (POST /api/v1/sync)
+
+*Идемпотентный ответ с синхронизированными и обогащенными сущностями:*
+
+```json
+{
+  "status": "success",
+  "data": {
+    "synced_transactions": [
+      {
+        "id": "550e8400-e29b-41d4-a716-446655440001",
+        "amount": 1280000.00,
+        "currency": "UZS",
+        "exchange_rate": 0.000078,
+        "base_amount": 100.00,
+        "description": "Ужин",
+        "category": "food",
+        "type": "expense",
+        "date": "2026-10-06T12:00:00Z",
+        "created_at": "2026-10-06T12:00:00Z"
+      }
+    ],
+    "synced_budgets": [
+      {
+        "id": "550e8400-e29b-41d4-a716-446655440002",
+        "category": "food",
+        "limit_amount": 500.00,
+        "month": 10,
+        "year": 2026,
+        "spent": 100.00,
+        "remaining": 400.00
+      }
+    ]
+  }
+}
+```
+
 ---
 
 ## Ошибочные ответы (Единый контракт)

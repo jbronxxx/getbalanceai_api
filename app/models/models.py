@@ -171,13 +171,13 @@ class Transaction(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
-    amount: Mapped[Decimal] = mapped_column(Numeric(precision=12, scale=2), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(precision=18, scale=2), nullable=False)
     currency: Mapped[str] = mapped_column(String(10), default="RUB", server_default="RUB", nullable=False)
     exchange_rate: Mapped[Decimal] = mapped_column(
-        Numeric(precision=14, scale=6), default=Decimal("1.0"), server_default="1.0", nullable=False
+        Numeric(precision=18, scale=6), default=Decimal("1.0"), server_default="1.0", nullable=False
     )
     base_amount: Mapped[Decimal] = mapped_column(
-        Numeric(precision=12, scale=2), default=Decimal("0.0"), server_default="0.0", nullable=False
+        Numeric(precision=18, scale=2), default=Decimal("0.0"), server_default="0.0", nullable=False
     )
     description: Mapped[str] = mapped_column(String(255), nullable=False)
     category: Mapped[Category] = mapped_column(SAEnum(Category), nullable=False)
@@ -211,7 +211,7 @@ class Budget(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     category: Mapped[Category] = mapped_column(SAEnum(Category), nullable=False)
-    limit_amount: Mapped[Decimal] = mapped_column(Numeric(precision=12, scale=2), nullable=False)
+    limit_amount: Mapped[Decimal] = mapped_column(Numeric(precision=18, scale=2), nullable=False)
     month: Mapped[int] = mapped_column(nullable=False)
     year: Mapped[int] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
