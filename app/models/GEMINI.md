@@ -1,42 +1,9 @@
-# Регламент слоя моделей базы данных (app/models/GEMINI.md)
+# Правила моделей (app/models/)
 
-Данные правила применяются при работе с моделями данных SQLAlchemy в директории `app/models/`.
-
----
-
-## 1. Назначение слоя Models
-
-Модели определяют реляционную схему базы данных PostgreSQL, ограничения целостности (constraints), индексы и связи между сущностями.
-
----
-
-## 2. Стандарты реализации SQLAlchemy 2.0
-
-* **Базовый класс**: Все модели наследуются от `Base` из `app.database`.
-* **Типизация**: Использовать современный синтаксис `Mapped[T]` и `mapped_column(...)`.
-* **Первичные ключи (Primary Keys)**:
-  * Использовать UUIDv4 для всех таблиц:
-    ```python
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    ```
-* **Финансовые данные и суммы**:
-  * Категорически запрещено использовать `Float` для денег.
-  * Все денежные поля задаются типом `Numeric(18, 2)` или `Decimal`.
-  * Валютные курсы задаются типом `Numeric(18, 6)`.
-* **Временные метки (Timestamps)**:
-  * Все даты хранятся с таймзоной: `DateTime(timezone=True)`.
-  * Дефолтные значения задаются через UTC: `default=lambda: datetime.now(timezone.utc)`.
-* **Индексы и внешние ключи (Foreign Keys)**:
-  * Для всех внешних ключей задавать поведение при удалении: `ForeignKey("users.id", ondelete="CASCADE")`.
-  * Создавать составные индексы для частых запросов фильтрации и сортировки (например, `Index("ix_tx_user_date", "user_id", "date")`).
-* **Enums**:
-  * Наследовать от `(str, enum.Enum)` для прозрачной сериализации в JSON.
-
----
-
-## 3. Обязательная синхронизация
-
-При добавлении нового поля, таблицы или индекса:
-1. Создать миграцию Alembic (см. [migrations/GEMINI.md](../../migrations/GEMINI.md)).
-2. Обновить ER-диаграмму и описание схемы в [ARCHITECTURE.md](../../ARCHITECTURE.md).
-3. Обновить фабрики/фикстуры тестовых данных в `tests/conftest.py` при необходимости.
+* SQLAlchemy 2.0: наследование от `Base` (`app.database`), `Mapped[T]` + `mapped_column(...)`.
+* PK — UUIDv4: `id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)`.
+* Деньги — только `Numeric(18, 2)`/`Decimal`, никогда `Float`; курсы валют — `Numeric(18, 6)`.
+* Даты: `DateTime(timezone=True)`, default `lambda: datetime.now(timezone.utc)`.
+* FK всегда с `ondelete` (`ForeignKey("users.id", ondelete="CASCADE")`); составные индексы под частые фильтры/сортировки (`Index("ix_tx_user_date", "user_id", "date")`).
+* Enums — `(str, enum.Enum)`.
+* При изменении схемы: миграция Alembic ([migrations/GEMINI.md](../../migrations/GEMINI.md)), обновить схему в [ARCHITECTURE.md](../../ARCHITECTURE.md), при необходимости фикстуры `tests/conftest.py`.

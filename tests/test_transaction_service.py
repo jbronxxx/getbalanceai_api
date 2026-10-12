@@ -317,3 +317,51 @@ class TestTransactionEndpointsIntegration:
         res_invalid_limit = await client.get("/api/v1/transactions/?limit=101", headers=auth_headers)
         assert res_invalid_limit.status_code == 422
         assert res_invalid_limit.json()["code"] == "VALIDATION_ERROR"
+
+    @pytest.mark.asyncio
+    async def test_etag_stable_across_page_limits_and_not_present_on_cursor_pages(
+        self, client: AsyncClient, auth_headers: dict[str, str]
+    ):
+        """ETag первой страницы стабилен при разных limit и отсутствует на страницах пагинации."""
+        # 1. Добавляем тестовые транзакции
+        for i in range(4):
+            await client.post(
+                "/api/v1/transactions/",
+                json={
+                    "amount": 250.0 + i,
+                    "description": f"Операция {i}",
+                    "category": "food",
+                    "type": "expense",
+                },
+                headers=auth_headers,
+            )
+
+        # 2. Первая страница с limit=2 и limit=4 возвращает ОДИНАКОВЫЙ глобальный ETag
+        first_page_l2 = await client.get("/api/v1/transactions/?limit=2", headers=auth_headers)
+        assert first_page_l2.status_code == 200
+        etag_l2 = first_page_l2.headers.get("ETag")
+        assert etag_l2 is not None
+
+        first_page_l4 = await client.get("/api/v1/transactions/?limit=4", headers=auth_headers)
+        assert first_page_l4.status_code == 200
+        etag_l4 = first_page_l4.headers.get("ETag")
+        assert etag_l4 == etag_l2
+
+        # 3. Повторный запрос первой страницы с If-None-Match возвращает 304 с обязательным заголовком ETag
+        cached_res = await client.get(
+            "/api/v1/transactions/?limit=2",
+            headers={**auth_headers, "If-None-Match": etag_l2},
+        )
+        assert cached_res.status_code == 304
+        assert cached_res.headers.get("ETag") == etag_l2
+
+        # 4. Запрос страницы пагинации с cursor и переданным If-None-Match НЕ возвращает 304 и НЕ отдает ETag
+        cursor = first_page_l2.json()["data"]["next_cursor"]
+        assert cursor is not None
+        paged_res = await client.get(
+            f"/api/v1/transactions/?limit=2&cursor={cursor}",
+            headers={**auth_headers, "If-None-Match": etag_l2},
+        )
+        assert paged_res.status_code == 200
+        assert "ETag" not in paged_res.headers
+        assert len(paged_res.json()["data"]["items"]) == 2

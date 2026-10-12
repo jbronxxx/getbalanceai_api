@@ -1,35 +1,8 @@
-# Регламент сервисного слоя (app/services/GEMINI.md)
+# Правила сервисов (app/services/)
 
-Данные правила применяются при разработке бизнес-логики в директории `app/services/`.
-
----
-
-## 1. Назначение слоя Services
-
-Сервисный слой инкапсулирует всю бизнес-логику приложения: операции с балансами, управление транзакциями, криптографию, валидацию прав доступа к ресурсам, интеграцию с LLM и кэширование в Redis.
-
----
-
-## 2. Стандарты реализации
-
-* **Инициализация и зависимости**:
-  * Сервисы принимают `AsyncSession` через конструктор `__init__(self, db: AsyncSession)`.
-  * Внешние клиенты (например, Gemini client) должны поддерживать передачу мока для тестируемости: `__init__(self, db: AsyncSession, client=None)`.
-* **Управление транзакциями**:
-  * Для сохранения промежуточных объектов использовать `await self.db.flush()` и `await self.db.refresh(...)`.
-  * Для многосоставных атомарных операций использовать контекстный менеджер `UnitOfWork(session_factory)` из `app/database.py`.
-* **Кастомные исключения**:
-  * Запрещено выбрасывать сырые `HTTPException` или исключения БД.
-  * Использовать типизированные исключения из `app.exceptions`:
-    * `NotFoundException(ErrorCode.TRANSACTION_NOT_FOUND, "Транзакция не найдена")`
-    * `BadRequestException(ErrorCode.INVALID_INPUT, "Сумма должна быть положительной")`
-    * `ConflictException(...)`, `UnauthorizedException(...)`, `ForbiddenException(...)`.
-* **Производительность и работа с ORM**:
-  * **Защита от N+1**: при выборке связанных моделей (`User.transactions`, `Budget.user`) явно использовать `selectinload` или `joinedload`.
-  * **Пагинация**: для списков транзакций и событий использовать курсорную пагинацию (keyset pagination) по полям `(date, id)` или `(created_at, id)`.
-* **Кэширование и AI**:
-  * Тяжелые генерации инсайтов кэшировать в Redis с TTL.
-  * При создании, редактировании или удалении финансовых транзакций вызывать инвалидацию кэша аналитики пользователя (`AIService.invalidate_cache(user_id)`).
-* **Логирование**:
-  * Использовать структурированный логгер: `logger = get_logger(__name__)`.
-  * **Категорически запрещено** логировать пароли, сырые JWT-токены, API-ключи и персональные секреты.
+* Конструктор: `__init__(self, db: AsyncSession)`; внешние клиенты (Gemini) — с возможностью мока: `__init__(self, db, client=None)`.
+* Промежуточные объекты: `await self.db.flush()` / `refresh(...)`; составные атомарные операции — `UnitOfWork(session_factory)` из `app/database.py`.
+* Ошибки — только типизированные из `app.exceptions` (`NotFoundException(ErrorCode.TRANSACTION_NOT_FOUND, "...")`, `BadRequestException`, `ConflictException`, `UnauthorizedException`, `ForbiddenException`); без сырых `HTTPException` и исключений БД.
+* N+1: `selectinload`/`joinedload` для связей. Списки транзакций/событий — keyset-пагинация по `(date, id)` или `(created_at, id)`.
+* Тяжёлые AI-инсайты кэшировать в Redis с TTL; при изменении транзакций вызывать `AIService.invalidate_cache(user_id)`.
+* Логгер: `logger = get_logger(__name__)`; не логировать пароли, сырые JWT, API-ключи, секреты.

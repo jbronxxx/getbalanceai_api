@@ -62,11 +62,12 @@ async def sync_data(
     user_id = current_user.id
     user_base_currency = (current_user.base_currency or "RUB").strip().upper()
     logger.info(
-        "Начало синхронизации для пользователя %s (валюта %s): txs=%s, budgets=%s, del_ids=%s, del_budgets=%s",
+        "Начало синхронизации для пользователя %s (валюта %s): txs=%s, budgets=%s, del_txs=%s, del_ids=%s, del_budgets=%s",
         user_id,
         user_base_currency,
         len(payload.transactions),
         len(payload.budgets),
+        len(payload.deleted_transaction_ids),
         len(payload.deleted_budget_ids),
         len(payload.deleted_budgets),
     )
@@ -160,7 +161,18 @@ async def sync_data(
             seen_tx_ids.add(tx_id)
             synced_transactions.append(db_transaction)
 
-        # 2. Пакетное удаление бюджетов (TASK-11: объединение всех условий удаления в один запрос)
+        # 2. Пакетное удаление транзакций (идемпотентное по user_id)
+        if payload.deleted_transaction_ids:
+            del_tx_ids = set(payload.deleted_transaction_ids)
+            logger.debug("Пакетное удаление транзакций: IDs=%s", len(del_tx_ids))
+            await db.execute(
+                delete(Transaction).where(
+                    Transaction.user_id == user_id,
+                    Transaction.id.in_(del_tx_ids),
+                )
+            )
+
+        # 3. Пакетное удаление бюджетов (TASK-11: объединение всех условий удаления в один запрос)
         to_delete_budgets = [item for item in payload.budgets if item.check_deleted]
         to_upsert_budgets = [item for item in payload.budgets if not item.check_deleted]
 
@@ -292,6 +304,7 @@ async def sync_data(
         if (
             synced_budgets
             or synced_transactions
+            or payload.deleted_transaction_ids
             or payload.deleted_budgets
             or payload.deleted_budget_ids
             or to_delete_budgets

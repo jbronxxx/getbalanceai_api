@@ -525,6 +525,11 @@ class SyncPayload(BaseModel):
         max_length=500,
         description="Список ID бюджетов для удаления (максимум 500 элементов)",
     )
+    deleted_transaction_ids: List[uuid.UUID] = Field(
+        default_factory=list,
+        max_length=500,
+        description="Список ID транзакций для удаления (максимум 500 элементов)",
+    )
     deleted_budgets: List[BudgetSyncItem] = Field(
         default_factory=list,
         max_length=500,

@@ -310,7 +310,12 @@ class CurrencyService:
                 extracted: dict[str, Decimal] = {}
                 for code in SUPPORTED_CURRENCIES:
                     if code in raw_rates:
-                        extracted[code] = Decimal(str(raw_rates[code]))
+                        try:
+                            val = Decimal(str(raw_rates[code]))
+                            if val > Decimal("0") and val.is_finite():
+                                extracted[code] = val
+                        except Exception:
+                            pass
                 if len(extracted) == len(SUPPORTED_CURRENCIES):
                     logger.info("Котировки валют успешно загружены из внешнего шлюза")
                     return extracted

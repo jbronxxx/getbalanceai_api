@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -167,6 +167,8 @@ class TestMultiCurrencyBackend:
         with patch.object(CurrencyService, "_fetch_rates_from_gateway", new_callable=AsyncMock, return_value=mocked_rates):
             response = await client.get("/api/v1/currencies/rates")
             assert response.status_code == 200
+            assert "Cache-Control" in response.headers
+            assert "public, max-age=" in response.headers["Cache-Control"]
 
             data = response.json()
             assert data["status"] == "success"
@@ -535,3 +537,29 @@ class TestMultiCurrencyBackend:
             assert res_fallback.is_fallback is True
             # Должны вернуться сохраненные ранее успешные курсы (RUB=105.0), а не статическая таблица (RUB=96.0)
             assert res_fallback.rates["RUB"] == Decimal("105.0")
+
+    @pytest.mark.asyncio
+    async def test_fetch_rates_from_gateway_sanitizes_invalid_rates(self):
+        """Шлюз котировок отклоняет отрицательные, нулевые и некорректные значения курсов."""
+        service = CurrencyService()
+
+        # Имитируем ответ внешнего шлюза с отрицательным и нулевым курсом
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "rates": {
+                "USD": 1.0,
+                "EUR": 0.92,
+                "RUB": -50.0,  # Отрицательный курс
+                "UZS": 0.0,  # Нулевой курс
+                "KZT": 490.0,
+            }
+        }
+
+        mock_http_client = AsyncMock()
+        mock_http_client.get.return_value = mock_response
+
+        with patch("app.services.currency_service.get_http_client", return_value=mock_http_client):
+            rates = await service._fetch_rates_from_gateway()
+            # Должен вернуть None, так как не все валюты валидны (RUB < 0, UZS == 0)
+            assert rates is None

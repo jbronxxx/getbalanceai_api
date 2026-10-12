@@ -150,17 +150,24 @@ class TransactionService:
         self,
         user_id: uuid.UUID,
         since: datetime | None = None,
-        limit: int = 50,
-        cursor: str | None = None,
     ) -> str:
-        """Быстрый расчет ETag без выгрузки всех объектов с учетом пагинации (без count)."""
-        query = select(func.max(Transaction.created_at)).where(Transaction.user_id == user_id)
+        """Рассчитать глобальный ETag коллекции транзакций пользователя без привязки к пагинации.
+
+        Вычисляется по совокупности: user_id, общему количеству транзакций,
+        максимальной дате создания и опциональному фильтру since.
+        """
+        query = select(
+            func.count(Transaction.id),
+            func.max(Transaction.created_at),
+        ).where(Transaction.user_id == user_id)
 
         if since:
             query = query.where(Transaction.created_at >= since)
 
         result = await self.db.execute(query)
-        max_created = result.scalar_one_or_none()
+        total_count, max_created = result.one()
 
-        raw_str = f"{user_id}:{max_created.isoformat() if max_created else ''}:{limit}:{cursor or ''}"
+        max_created_str = max_created.isoformat() if max_created else ""
+        since_str = since.isoformat() if since else ""
+        raw_str = f"{user_id}:{total_count}:{max_created_str}:{since_str}"
         return hashlib.md5(raw_str.encode(), usedforsecurity=False).hexdigest()
