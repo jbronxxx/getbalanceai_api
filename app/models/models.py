@@ -173,6 +173,7 @@ class Transaction(Base):
     __table_args__ = (
         Index("ix_transactions_user_id_date", "user_id", "date"),
         Index("ix_transactions_user_id_created_at", "user_id", "created_at"),
+        Index("ix_transactions_user_id_type_date", "user_id", "type", "date"),
         CheckConstraint(
             f"currency IN {SUPPORTED_CURRENCIES}",
             name="ck_transactions_currency",

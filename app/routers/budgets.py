@@ -43,7 +43,11 @@ async def create_budget(
 ):
     """Установить лимит бюджета по определенной категории на месяц и год."""
     service = BudgetService(db)
-    budget = await service.create(current_user.id, payload)
+    budget = await service.create(
+        current_user.id,
+        payload,
+        user_base_currency=current_user.base_currency,
+    )
     return {"status": "success", "data": budget}
 
 
@@ -60,6 +64,7 @@ async def create_budget(
     },
 )
 async def list_budgets(
+    response: Response,
     month: int | None = Query(default=None, ge=1, le=12, description="Фильтр по номеру месяца (1-12)"),
     year: int | None = Query(default=None, ge=2000, le=2100, description="Фильтр по году"),
     if_none_match: str | None = Header(
@@ -67,16 +72,14 @@ async def list_budgets(
         alias="If-None-Match",
         description="ETag предыдущего ответа для условного кэширования",
     ),
-    response: Response = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Получить список бюджетов с мультивалютным расчетом израсходованных средств и остатка лимита.
+    """Получить список бюджетов с расчетом израсходованных средств и остатка лимита.
 
     Суммы фактически потраченных средств (spent) и доступного остатка (remaining) рассчитываются
-    с автоматической конвертацией мультивалютных транзакций в базовую валюту пользователя.
-    Поддерживает условное кэширование по ETag. При смене base_currency пользователя заголовок ETag
-    автоматически инвалидируется.
+    в базовой валюте пользователя. Поддерживает условное кэширование по ETag (RFC 7232).
+    При любых мутациях бюджетов или транзакций заголовок ETag инвалидируется.
     """
     service = BudgetService(db)
 
@@ -87,8 +90,12 @@ async def list_budgets(
         base_currency=current_user.base_currency,
     )
 
-    if if_none_match and if_none_match.strip('"') == current_etag:
-        return Response(status_code=status.HTTP_304_NOT_MODIFIED)
+    if if_none_match:
+        client_etags = [tag.strip().removeprefix("W/").strip('"') for tag in if_none_match.split(",")]
+        if current_etag in client_etags or "*" in client_etags:
+            not_modified_resp = Response(status_code=status.HTTP_304_NOT_MODIFIED)
+            not_modified_resp.headers["ETag"] = f'"{current_etag}"'
+            return not_modified_resp
 
     budgets = await service.get_all(
         current_user.id,
@@ -96,8 +103,7 @@ async def list_budgets(
         year=year,
         user_base_currency=current_user.base_currency,
     )
-    if response:
-        response.headers["ETag"] = f'"{current_etag}"'
+    response.headers["ETag"] = f'"{current_etag}"'
 
     return {"status": "success", "data": budgets}
 
@@ -114,7 +120,11 @@ async def get_budget(
 ):
     """Получить информацию о бюджете по его уникальному ID."""
     service = BudgetService(db)
-    budget = await service.get_by_id(current_user.id, budget_id)
+    budget = await service.get_by_id(
+        current_user.id,
+        budget_id,
+        user_base_currency=current_user.base_currency,
+    )
     return {"status": "success", "data": budget}
 
 

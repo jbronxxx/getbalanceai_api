@@ -4,6 +4,7 @@
 """
 
 import uuid
+from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
@@ -215,3 +216,132 @@ class TestBudgets:
             assert Decimal(str(food_budget["spent"])) == Decimal("250.00")
             # remaining: 500.00 - 250.00 = 250.00 USD
             assert Decimal(str(food_budget["remaining"])) == Decimal("250.00")
+
+    @pytest.mark.asyncio
+    async def test_create_budget_upsert_on_conflict(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Повторный POST /budgets/ с тем же периодом и категорией обновляет лимит без 500 ошибки (Upsert)."""
+        # 1. Первый запрос создает бюджет
+        res1 = await client.post(
+            "/api/v1/budgets/",
+            json={"category": "food", "limit_amount": 300.00, "month": 11, "year": 2026},
+            headers=auth_headers,
+        )
+        assert res1.status_code == 201
+        data1 = res1.json()["data"]
+        budget_id = data1["id"]
+        assert Decimal(str(data1["limit_amount"])) == Decimal("300.00")
+
+        # 2. Второй запрос на тот же период и категорию обновляет лимит
+        res2 = await client.post(
+            "/api/v1/budgets/",
+            json={"category": "food", "limit_amount": 450.00, "month": 11, "year": 2026},
+            headers=auth_headers,
+        )
+        assert res2.status_code == 201
+        data2 = res2.json()["data"]
+        assert data2["id"] == budget_id
+        assert Decimal(str(data2["limit_amount"])) == Decimal("450.00")
+
+    @pytest.mark.asyncio
+    async def test_etag_304_headers_and_weak_etag(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """304 Not Modified возвращает заголовок ETag и поддерживает W/ префикс и списки в If-None-Match."""
+        # 1. Создаем бюджет
+        await client.post(
+            "/api/v1/budgets/",
+            json={"category": "transport", "limit_amount": 200.00, "month": 12, "year": 2026},
+            headers=auth_headers,
+        )
+
+        # 2. Запрашиваем бюджет и получаем ETag
+        get_res = await client.get("/api/v1/budgets/?month=12&year=2026", headers=auth_headers)
+        assert get_res.status_code == 200
+        etag = get_res.headers.get("ETag")
+        assert etag is not None
+
+        # 3. 304 с точным ETag
+        res_304_exact = await client.get(
+            "/api/v1/budgets/?month=12&year=2026",
+            headers={**auth_headers, "If-None-Match": etag},
+        )
+        assert res_304_exact.status_code == 304
+        assert res_304_exact.headers.get("ETag") == etag
+
+        # 4. 304 со слабым ETag (W/...)
+        res_304_weak = await client.get(
+            "/api/v1/budgets/?month=12&year=2026",
+            headers={**auth_headers, "If-None-Match": f"W/{etag}"},
+        )
+        assert res_304_weak.status_code == 304
+        assert res_304_weak.headers.get("ETag") == etag
+
+        # 5. 304 со списком ETag
+        res_304_list = await client.get(
+            "/api/v1/budgets/?month=12&year=2026",
+            headers={**auth_headers, "If-None-Match": f'"stale-tag", {etag}'},
+        )
+        assert res_304_list.status_code == 304
+        assert res_304_list.headers.get("ETag") == etag
+
+    @pytest.mark.asyncio
+    async def test_etag_invalidated_on_transaction_mutations(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """ETag бюджетов инвалидируется при создании и удалении транзакции."""
+        # 1. Создаем бюджет
+        await client.post(
+            "/api/v1/budgets/",
+            json={"category": "entertainment", "limit_amount": 100.00, "month": 5, "year": 2026},
+            headers=auth_headers,
+        )
+        initial_res = await client.get("/api/v1/budgets/?month=5&year=2026", headers=auth_headers)
+        initial_etag = initial_res.headers["ETag"]
+
+        # 2. Создаем расходную транзакцию
+        tx_res = await client.post(
+            "/api/v1/transactions/",
+            json={
+                "amount": 25.00,
+                "currency": "RUB",
+                "category": "entertainment",
+                "type": "expense",
+                "date": "2026-05-10T10:00:00Z",
+                "description": "Кино",
+            },
+            headers=auth_headers,
+        )
+        assert tx_res.status_code == 201
+        tx_id = tx_res.json()["data"]["id"]
+
+        # 3. Запрос со старым ETag должен вернуть 200 с обновленным spent и новым ETag
+        after_tx_res = await client.get(
+            "/api/v1/budgets/?month=5&year=2026",
+            headers={**auth_headers, "If-None-Match": initial_etag},
+        )
+        assert after_tx_res.status_code == 200
+        new_etag = after_tx_res.headers["ETag"]
+        assert new_etag != initial_etag
+        assert Decimal(str(after_tx_res.json()["data"][0]["spent"])) == Decimal("25.00")
+
+        # 4. Удаляем транзакцию
+        del_tx_res = await client.delete(f"/api/v1/transactions/{tx_id}", headers=auth_headers)
+        assert del_tx_res.status_code == 200
+
+        # 5. Запрос со вторым ETag должен вернуть 200 с нулевым spent
+        after_del_res = await client.get(
+            "/api/v1/budgets/?month=5&year=2026",
+            headers={**auth_headers, "If-None-Match": new_etag},
+        )
+        assert after_del_res.status_code == 200
+        final_etag = after_del_res.headers["ETag"]
+        assert final_etag != new_etag
+        assert Decimal(str(after_del_res.json()["data"][0]["spent"])) == Decimal("0.00")
+
+    @pytest.mark.asyncio
+    async def test_enrich_multiple_does_not_request_currency_rates(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Чтение бюджетов не вызывает внешний сервис курсов валют (расходы агрегируются по base_amount)."""
+        from unittest.mock import AsyncMock, patch
+
+        from app.services.currency_service import CurrencyService
+
+        with patch.object(CurrencyService, "get_rates", new_callable=AsyncMock) as mock_get_rates:
+            res = await client.get("/api/v1/budgets/", headers=auth_headers)
+            assert res.status_code == 200
+            mock_get_rates.assert_not_called()

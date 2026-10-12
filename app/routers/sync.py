@@ -67,9 +67,15 @@ async def sync_data(
     budget_service = BudgetService(db)
 
     try:
-        currency_service = CurrencyService()
-        rates_response = await currency_service.get_rates()
-        rates = rates_response.rates
+        # Ленивая загрузка курсов: только если среди транзакций есть отличная от базовой валюта
+        has_multicurrency = any(
+            (item.currency or user_base_currency).strip().upper() != user_base_currency for item in payload.transactions
+        )
+        rates = None
+        if has_multicurrency:
+            currency_service = CurrencyService()
+            rates_response = await currency_service.get_rates()
+            rates = rates_response.rates
 
         # 1. Сохраняем или обновляем транзакции (Upsert)
         incoming_tx_ids = [item.id for item in payload.transactions if item.id is not None]
@@ -243,7 +249,13 @@ async def sync_data(
         for t in synced_transactions:
             await db.refresh(t)
 
-        if synced_budgets:
+        if (
+            synced_budgets
+            or synced_transactions
+            or payload.deleted_budgets
+            or payload.deleted_budget_ids
+            or to_delete_budgets
+        ):
             await BudgetService.invalidate_etag(user_id)
 
         enriched_budgets = await budget_service.enrich_multiple(
