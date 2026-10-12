@@ -11,6 +11,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.exceptions import InvalidCurrencyException
 from app.models.models import Category, Transaction, TransactionType, User
 from app.schemas.schemas import BudgetCreate, TransactionCreate
 from app.services.ai_service import AIService
@@ -263,7 +264,7 @@ class TestMultiCurrencyBackend:
                 amount=Decimal("1000000.00"),
                 currency="EUR",
                 exchange_rate=Decimal("13298.649213"),
-                base_amount=Decimal("13298649212.61"),
+                base_amount=Decimal("13298649213.00"),
                 description="Крупная операция в EUR",
                 category=Category.health,
                 type=TransactionType.expense,
@@ -271,7 +272,7 @@ class TestMultiCurrencyBackend:
             user_base_currency="UZS",
         )
 
-        assert large_tx.base_amount == Decimal("13298649212.61")
+        assert large_tx.base_amount == Decimal("13298649213.00")
         assert large_tx.amount == Decimal("1000000.00")
         assert large_tx.exchange_rate == Decimal("13298.649213")
 
@@ -289,5 +290,186 @@ class TestMultiCurrencyBackend:
         )
 
         assert budget.limit_amount == Decimal("20000000000.00")
-        assert budget.spent == Decimal("13298649212.61")
-        assert budget.remaining == Decimal("6701350787.39")
+        assert budget.spent == Decimal("13298649213.00")
+        assert budget.remaining == Decimal("6701350787.00")
+
+    @pytest.mark.asyncio
+    async def test_unknown_currency_code_in_create_transaction_returns_422(
+        self, client: AsyncClient, auth_headers: dict[str, str]
+    ):
+        """Неизвестный код валюты в POST /api/v1/transactions/ отклоняется с 422."""
+        for bad_curr in ["ABC", "usdt", "INVALID", "BTC"]:
+            payload = {
+                "amount": 100.00,
+                "currency": bad_curr,
+                "description": "Тест неизвестной валюты",
+                "category": "shopping",
+                "type": "expense",
+            }
+            response = await client.post("/api/v1/transactions/", json=payload, headers=auth_headers)
+            assert response.status_code == 422, f"Ожидался код 422 для валюты {bad_curr}"
+
+    @pytest.mark.asyncio
+    async def test_unknown_currency_code_in_sync_returns_422(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Неизвестный код валюты в элементе списка POST /api/v1/sync/ отклоняется с 422."""
+        payload = {
+            "transactions": [
+                {
+                    "amount": 500.00,
+                    "currency": "FOOBAR",
+                    "description": "Невалидная синхронизация",
+                    "category": "transport",
+                    "type": "expense",
+                    "date": "2026-10-10T12:00:00Z",
+                }
+            ],
+            "budgets": [],
+        }
+        response = await client.post("/api/v1/sync/", json=payload, headers=auth_headers)
+        assert response.status_code == 422
+
+    def test_calculate_cross_rate_raises_on_unsupported_currency(self):
+        """calculate_cross_rate бросает InvalidCurrencyException для неизвестной валюты."""
+        with pytest.raises(InvalidCurrencyException):
+            CurrencyService.calculate_cross_rate("UNKNOWN", "RUB")
+
+        with pytest.raises(InvalidCurrencyException):
+            CurrencyService.calculate_cross_rate("USD", "UNKNOWN")
+
+    @pytest.mark.asyncio
+    async def test_create_transaction_defaults_to_user_base_currency_usd(self, db_session: AsyncSession, test_user: User):
+        """Транзакция без currency у USD-пользователя создается в USD с курсом 1.0 и base_amount=amount."""
+        test_user.base_currency = "USD"
+        await db_session.flush()
+
+        tx_service = TransactionService(db_session)
+        payload = TransactionCreate(
+            amount=Decimal("150.00"),
+            currency=None,
+            description="Оплата хостинга",
+            category=Category.subscriptions,
+            type=TransactionType.expense,
+        )
+        tx = await tx_service.create(test_user.id, payload, user_base_currency="USD")
+
+        assert tx.currency == "USD"
+        assert tx.exchange_rate == Decimal("1.0")
+        assert tx.base_amount == Decimal("150.00")
+        assert tx.amount == Decimal("150.00")
+
+    @pytest.mark.asyncio
+    async def test_sync_transaction_defaults_to_user_base_currency_usd(
+        self, client: AsyncClient, auth_headers: dict[str, str], db_session: AsyncSession, test_user: User
+    ):
+        """Синхронизация транзакции без указания валюты у USD-пользователя сохраняет ее в USD."""
+        test_user.base_currency = "USD"
+        await db_session.flush()
+
+        tx_id = str(uuid.uuid4())
+        payload = {
+            "transactions": [
+                {
+                    "id": tx_id,
+                    "amount": 75.00,
+                    "description": "Кофе в Нью-Йорке",
+                    "category": "food",
+                    "type": "expense",
+                    "date": "2026-10-10T12:00:00Z",
+                }
+            ],
+            "budgets": [],
+        }
+        response = await client.post("/api/v1/sync/", json=payload, headers=auth_headers)
+        assert response.status_code == 200
+
+        data = response.json()["data"]["synced_transactions"]
+        assert len(data) == 1
+        assert data[0]["currency"] == "USD"
+        assert Decimal(str(data[0]["exchange_rate"])) == Decimal("1.0")
+        assert Decimal(str(data[0]["base_amount"])) == Decimal("75.00")
+
+    def test_resolve_amounts_same_currency_enforces_unit_rate_and_ignores_tampering(self):
+        """При совпадении валюты с базовой курс строго 1.0, а base_amount равен amount даже при подделке."""
+        rate, base_amount = CurrencyService.resolve_amounts(
+            amount=Decimal("100.00"),
+            currency="RUB",
+            base_currency="RUB",
+            client_rate=Decimal("999.0"),
+            client_base_amount=Decimal("1000000.00"),
+        )
+        assert rate == Decimal("1.0")
+        assert base_amount == Decimal("100.00")
+
+    def test_resolve_amounts_accepts_client_rate_within_tolerance(self):
+        """Клиентский курс принимается, если его отклонение от серверного не превышает tolerance."""
+        # rates: USD=1.0, RUB=96.0 -> server cross rate USD->RUB = 96.0
+        rates = {"USD": Decimal("1.0"), "RUB": Decimal("96.0")}
+        # Клиент прислал 95.0. Отклонение: |95 - 96| / 96 = ~1.04% <= 15%
+        rate, base_amount = CurrencyService.resolve_amounts(
+            amount=Decimal("100.00"),
+            currency="USD",
+            base_currency="RUB",
+            client_rate=Decimal("95.000000"),
+            rates=rates,
+            max_tolerance_percent=15.0,
+        )
+        assert rate == Decimal("95.000000")
+        assert base_amount == Decimal("9500.00")
+
+    def test_resolve_amounts_rejects_client_rate_exceeding_tolerance(self):
+        """Клиентский курс отбрасывается в пользу серверного, если отклонение превышает tolerance."""
+        rates = {"USD": Decimal("1.0"), "RUB": Decimal("96.0")}
+        # Клиент прислал нереалистичный курс 50.0 (отклонение ~48% > 15%)
+        rate, base_amount = CurrencyService.resolve_amounts(
+            amount=Decimal("100.00"),
+            currency="USD",
+            base_currency="RUB",
+            client_rate=Decimal("50.000000"),
+            rates=rates,
+            max_tolerance_percent=15.0,
+        )
+        assert rate == Decimal("96.000000")
+        assert base_amount == Decimal("9600.00")
+
+    @pytest.mark.asyncio
+    async def test_create_and_sync_give_identical_rate_and_base_amount(
+        self, client: AsyncClient, auth_headers: dict[str, str], db_session: AsyncSession, test_user: User
+    ):
+        """Эндпоинты create и sync дают строго одинаковые rate и base_amount при одинаковых входных данных."""
+        test_user.base_currency = "RUB"
+        await db_session.flush()
+
+        tx_payload_create = {
+            "amount": 200.00,
+            "currency": "USD",
+            "exchange_rate": 96.50,
+            "description": "Сверка курсов create",
+            "category": "shopping",
+            "type": "expense",
+        }
+        res_create = await client.post("/api/v1/transactions/", json=tx_payload_create, headers=auth_headers)
+        assert res_create.status_code == 201
+        data_create = res_create.json()["data"]
+
+        tx_id = str(uuid.uuid4())
+        sync_payload = {
+            "transactions": [
+                {
+                    "id": tx_id,
+                    "amount": 200.00,
+                    "currency": "USD",
+                    "exchange_rate": 96.50,
+                    "description": "Сверка курсов sync",
+                    "category": "shopping",
+                    "type": "expense",
+                    "date": "2026-10-10T12:00:00Z",
+                }
+            ],
+            "budgets": [],
+        }
+        res_sync = await client.post("/api/v1/sync/", json=sync_payload, headers=auth_headers)
+        assert res_sync.status_code == 200
+        data_sync = res_sync.json()["data"]["synced_transactions"][0]
+
+        assert data_create["exchange_rate"] == data_sync["exchange_rate"]
+        assert data_create["base_amount"] == data_sync["base_amount"]

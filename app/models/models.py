@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import DateTime
+from sqlalchemy import CheckConstraint, DateTime
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy import ForeignKey, Index, Numeric, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
@@ -97,6 +97,12 @@ class User(Base):
     """
 
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint(
+            f"base_currency IN {SUPPORTED_CURRENCIES}",
+            name="ck_users_base_currency",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
@@ -167,6 +173,10 @@ class Transaction(Base):
     __table_args__ = (
         Index("ix_transactions_user_id_date", "user_id", "date"),
         Index("ix_transactions_user_id_created_at", "user_id", "created_at"),
+        CheckConstraint(
+            f"currency IN {SUPPORTED_CURRENCIES}",
+            name="ck_transactions_currency",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

@@ -258,11 +258,21 @@ class TransactionCreate(BaseModel):
     """
 
     amount: Decimal = Field(..., gt=Decimal("0"), description="Сумма операции (должна быть больше 0)")
-    currency: str = Field(default="RUB", min_length=3, max_length=10, description="Код валюты операции (e.g. RUB, UZS, USD)")
-    exchange_rate: Decimal = Field(
-        default=Decimal("1.0"), gt=Decimal("0"), le=Decimal("1000000000"), description="Курс валюты к базовой"
+    currency: Optional[str] = Field(
+        default=None,
+        description="Код валюты операции (RUB, USD, EUR, KZT, UZS). По умолчанию базовая валюта пользователя",
     )
-    base_amount: Optional[Decimal] = Field(default=None, gt=Decimal("0"), description="Сумма в базовой валюте")
+    exchange_rate: Optional[Decimal] = Field(
+        default=None,
+        gt=Decimal("0"),
+        le=Decimal("1000000000"),
+        description="Курс валюты к базовой (опционально, рассчитывается сервером)",
+    )
+    base_amount: Optional[Decimal] = Field(
+        default=None,
+        gt=Decimal("0"),
+        description="Сумма в базовой валюте (опционально, рассчитывается сервером)",
+    )
     description: str = Field(..., min_length=1, max_length=255, description="Описание или назначение платежа")
     category: Category = Field(..., description="Категория операции")
     type: TransactionType = Field(..., description="Тип операции: income (доход) или expense (расход)")
@@ -270,13 +280,20 @@ class TransactionCreate(BaseModel):
 
     @field_validator("currency", mode="before")
     @classmethod
-    def normalize_currency(cls, v: Any) -> str:
-        """Нормализовать код валюты к верхнему регистру без пробелов."""
+    def normalize_currency(cls, v: Any) -> Optional[str]:
+        """Нормализовать код валюты к верхнему регистру и валидировать по списку поддерживаемых."""
+        if v is None:
+            return None
         if isinstance(v, str):
             code = v.strip().upper()
-            if code:
-                return code
-        return "RUB" if v is None else str(v)
+            if not code:
+                return None
+            if code not in SUPPORTED_CURRENCIES:
+                raise ValueError(f"Валюта '{code}' не поддерживается. Разрешены: {sorted(SUPPORTED_CURRENCIES)}")
+            return code
+        if isinstance(v, CurrencyCode):
+            return v.value
+        raise ValueError(f"Некорректный формат кода валюты: {v}")
 
     @model_validator(mode="after")
     def validate_category_type_compatibility(self) -> "TransactionCreate":
@@ -402,23 +419,40 @@ class TransactionSyncItem(BaseModel):
     type: TransactionType = Field(..., description="Тип операции")
     category: Category = Field(..., description="Категория")
     amount: Decimal = Field(..., gt=Decimal("0"), description="Сумма")
-    currency: Optional[str] = Field(default="RUB", min_length=3, max_length=10, description="Код валюты операции")
-    exchange_rate: Optional[Decimal] = Field(
-        default=Decimal("1.0"), gt=Decimal("0"), le=Decimal("1000000000"), description="Курс валюты к базовой"
+    currency: Optional[str] = Field(
+        default=None,
+        description="Код валюты операции (RUB, USD, EUR, KZT, UZS). По умолчанию базовая валюта пользователя",
     )
-    base_amount: Optional[Decimal] = Field(default=None, gt=Decimal("0"), description="Сумма в базовой валюте")
+    exchange_rate: Optional[Decimal] = Field(
+        default=None,
+        gt=Decimal("0"),
+        le=Decimal("1000000000"),
+        description="Курс валюты к базовой (опционально, рассчитывается сервером)",
+    )
+    base_amount: Optional[Decimal] = Field(
+        default=None,
+        gt=Decimal("0"),
+        description="Сумма в базовой валюте (опционально, рассчитывается сервером)",
+    )
     date: datetime = Field(..., description="Дата и время")
     description: str = Field(..., description="Описание")
 
     @field_validator("currency", mode="before")
     @classmethod
-    def normalize_currency(cls, v: Any) -> str:
-        """Нормализовать код валюты к верхнему регистру без пробелов."""
+    def normalize_currency(cls, v: Any) -> Optional[str]:
+        """Нормализовать код валюты к верхнему регистру и валидировать по списку поддерживаемых."""
+        if v is None:
+            return None
         if isinstance(v, str):
             code = v.strip().upper()
-            if code:
-                return code
-        return "RUB" if v is None else str(v)
+            if not code:
+                return None
+            if code not in SUPPORTED_CURRENCIES:
+                raise ValueError(f"Валюта '{code}' не поддерживается. Разрешены: {sorted(SUPPORTED_CURRENCIES)}")
+            return code
+        if isinstance(v, CurrencyCode):
+            return v.value
+        raise ValueError(f"Некорректный формат кода валюты: {v}")
 
     @model_validator(mode="after")
     def validate_category_type_compatibility(self) -> "TransactionSyncItem":
