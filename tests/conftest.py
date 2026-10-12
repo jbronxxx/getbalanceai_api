@@ -98,6 +98,8 @@ def mock_redis_client():
     """Фикстура для подмены redis_client в сервисах на FakeAsyncRedis."""
     fake_redis = fakeredis.FakeAsyncRedis(decode_responses=True)
     with (
+        patch("app.redis.redis_client", fake_redis),
+        patch("app.redis._redis_client", fake_redis),
         patch("app.services.ai_service.redis_client", fake_redis),
         patch("app.services.currency_service.redis_client", fake_redis),
     ):

@@ -6,10 +6,14 @@ from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
-from redis import asyncio as aioredis
 
 from app.exceptions import InvalidCurrencyException
 from app.models.models import SUPPORTED_CURRENCIES, CurrencyCode
+from app.redis import (
+    REDIS_KEY_CURRENCY_RATES,
+    REDIS_KEY_CURRENCY_RATES_LAST_SUCCESSFUL,
+    get_redis,
+)
 from app.schemas.schemas import CurrencyRatesResponse
 from config_reader.config_reader import config
 from logger.logger import get_logger
@@ -25,31 +29,57 @@ FALLBACK_RATES: dict[str, Decimal] = {
     CurrencyCode.KZT.value: Decimal("495.0"),
 }
 
-CACHE_TTL_SECONDS = config.currency_rates_cache_ttl
-REDIS_CACHE_KEY = "currency_rates:USD"
-REDIS_LAST_SUCCESSFUL_KEY = "currency_rates:last_successful:USD"
+# Фиксированная временная метка актуальности базовой резервной таблицы котировок
+FALLBACK_RATES_UPDATED_AT: datetime = datetime(2026, 10, 1, 0, 0, 0, tzinfo=timezone.utc)
 
-redis_client = aioredis.from_url(config.redis_url, decode_responses=True)
-_fetch_lock = asyncio.Lock()
-_mem_rates: dict[str, Decimal] = dict(FALLBACK_RATES)
-_mem_updated_at: datetime = datetime.now(timezone.utc)
-_http_client: httpx.AsyncClient | None = None
+CACHE_TTL_SECONDS = config.currency_rates_cache_ttl
+REDIS_CACHE_KEY = REDIS_KEY_CURRENCY_RATES
+REDIS_LAST_SUCCESSFUL_KEY = REDIS_KEY_CURRENCY_RATES_LAST_SUCCESSFUL
+
+# Единый клиент Redis приложения
+redis_client = get_redis()
+
+
+class CurrencyServiceState:
+    """Инкапсулированное состояние валютного сервиса в оперативной памяти процесса."""
+
+    def __init__(self) -> None:
+        """Инициализация состояния синхронизации и кэша в памяти."""
+        self.lock = asyncio.Lock()
+        self.mem_rates: dict[str, Decimal] = dict(FALLBACK_RATES)
+        self.mem_updated_at: datetime = FALLBACK_RATES_UPDATED_AT
+        self.http_client: httpx.AsyncClient | None = None
+
+    def get_http_client(self, timeout: float) -> httpx.AsyncClient:
+        """Получить или инициализировать переиспользуемый клиент HTTP."""
+        if self.http_client is None or self.http_client.is_closed:
+            self.http_client = httpx.AsyncClient(timeout=timeout)
+        return self.http_client
+
+    async def close_http_client(self) -> None:
+        """Закрыть пул соединений переиспользуемого HTTP-клиента при завершении работы."""
+        if self.http_client is not None and not self.http_client.is_closed:
+            await self.http_client.aclose()
+            self.http_client = None
+
+    def reset(self) -> None:
+        """Сбросить кэш памяти к исходной резервной таблице (используется в тестах)."""
+        self.mem_rates = dict(FALLBACK_RATES)
+        self.mem_updated_at = FALLBACK_RATES_UPDATED_AT
+
+
+# Синглтон состояния сервиса валют в памяти
+currency_state = CurrencyServiceState()
 
 
 def get_http_client() -> httpx.AsyncClient:
     """Получить или инициализировать переиспользуемый клиент HTTP."""
-    global _http_client
-    if _http_client is None or _http_client.is_closed:
-        _http_client = httpx.AsyncClient(timeout=config.currency_rates_timeout)
-    return _http_client
+    return currency_state.get_http_client(config.currency_rates_timeout)
 
 
 async def close_http_client() -> None:
     """Закрыть пул соединений переиспользуемого HTTP-клиента при завершении работы."""
-    global _http_client
-    if _http_client is not None and not _http_client.is_closed:
-        await _http_client.aclose()
-        _http_client = None
+    await currency_state.close_http_client()
 
 
 class CurrencyService:
@@ -216,7 +246,7 @@ class CurrencyService:
             return cached_response
 
         # 2. Защита от Thundering Herd при протухании кэша
-        async with _fetch_lock:
+        async with currency_state.lock:
             # Повторная проверка (double-checked locking)
             cached_response = await self._read_from_redis(REDIS_CACHE_KEY)
             if cached_response:
@@ -227,13 +257,12 @@ class CurrencyService:
             now = datetime.now(timezone.utc)
 
             if fetched_rates:
-                global _mem_rates, _mem_updated_at
-                _mem_rates.update(fetched_rates)
-                _mem_updated_at = now
+                currency_state.mem_rates.update(fetched_rates)
+                currency_state.mem_updated_at = now
                 response = CurrencyRatesResponse(
                     base="USD",
-                    rates=_mem_rates,
-                    updated_at=_mem_updated_at,
+                    rates=currency_state.mem_rates,
+                    updated_at=currency_state.mem_updated_at,
                     is_fallback=False,
                 )
                 await self._write_to_redis(response, key=REDIS_CACHE_KEY, ttl=self.cache_ttl)
@@ -250,8 +279,8 @@ class CurrencyService:
                 fallback_rates = last_successful.rates
                 fallback_updated_at = last_successful.updated_at
             else:
-                fallback_rates = dict(_mem_rates)
-                fallback_updated_at = _mem_updated_at
+                fallback_rates = dict(currency_state.mem_rates)
+                fallback_updated_at = currency_state.mem_updated_at
 
             fallback_response = CurrencyRatesResponse(
                 base="USD",
@@ -292,7 +321,8 @@ class CurrencyService:
     async def _read_from_redis(self, key: str = REDIS_CACHE_KEY) -> CurrencyRatesResponse | None:
         """Прочитать кэшированные курсы из указанного ключа Redis."""
         try:
-            cached_json = await redis_client.get(key)
+            client = get_redis()
+            cached_json = await client.get(key)
             if cached_json:
                 data = json.loads(cached_json)
                 rates = {k: Decimal(str(v)) for k, v in data["rates"].items()}
@@ -316,6 +346,7 @@ class CurrencyService:
     ) -> None:
         """Сохранить курсы валют в Redis с опциональным TTL."""
         try:
+            client = get_redis()
             payload = {
                 "base": response.base,
                 "rates": {k: str(v) for k, v in response.rates.items()},
@@ -324,9 +355,9 @@ class CurrencyService:
             }
             dumped = json.dumps(payload)
             if ttl is not None and ttl > 0:
-                await redis_client.setex(key, ttl, dumped)
+                await client.setex(key, ttl, dumped)
             else:
-                await redis_client.set(key, dumped)
+                await client.set(key, dumped)
             logger.info("Кэш котировок валют успешно сохранен в Redis (%s, ttl=%s)", key, ttl)
         except Exception as err:
             logger.warning("Не удалось сохранить кэш котировок в Redis (%s): %s", key, err)

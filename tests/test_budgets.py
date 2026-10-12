@@ -7,7 +7,7 @@ import uuid
 from decimal import Decimal
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 
 
 class TestBudgets:
@@ -345,3 +345,47 @@ class TestBudgets:
             res = await client.get("/api/v1/budgets/", headers=auth_headers)
             assert res.status_code == 200
             mock_get_rates.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_create_budget_parallel_requests_no_500(self, auth_headers: dict[str, str]):
+        """Параллельные одновременные запросы POST /budgets/ на одну категорию не приводят к 500 ошибке гонки."""
+        import asyncio
+
+        from app.database import get_db
+        from main import app
+        from tests.conftest import TestingSessionLocal
+
+        # Каждый параллельный запрос получает собственную сессию БД из пула (как в продакшене)
+        async def _parallel_get_db():
+            async with TestingSessionLocal() as session:
+                try:
+                    yield session
+                    await session.commit()
+                except Exception:
+                    await session.rollback()
+                    raise
+
+        app.dependency_overrides[get_db] = _parallel_get_db
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as par_client:
+                payload1 = {"category": "health", "limit_amount": 400.00, "month": 12, "year": 2026}
+                payload2 = {"category": "health", "limit_amount": 600.00, "month": 12, "year": 2026}
+
+                # Выполняем два одновременных запроса создания бюджета на один и тот же период и категорию
+                res1, res2 = await asyncio.gather(
+                    par_client.post("/api/v1/budgets/", json=payload1, headers=auth_headers),
+                    par_client.post("/api/v1/budgets/", json=payload2, headers=auth_headers),
+                )
+
+                # Ни один из параллельных запросов не должен упасть с 500 Internal Server Error
+                assert res1.status_code == 201
+                assert res2.status_code == 201
+
+                # Проверяем список: должна остаться ровно одна запись бюджета по категории health (upsert)
+                get_res = await par_client.get("/api/v1/budgets/?month=12&year=2026", headers=auth_headers)
+                assert get_res.status_code == 200
+                health_budgets = [b for b in get_res.json()["data"] if b["category"] == "health"]
+                assert len(health_budgets) == 1
+                assert float(health_budgets[0]["limit_amount"]) in (400.00, 600.00)
+        finally:
+            app.dependency_overrides.pop(get_db, None)

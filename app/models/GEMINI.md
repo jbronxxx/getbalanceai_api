@@ -37,6 +37,6 @@
 ## 3. Обязательная синхронизация
 
 При добавлении нового поля, таблицы или индекса:
-1. Создать миграцию Alembic (см. [migrations/GEMINI.md](file:///c:/Projects/getbalanceai_api/migrations/GEMINI.md)).
-2. Обновить ER-диаграмму и описание схемы в [ARCHITECTURE.md](file:///c:/Projects/getbalanceai_api/ARCHITECTURE.md).
+1. Создать миграцию Alembic (см. [migrations/GEMINI.md](../../migrations/GEMINI.md)).
+2. Обновить ER-диаграмму и описание схемы в [ARCHITECTURE.md](../../ARCHITECTURE.md).
 3. Обновить фабрики/фикстуры тестовых данных в `tests/conftest.py` при необходимости.

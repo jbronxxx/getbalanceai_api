@@ -1,0 +1,61 @@
+"""Модульные тесты централизованного модуля app.redis."""
+
+import uuid
+
+import pytest
+
+from app.redis import (
+    REDIS_KEY_CURRENCY_RATES,
+    REDIS_KEY_CURRENCY_RATES_LAST_SUCCESSFUL,
+    close_redis,
+    get_budgets_version_key,
+    get_insights_cache_key,
+    get_insights_count_key,
+    get_insights_user_patterns,
+    get_redis,
+)
+
+
+def test_redis_key_builders():
+    """Проверка генерации ключей Redis для бюджетов и аналитики."""
+    test_id = uuid.uuid4()
+
+    # 1. Ключ версии бюджетов
+    budgets_key = get_budgets_version_key(test_id)
+    assert budgets_key == f"budgets_version:{test_id}"
+
+    # 2. Ключи кэша инсайтов
+    cache_key = get_insights_cache_key(test_id, locale="ru", currency="RUB")
+    assert cache_key == f"insights_cache:{test_id}:ru:RUB"
+
+    count_key = get_insights_count_key(test_id, locale="ru", currency="RUB")
+    assert count_key == f"insights_tx_count:{test_id}:ru:RUB"
+
+    # 3. Шаблоны для неблокирующей очистки
+    patterns = get_insights_user_patterns(test_id)
+    assert len(patterns) == 3
+    assert f"insights_cache:{test_id}*" in patterns
+    assert f"insights_tx_count:{test_id}*" in patterns
+    assert f"insights_*:{test_id}*" in patterns
+
+    # 4. Константы котировок
+    assert REDIS_KEY_CURRENCY_RATES == "currency_rates:USD"
+    assert REDIS_KEY_CURRENCY_RATES_LAST_SUCCESSFUL == "currency_rates:last_successful:USD"
+
+
+@pytest.mark.asyncio
+async def test_get_redis_and_close():
+    """Проверка получения инстанса Redis и его безопасного закрытия."""
+    client = get_redis()
+    assert client is not None
+
+    # Повторный вызов возвращает тот же инстанс
+    client2 = get_redis()
+    assert client is client2
+
+    # Безопасное закрытие клиента
+    await close_redis()
+
+    # После закрытия get_redis() инициализирует рабочий клиент
+    reopened = get_redis()
+    assert reopened is not None
