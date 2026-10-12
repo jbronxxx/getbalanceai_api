@@ -32,7 +32,8 @@ from app.schemas.schemas import (
     UserRegister,
     UserUpdateRequest,
 )
-from app.services.currency_service import FALLBACK_RATES, CurrencyService
+from app.services.budget_service import BudgetService
+from app.services.currency_service import CurrencyService
 from config_reader.config_reader import config
 from logger.logger import get_logger
 
@@ -136,15 +137,6 @@ class AuthService:
         rates_response = await currency_service.get_rates()
         rates = rates_response.rates
 
-        def _get_cross_rate(from_curr: str, to_curr: str) -> Decimal:
-            if from_curr == to_curr:
-                return Decimal("1.0")
-            from_usd_rate = rates.get(from_curr) or FALLBACK_RATES.get(from_curr, Decimal("1.0"))
-            to_usd_rate = rates.get(to_curr) or FALLBACK_RATES.get(to_curr, Decimal("1.0"))
-            if from_usd_rate <= Decimal("0"):
-                return Decimal("1.0")
-            return to_usd_rate / from_usd_rate
-
         # 1. Пересчет существующих транзакций пользователя
         tx_query = select(Transaction).where(Transaction.user_id == user_id)
         tx_res = await self.db.execute(tx_query)
@@ -152,7 +144,7 @@ class AuthService:
 
         for tx in transactions:
             tx_currency = (tx.currency or old_currency).strip().upper()
-            new_exchange_rate = _get_cross_rate(tx_currency, new_currency)
+            new_exchange_rate = CurrencyService.calculate_cross_rate(tx_currency, new_currency, rates)
             tx.exchange_rate = new_exchange_rate
             tx.base_amount = (tx.amount * new_exchange_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
@@ -161,7 +153,7 @@ class AuthService:
         budget_res = await self.db.execute(budget_query)
         budgets = list(budget_res.scalars().all())
 
-        budget_rate = _get_cross_rate(old_currency, new_currency)
+        budget_rate = CurrencyService.calculate_cross_rate(old_currency, new_currency, rates)
         for budget in budgets:
             budget.limit_amount = (budget.limit_amount * budget_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
@@ -169,7 +161,10 @@ class AuthService:
             f"Успешно пересчитано {len(transactions)} транзакций и {len(budgets)} бюджетов для пользователя {user_id}"
         )
 
-        # 3. Инвалидация кэша инсайтов AI в Redis
+        # 3. Инвалидация ETag кэша бюджетов пользователя
+        await BudgetService.invalidate_etag(user_id)
+
+        # 4. Инвалидация кэша инсайтов AI в Redis
         try:
             from app.services.ai_service import redis_client
 

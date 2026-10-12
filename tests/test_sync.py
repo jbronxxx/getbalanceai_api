@@ -265,3 +265,115 @@ class TestSyncEndpointIntegration:
         assert Decimal(str(food_budget["remaining"])) == Decimal("1000.0")
         assert Decimal(str(transport_budget["spent"])) == Decimal("0.00")
         assert Decimal(str(transport_budget["remaining"])) == Decimal("1000.0")
+
+    @pytest.mark.asyncio
+    async def test_sync_budgets_idempotent_upsert_and_deduplication(
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, str],
+        db_session: AsyncSession,
+        test_user: User,
+    ):
+        """Идемпотентный UPSERT бюджетов по ID и составному ключу без дубликатов и ошибок уникальности."""
+        user_id = test_user.id
+        client_budget_id = str(uuid.uuid4())
+
+        # 1. Первый запрос: создание бюджета с клиентским ID
+        payload1 = {
+            "transactions": [],
+            "budgets": [
+                {
+                    "id": client_budget_id,
+                    "category": "food",
+                    "limit_amount": 1000.0,
+                    "month": 10,
+                    "year": 2026,
+                }
+            ],
+            "deleted_budget_ids": [],
+            "deleted_budgets": [],
+        }
+        res1 = await client.post("/api/v1/sync/", json=payload1, headers=auth_headers)
+        assert res1.status_code == 200
+        data1 = res1.json()["data"]["synced_budgets"]
+        assert len(data1) == 1
+        assert data1[0]["id"] == client_budget_id
+        assert Decimal(str(data1[0]["limit_amount"])) == Decimal("1000.0")
+
+        # 2. Второй запрос: обновление того же бюджета по ID с новым limit_amount
+        payload2 = {
+            "transactions": [],
+            "budgets": [
+                {
+                    "id": client_budget_id,
+                    "category": "food",
+                    "limit_amount": 1500.0,
+                    "month": 10,
+                    "year": 2026,
+                }
+            ],
+            "deleted_budget_ids": [],
+            "deleted_budgets": [],
+        }
+        res2 = await client.post("/api/v1/sync/", json=payload2, headers=auth_headers)
+        assert res2.status_code == 200
+        data2 = res2.json()["data"]["synced_budgets"]
+        assert len(data2) == 1
+        assert data2[0]["id"] == client_budget_id
+        assert Decimal(str(data2[0]["limit_amount"])) == Decimal("1500.0")
+
+        # 3. Третий запрос: обновление без передачи ID (по составному ключу category + month + year)
+        payload3 = {
+            "transactions": [],
+            "budgets": [
+                {
+                    "id": None,
+                    "category": "food",
+                    "limit_amount": 2000.0,
+                    "month": 10,
+                    "year": 2026,
+                }
+            ],
+            "deleted_budget_ids": [],
+            "deleted_budgets": [],
+        }
+        res3 = await client.post("/api/v1/sync/", json=payload3, headers=auth_headers)
+        assert res3.status_code == 200
+        data3 = res3.json()["data"]["synced_budgets"]
+        assert len(data3) == 1
+        assert Decimal(str(data3[0]["limit_amount"])) == Decimal("2000.0")
+
+        # 4. Четвертый запрос: отправка дублирующихся элементов бюджетов в одном пакете
+        payload4 = {
+            "transactions": [],
+            "budgets": [
+                {
+                    "category": "food",
+                    "limit_amount": 2500.0,
+                    "month": 10,
+                    "year": 2026,
+                },
+                {
+                    "category": "food",
+                    "limit_amount": 3000.0,
+                    "month": 10,
+                    "year": 2026,
+                },
+            ],
+            "deleted_budget_ids": [],
+            "deleted_budgets": [],
+        }
+        res4 = await client.post("/api/v1/sync/", json=payload4, headers=auth_headers)
+        assert res4.status_code == 200
+        data4 = res4.json()["data"]["synced_budgets"]
+        # В ответе не должно быть дубликатов — ровно 1 запись
+        assert len(data4) == 1
+        assert Decimal(str(data4[0]["limit_amount"])) == Decimal("3000.0")
+
+        # 5. Проверка в БД: в таблице ровно одна запись бюджета без дубликатов
+        db_session.expire_all()
+        query = select(Budget).where(Budget.user_id == user_id, Budget.category == Category.food)
+        result = await db_session.execute(query)
+        budgets_in_db = list(result.scalars().all())
+        assert len(budgets_in_db) == 1
+        assert budgets_in_db[0].limit_amount == Decimal("3000.0")

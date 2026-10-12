@@ -373,11 +373,17 @@ class BudgetResponse(BaseModel):
 
     id: uuid.UUID = Field(..., description="ID бюджета")
     category: Category = Field(..., description="Категория расходов")
-    limit_amount: Decimal = Field(..., description="Установленный лимит бюджета")
-    month: int = Field(..., description="Месяц")
-    year: int = Field(..., description="Год")
-    spent: Decimal = Field(default=Decimal("0.00"), description="Фактически израсходовано")
-    remaining: Decimal = Field(default=Decimal("0.00"), description="Остаток лимита")
+    limit_amount: Decimal = Field(..., description="Установленный лимит бюджета в базовой валюте пользователя")
+    month: int = Field(..., description="Месяц действия бюджета (1-12)")
+    year: int = Field(..., description="Год действия бюджета")
+    spent: Decimal = Field(
+        default=Decimal("0.00"),
+        description="Фактически израсходованная сумма в базовой валюте пользователя (с учетом курсов транзакций)",
+    )
+    remaining: Decimal = Field(
+        default=Decimal("0.00"),
+        description="Остаток лимита в базовой валюте пользователя",
+    )
 
 
 # ============================================================================
@@ -433,11 +439,18 @@ class TransactionSyncItem(BaseModel):
 class BudgetSyncItem(BaseModel):
     """Схема отдельного бюджета при пакетной синхронизации."""
 
-    id: Optional[uuid.UUID] = Field(default=None, description="ID бюджета (если уже создан на сервере)")
-    category: Category = Field(..., description="Категория")
-    limit_amount: Decimal = Field(default=Decimal("0.00"), ge=Decimal("0"), description="Лимит бюджета")
-    month: int = Field(..., ge=1, le=12, description="Месяц")
-    year: int = Field(..., ge=2000, le=2100, description="Год")
+    id: Optional[uuid.UUID] = Field(
+        default=None,
+        description="ID бюджета (для обновления существующего бюджета или сохранения оффлайн-идентификатора)",
+    )
+    category: Category = Field(..., description="Расходная категория")
+    limit_amount: Decimal = Field(
+        default=Decimal("0.00"),
+        ge=Decimal("0"),
+        description="Лимит бюджета в базовой валюте пользователя",
+    )
+    month: int = Field(..., ge=1, le=12, description="Месяц действия бюджета (1-12)")
+    year: int = Field(..., ge=2000, le=2100, description="Год действия бюджета")
     is_deleted: bool = Field(default=False, description="Флаг удаления бюджета на клиенте")
     deleted: Optional[bool] = Field(default=None, description="Альтернативный флаг удаления бюджета")
 

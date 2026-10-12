@@ -150,7 +150,11 @@ async def update_me(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict[str, str | User]:
-    """Обновить профиль пользователя (имя, аватар, базовая валюта)."""
+    """Обновить профиль пользователя (имя, аватар, базовая валюта).
+
+    При изменении поля base_currency автоматически выполняется пересчет лимитов всех активных бюджетов
+    и базовых сумм транзакций по курсу валют, а также инвалидируется заголовок ETag для /api/v1/budgets.
+    """
     service = AuthService(db)
     updated_user = await service.update_profile(current_user.id, payload)
     return {"status": "success", "data": updated_user}

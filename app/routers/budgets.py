@@ -51,24 +51,51 @@ async def create_budget(
     "/",
     response_model=ApiResponse[list[BudgetResponse]],
     summary="Получить список бюджетов",
+    responses={
+        200: {
+            "model": ApiResponse[list[BudgetResponse]],
+            "description": "Список бюджетов с расчетом spent и remaining в базовой валюте пользователя",
+        },
+        304: {"description": "Данные не изменялись (ETag совпадает с заголовком If-None-Match)"},
+    },
 )
 async def list_budgets(
     month: int | None = Query(default=None, ge=1, le=12, description="Фильтр по номеру месяца (1-12)"),
     year: int | None = Query(default=None, ge=2000, le=2100, description="Фильтр по году"),
-    if_none_match: str | None = Header(None, alias="If-None-Match"),
+    if_none_match: str | None = Header(
+        None,
+        alias="If-None-Match",
+        description="ETag предыдущего ответа для условного кэширования",
+    ),
     response: Response = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Получить список бюджетов с автоматическим расчетом израсходованных средств и остатка лимита."""
+    """Получить список бюджетов с мультивалютным расчетом израсходованных средств и остатка лимита.
+
+    Суммы фактически потраченных средств (spent) и доступного остатка (remaining) рассчитываются
+    с автоматической конвертацией мультивалютных транзакций в базовую валюту пользователя.
+    Поддерживает условное кэширование по ETag. При смене base_currency пользователя заголовок ETag
+    автоматически инвалидируется.
+    """
     service = BudgetService(db)
 
-    current_etag = await service.get_etag(current_user.id, month=month, year=year)
+    current_etag = await service.get_etag(
+        current_user.id,
+        month=month,
+        year=year,
+        base_currency=current_user.base_currency,
+    )
 
     if if_none_match and if_none_match.strip('"') == current_etag:
         return Response(status_code=status.HTTP_304_NOT_MODIFIED)
 
-    budgets = await service.get_all(current_user.id, month=month, year=year)
+    budgets = await service.get_all(
+        current_user.id,
+        month=month,
+        year=year,
+        user_base_currency=current_user.base_currency,
+    )
     if response:
         response.headers["ETag"] = f'"{current_etag}"'
 
