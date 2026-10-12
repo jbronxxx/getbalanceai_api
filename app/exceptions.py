@@ -47,6 +47,9 @@ class ErrorCode(StrEnum):
     # Безопасность и лимиты
     RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED"
 
+    # Валюты
+    INVALID_CURRENCY = "INVALID_CURRENCY"
+
 
 class AppException(HTTPException):
     """Базовое доменное исключение приложения.
@@ -174,5 +177,20 @@ class BudgetLimitExceededException(AppException):
             code=ErrorCode.BUDGET_LIMIT_EXCEEDED,
             message=message,
             status_code=status.HTTP_400_BAD_REQUEST,
+            details=details,
+        )
+
+
+class InvalidCurrencyException(BadRequestException):
+    """Исключение при указании неподдерживаемой валюты (HTTP 400)."""
+
+    def __init__(
+        self,
+        message: str = "Указана неподдерживаемая валюта",
+        details: Optional[dict[str, Any]] = None,
+    ):
+        super().__init__(
+            code=ErrorCode.INVALID_CURRENCY,
+            message=message,
             details=details,
         )

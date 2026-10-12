@@ -45,6 +45,7 @@ class Settings(BaseSettings):
 
     currency_rates_url: str = Field("https://open.er-api.com/v6/latest/USD", alias="CURRENCY_RATES_URL")
     currency_rates_cache_ttl: int = Field(86400, alias="CURRENCY_RATES_CACHE_TTL")
+    client_rate_tolerance_percent: float = Field(15.0, alias="CLIENT_RATE_TOLERANCE_PERCENT")
 
     model_config = SettingsConfigDict(
         env_file=".env",

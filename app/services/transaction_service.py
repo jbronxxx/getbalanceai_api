@@ -45,28 +45,20 @@ class TransactionService:
 
         curr = (payload.currency or user_base_currency).strip().upper()
 
-        if curr == user_base_currency:
-            rate = Decimal("1.0")
-            if payload.base_amount is not None:
-                base_amt = payload.base_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            else:
-                base_amt = payload.amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        else:
-            if payload.exchange_rate is not None and payload.exchange_rate != Decimal("1.0"):
-                rate = payload.exchange_rate.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
-            else:
-                currency_service = CurrencyService()
-                rates_resp = await currency_service.get_rates()
-                rate = CurrencyService.calculate_cross_rate(curr, user_base_currency, rates_resp.rates)
+        rates = None
+        if curr != user_base_currency:
+            currency_service = CurrencyService()
+            rates_resp = await currency_service.get_rates()
+            rates = rates_resp.rates
 
-            if (
-                payload.base_amount is not None
-                and payload.base_amount > Decimal("0.00")
-                and payload.base_amount != payload.amount
-            ):
-                base_amt = payload.base_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            else:
-                base_amt = (payload.amount * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        rate, base_amt = CurrencyService.resolve_amounts(
+            amount=payload.amount,
+            currency=curr,
+            base_currency=user_base_currency,
+            client_rate=payload.exchange_rate,
+            client_base_amount=payload.base_amount,
+            rates=rates,
+        )
 
         tx = Transaction(
             user_id=user_id,

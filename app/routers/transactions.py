@@ -44,7 +44,11 @@ async def create_transaction(
 ):
     """Создать новую транзакцию (доход или расход) для авторизованного пользователя."""
     service = TransactionService(db)
-    transaction = await service.create(current_user.id, payload)
+    transaction = await service.create(
+        current_user.id,
+        payload,
+        user_base_currency=current_user.base_currency,
+    )
     return {"status": "success", "data": transaction}
 
 

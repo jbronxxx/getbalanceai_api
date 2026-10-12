@@ -91,19 +91,14 @@ async def sync_data(
                 continue
 
             curr = (item.currency or user_base_currency).strip().upper()
-            if curr == user_base_currency:
-                rate = Decimal("1.0")
-                base_amt = item.amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            else:
-                if item.exchange_rate is not None and item.exchange_rate != Decimal("1.0"):
-                    rate = item.exchange_rate.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
-                else:
-                    rate = CurrencyService.calculate_cross_rate(curr, user_base_currency, rates)
-
-                if item.base_amount is not None and item.base_amount > Decimal("0.00") and item.base_amount != item.amount:
-                    base_amt = item.base_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                else:
-                    base_amt = (item.amount * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            rate, base_amt = CurrencyService.resolve_amounts(
+                amount=item.amount,
+                currency=curr,
+                base_currency=user_base_currency,
+                client_rate=item.exchange_rate,
+                client_base_amount=item.base_amount,
+                rates=rates,
+            )
 
             quantized_amount = item.amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             if item.id and item.id in existing_txs_map:

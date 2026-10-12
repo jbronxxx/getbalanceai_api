@@ -3,11 +3,12 @@
 import asyncio
 import json
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
 from redis import asyncio as aioredis
 
+from app.exceptions import InvalidCurrencyException
 from app.models.models import SUPPORTED_CURRENCIES, CurrencyCode
 from app.schemas.schemas import CurrencyRatesResponse
 from config_reader.config_reader import config
@@ -60,19 +61,120 @@ class CurrencyService:
 
         Возвращает:
             Decimal: Коэффициент конвертации.
+
+        Исключения:
+            InvalidCurrencyException: Если передан неизвестный код валюты.
         """
         from_code = from_curr.strip().upper()
         to_code = to_curr.strip().upper()
+
+        if from_code not in SUPPORTED_CURRENCIES:
+            raise InvalidCurrencyException(f"Неподдерживаемая исходная валюта: '{from_curr}'")
+        if to_code not in SUPPORTED_CURRENCIES:
+            raise InvalidCurrencyException(f"Неподдерживаемая целевая валюта: '{to_curr}'")
+
         if from_code == to_code:
             return Decimal("1.0")
 
         rates_dict = rates if rates is not None else FALLBACK_RATES
-        from_usd_rate = rates_dict.get(from_code) or FALLBACK_RATES.get(from_code, Decimal("1.0"))
-        to_usd_rate = rates_dict.get(to_code) or FALLBACK_RATES.get(to_code, Decimal("1.0"))
+        from_usd_rate = rates_dict.get(from_code) or FALLBACK_RATES.get(from_code)
+        to_usd_rate = rates_dict.get(to_code) or FALLBACK_RATES.get(to_code)
 
-        if from_usd_rate <= Decimal("0"):
-            return Decimal("1.0")
+        if not from_usd_rate or from_usd_rate <= Decimal("0"):
+            raise InvalidCurrencyException(f"Не удалось определить курс для валюты '{from_code}'")
+        if not to_usd_rate or to_usd_rate <= Decimal("0"):
+            raise InvalidCurrencyException(f"Не удалось определить курс для валюты '{to_code}'")
+
         return to_usd_rate / from_usd_rate
+
+    @classmethod
+    def resolve_amounts(
+        cls,
+        amount: Decimal,
+        currency: str | None,
+        base_currency: str,
+        client_rate: Decimal | None = None,
+        client_base_amount: Decimal | None = None,
+        rates: dict[str, Decimal] | None = None,
+        max_tolerance_percent: float | Decimal | None = None,
+    ) -> tuple[Decimal, Decimal]:
+        """Рассчитать согласованные курс (exchange_rate) и базовую сумму (base_amount).
+
+        Обеспечивает единую точку правды для конвертации валют:
+        - Если валюта совпадает с базовой: rate = 1.0, base_amount = amount.
+          Клиентские base_amount и rate игнорируются во избежание искажения данных.
+        - Если валюта отличается: рассчитывается серверный кросс-курс.
+          Клиентский курс принимается только в случае, если его отклонение
+          от серверного не превышает установленный порог tolerance.
+          Иначе применяется серверный курс с предупреждением в лог.
+        - Базовая сумма всегда вычисляется как (amount * rate), квантованная до 0.01.
+
+        Аргументы:
+            amount (Decimal): Сумма операции в валюте чека.
+            currency (str | None): Валюта операции (если None, считается базовой).
+            base_currency (str): Базовая валюта учета пользователя.
+            client_rate (Decimal | None): Курс, переданный клиентом.
+            client_base_amount (Decimal | None): Сумма в базовой валюте от клиента (для сверки).
+            rates (dict[str, Decimal] | None): Актуальные курсы валют к USD.
+            max_tolerance_percent (float | Decimal | None): Допустимый процент отклонения курса.
+
+        Возвращает:
+            tuple[Decimal, Decimal]: (exchange_rate, base_amount)
+
+        Исключения:
+            InvalidCurrencyException: Если валюта операции или базовая валюта не поддерживается.
+        """
+        curr = (currency or base_currency).strip().upper()
+        base_curr = base_currency.strip().upper()
+
+        if curr not in SUPPORTED_CURRENCIES:
+            raise InvalidCurrencyException(f"Неподдерживаемая валюта транзакции: '{currency}'")
+        if base_curr not in SUPPORTED_CURRENCIES:
+            raise InvalidCurrencyException(f"Неподдерживаемая базовая валюта пользователя: '{base_currency}'")
+
+        quantized_amount = amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        # 1. Если валюта совпадает с базовой — строгий курс 1.0 и равенство сумм
+        if curr == base_curr:
+            return Decimal("1.0"), quantized_amount
+
+        # 2. Мультивалютная операция: расчет серверного кросс-курса
+        server_rate = cls.calculate_cross_rate(curr, base_curr, rates)
+
+        # 3. Валидация клиентского курса против серверного
+        tolerance_pct = (
+            Decimal(str(max_tolerance_percent))
+            if max_tolerance_percent is not None
+            else Decimal(str(config.client_rate_tolerance_percent))
+        )
+        tolerance_ratio = tolerance_pct / Decimal("100")
+
+        use_client_rate = False
+        if client_rate is not None and client_rate > Decimal("0"):
+            deviation = abs(client_rate - server_rate) / server_rate
+            if deviation <= tolerance_ratio:
+                use_client_rate = True
+            else:
+                logger.warning(
+                    f"Клиентский курс {client_rate} для {curr}->{base_curr} отклоняется от серверного "
+                    f"{server_rate:.6f} на {deviation * 100:.2f}% (порог {tolerance_pct}%). "
+                    "Применен серверный курс котировок."
+                )
+
+        calc_rate = client_rate if use_client_rate else server_rate
+        calculated_base_amount = (quantized_amount * calc_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        effective_rate = calc_rate.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+
+        if client_base_amount is not None:
+            quantized_client_base = client_base_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            diff = abs(quantized_client_base - calculated_base_amount)
+            if diff > Decimal("0.05"):
+                logger.warning(
+                    f"Клиентская базовая сумма {quantized_client_base} расходится с расчетной "
+                    f"{calculated_base_amount} (разница {diff}). Использовано расчетное значение."
+                )
+
+        return effective_rate, calculated_base_amount
 
     async def get_rates(self) -> CurrencyRatesResponse:
         """Получить актуальные курсы валют из Redis, внешнего шлюза или резервной таблицы.
