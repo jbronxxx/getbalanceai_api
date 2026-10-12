@@ -27,11 +27,29 @@ FALLBACK_RATES: dict[str, Decimal] = {
 
 CACHE_TTL_SECONDS = config.currency_rates_cache_ttl
 REDIS_CACHE_KEY = "currency_rates:USD"
+REDIS_LAST_SUCCESSFUL_KEY = "currency_rates:last_successful:USD"
 
 redis_client = aioredis.from_url(config.redis_url, decode_responses=True)
 _fetch_lock = asyncio.Lock()
 _mem_rates: dict[str, Decimal] = dict(FALLBACK_RATES)
 _mem_updated_at: datetime = datetime.now(timezone.utc)
+_http_client: httpx.AsyncClient | None = None
+
+
+def get_http_client() -> httpx.AsyncClient:
+    """Получить или инициализировать переиспользуемый клиент HTTP."""
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(timeout=config.currency_rates_timeout)
+    return _http_client
+
+
+async def close_http_client() -> None:
+    """Закрыть пул соединений переиспользуемого HTTP-клиента при завершении работы."""
+    global _http_client
+    if _http_client is not None and not _http_client.is_closed:
+        await _http_client.aclose()
+        _http_client = None
 
 
 class CurrencyService:
@@ -41,6 +59,8 @@ class CurrencyService:
         """Инициализация сервиса валют."""
         self.gateway_url = config.currency_rates_url
         self.cache_ttl = config.currency_rates_cache_ttl
+        self.fallback_cache_ttl = config.currency_rates_fallback_cache_ttl
+        self.timeout = config.currency_rates_timeout
 
     @classmethod
     def calculate_cross_rate(
@@ -179,18 +199,26 @@ class CurrencyService:
     async def get_rates(self) -> CurrencyRatesResponse:
         """Получить актуальные курсы валют из Redis, внешнего шлюза или резервной таблицы.
 
+        Использует многоуровневое кэширование:
+        1. Основной кэш Redis (включая негативный кэш при сбое шлюза).
+        2. Защита от состояния гонки (Thundering Herd) через asyncio.Lock.
+        3. Запрос к внешнему сетевому шлюзу. При успехе результат кэшируется с основным TTL
+           и дублируется в постоянный ключ последних успешных котировок.
+        4. Негативный кэш при недоступности шлюза: курсы из последнего успешного источника
+           или резервной таблицы кэшируются с коротким TTL (60-300 с) и флагом is_fallback=True.
+
         Возвращает:
             CurrencyRatesResponse: Справочник курсов валют к базовой валюте USD.
         """
-        # 1. Попытка чтения из Redis
-        cached_response = await self._read_from_redis()
+        # 1. Попытка чтения из основного кэша Redis (свежий кэш либо активный негативный кэш)
+        cached_response = await self._read_from_redis(REDIS_CACHE_KEY)
         if cached_response:
             return cached_response
 
-        # 2. Защита от Thundering Herd (состояния гонки) при протухании кэша
+        # 2. Защита от Thundering Herd при протухании кэша
         async with _fetch_lock:
             # Повторная проверка (double-checked locking)
-            cached_response = await self._read_from_redis()
+            cached_response = await self._read_from_redis(REDIS_CACHE_KEY)
             if cached_response:
                 return cached_response
 
@@ -199,61 +227,106 @@ class CurrencyService:
             now = datetime.now(timezone.utc)
 
             if fetched_rates:
-                global _mem_updated_at
+                global _mem_rates, _mem_updated_at
                 _mem_rates.update(fetched_rates)
                 _mem_updated_at = now
-                response = CurrencyRatesResponse(base="USD", rates=_mem_rates, updated_at=_mem_updated_at)
-                await self._write_to_redis(response)
+                response = CurrencyRatesResponse(
+                    base="USD",
+                    rates=_mem_rates,
+                    updated_at=_mem_updated_at,
+                    is_fallback=False,
+                )
+                await self._write_to_redis(response, key=REDIS_CACHE_KEY, ttl=self.cache_ttl)
+                await self._write_to_redis(response, key=REDIS_LAST_SUCCESSFUL_KEY, ttl=None)
                 return response
 
-        # 4. Fallback на память процесса или резервную таблицу
-        logger.warning("Используется резервная таблица котировок валют")
-        return CurrencyRatesResponse(base="USD", rates=_mem_rates, updated_at=_mem_updated_at)
+            # 4. Шлюз недоступен: получение последних успешных курсов и запись в негативный кэш
+            logger.warning(
+                "Внешний шлюз котировок недоступен, запись fallback-котировок в негативный кэш Redis (TTL=%s с)",
+                self.fallback_cache_ttl,
+            )
+            last_successful = await self._read_from_redis(REDIS_LAST_SUCCESSFUL_KEY)
+            if last_successful:
+                fallback_rates = last_successful.rates
+                fallback_updated_at = last_successful.updated_at
+            else:
+                fallback_rates = dict(_mem_rates)
+                fallback_updated_at = _mem_updated_at
+
+            fallback_response = CurrencyRatesResponse(
+                base="USD",
+                rates=fallback_rates,
+                updated_at=fallback_updated_at,
+                is_fallback=True,
+            )
+            # Запись негативного кэша с коротким TTL для предотвращения деградации смежных запросов
+            await self._write_to_redis(
+                fallback_response,
+                key=REDIS_CACHE_KEY,
+                ttl=self.fallback_cache_ttl,
+            )
+            return fallback_response
 
     async def _fetch_rates_from_gateway(self) -> dict[str, Decimal] | None:
-        """Выполнить асинхронный HTTP-запрос к внешнему API курсов валют."""
+        """Выполнить асинхронный HTTP-запрос к внешнему API курсов валют с переиспользованием клиента."""
         try:
-            async with httpx.AsyncClient(timeout=4.0) as client:
-                res = await client.get(
-                    self.gateway_url,
-                    headers={"User-Agent": "GetBalanceAI-Backend/1.0"},
-                )
-                if res.status_code == 200:
-                    data = res.json()
-                    raw_rates = data.get("rates", {})
-                    extracted: dict[str, Decimal] = {}
-                    for code in SUPPORTED_CURRENCIES:
-                        if code in raw_rates:
-                            extracted[code] = Decimal(str(raw_rates[code]))
-                    if len(extracted) == len(SUPPORTED_CURRENCIES):
-                        logger.info("Котировки валют успешно загружены из внешнего шлюза")
-                        return extracted
+            client = get_http_client()
+            res = await client.get(
+                self.gateway_url,
+                headers={"User-Agent": "GetBalanceAI-Backend/1.0"},
+            )
+            if res.status_code == 200:
+                data = res.json()
+                raw_rates = data.get("rates", {})
+                extracted: dict[str, Decimal] = {}
+                for code in SUPPORTED_CURRENCIES:
+                    if code in raw_rates:
+                        extracted[code] = Decimal(str(raw_rates[code]))
+                if len(extracted) == len(SUPPORTED_CURRENCIES):
+                    logger.info("Котировки валют успешно загружены из внешнего шлюза")
+                    return extracted
         except Exception as e:
-            logger.warning(f"Не удалось получить курсы валют из внешнего шлюза {self.gateway_url}: {e}")
+            logger.warning("Не удалось получить курсы валют из внешнего шлюза %s: %s", self.gateway_url, e)
         return None
 
-    async def _read_from_redis(self) -> CurrencyRatesResponse | None:
-        """Прочитать кэшированные курсы из Redis."""
+    async def _read_from_redis(self, key: str = REDIS_CACHE_KEY) -> CurrencyRatesResponse | None:
+        """Прочитать кэшированные курсы из указанного ключа Redis."""
         try:
-            cached_json = await redis_client.get(REDIS_CACHE_KEY)
+            cached_json = await redis_client.get(key)
             if cached_json:
                 data = json.loads(cached_json)
                 rates = {k: Decimal(str(v)) for k, v in data["rates"].items()}
                 updated_at = datetime.fromisoformat(data["updated_at"])
-                return CurrencyRatesResponse(base=data.get("base", "USD"), rates=rates, updated_at=updated_at)
+                is_fallback = bool(data.get("is_fallback", False))
+                return CurrencyRatesResponse(
+                    base=data.get("base", "USD"),
+                    rates=rates,
+                    updated_at=updated_at,
+                    is_fallback=is_fallback,
+                )
         except Exception as err:
-            logger.warning(f"Ошибка чтения кэша котировок из Redis: {err}")
+            logger.warning("Ошибка чтения кэша котировок из Redis (%s): %s", key, err)
         return None
 
-    async def _write_to_redis(self, response: CurrencyRatesResponse) -> None:
-        """Сохранить курсы валют в Redis с установленным TTL."""
+    async def _write_to_redis(
+        self,
+        response: CurrencyRatesResponse,
+        key: str = REDIS_CACHE_KEY,
+        ttl: int | None = None,
+    ) -> None:
+        """Сохранить курсы валют в Redis с опциональным TTL."""
         try:
             payload = {
                 "base": response.base,
                 "rates": {k: str(v) for k, v in response.rates.items()},
                 "updated_at": response.updated_at.isoformat(),
+                "is_fallback": response.is_fallback,
             }
-            await redis_client.setex(REDIS_CACHE_KEY, self.cache_ttl, json.dumps(payload))
-            logger.info("Кэш котировок валют успешно сохранен в Redis")
+            dumped = json.dumps(payload)
+            if ttl is not None and ttl > 0:
+                await redis_client.setex(key, ttl, dumped)
+            else:
+                await redis_client.set(key, dumped)
+            logger.info("Кэш котировок валют успешно сохранен в Redis (%s, ttl=%s)", key, ttl)
         except Exception as err:
-            logger.warning(f"Не удалось сохранить кэш котировок в Redis: {err}")
+            logger.warning("Не удалось сохранить кэш котировок в Redis (%s): %s", key, err)

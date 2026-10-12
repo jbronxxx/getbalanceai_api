@@ -408,3 +408,256 @@ class TestSyncEndpointIntegration:
             res = await client.post("/api/v1/sync/", json=payload, headers=auth_headers)
             assert res.status_code == 200
             mock_get_rates.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sync_payload_max_length_exceeded_returns_422(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Превышение лимита в 500 элементов в пакете синхронизации отклоняется с кодом 422."""
+        # 501 транзакция
+        tx_item = {
+            "amount": 100.0,
+            "description": "Тест лимита",
+            "category": "food",
+            "type": "expense",
+        }
+        res_tx = await client.post(
+            "/api/v1/sync/",
+            json={"transactions": [tx_item] * 501, "budgets": []},
+            headers=auth_headers,
+        )
+        assert res_tx.status_code == 422
+
+        # 501 бюджет
+        budget_item = {
+            "category": "food",
+            "limit_amount": 1000.0,
+            "month": 10,
+            "year": 2026,
+        }
+        res_budget = await client.post(
+            "/api/v1/sync/",
+            json={"transactions": [], "budgets": [budget_item] * 501},
+            headers=auth_headers,
+        )
+        assert res_budget.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_sync_foreign_transaction_id_rejected_without_failing_batch(
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, str],
+        db_session: AsyncSession,
+        test_user: User,
+    ):
+        """Чужой ID транзакции попадает в rejected и не роняет сохранение валидных элементов батча (TASK-12)."""
+        other_user_id = uuid.uuid4()
+        other_user = User(
+            id=other_user_id,
+            email=f"other_{other_user_id.hex[:8]}@example.com",
+            name="Other User",
+        )
+        db_session.add(other_user)
+
+        # Чужая существующая транзакция
+        other_tx_id = uuid.uuid4()
+        other_tx = Transaction(
+            id=other_tx_id,
+            user_id=other_user_id,
+            amount=Decimal("999.00"),
+            description="Чужая транзакция",
+            category=Category.shopping,
+            type=TransactionType.expense,
+            date=datetime.now(timezone.utc),
+        )
+        db_session.add(other_tx)
+        await db_session.commit()
+
+        # Текущий пользователь пытается отправить батч: чужой ID + свой новый ID
+        my_tx_id = str(uuid.uuid4())
+        payload = {
+            "transactions": [
+                {
+                    "id": str(other_tx_id),
+                    "amount": 500.0,
+                    "currency": "RUB",
+                    "description": "Попытка перезаписать чужую",
+                    "category": "food",
+                    "type": "expense",
+                    "date": "2026-10-10T12:00:00Z",
+                },
+                {
+                    "id": my_tx_id,
+                    "amount": 350.0,
+                    "currency": "RUB",
+                    "description": "Моя валидная транзакция",
+                    "category": "transport",
+                    "type": "expense",
+                    "date": "2026-10-10T12:00:00Z",
+                },
+            ],
+            "budgets": [],
+        }
+
+        response = await client.post("/api/v1/sync/", json=payload, headers=auth_headers)
+        assert response.status_code == 200
+        data = response.json()["data"]
+
+        # Валидная транзакция успешно синхронизирована
+        assert len(data["synced_transactions"]) == 1
+        assert data["synced_transactions"][0]["id"] == my_tx_id
+
+        # Конфликтная транзакция помещена в rejected
+        assert "rejected" in data
+        assert len(data["rejected"]) == 1
+        assert data["rejected"][0]["id"] == str(other_tx_id)
+        assert "отклонен" in data["rejected"][0]["reason"].lower() or "конфликт" in data["rejected"][0]["reason"].lower()
+
+        # Чужая транзакция в базе осталась неизменной
+        db_session.expire_all()
+        check_tx = (await db_session.execute(select(Transaction).where(Transaction.id == other_tx_id))).scalar_one_or_none()
+        assert check_tx is not None
+        assert check_tx.user_id == other_user_id
+        assert check_tx.amount == Decimal("999.00")
+
+    @pytest.mark.asyncio
+    async def test_sync_foreign_budget_id_rejected_without_failing_batch(
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, str],
+        db_session: AsyncSession,
+        test_user: User,
+    ):
+        """Чужой ID бюджета отклоняется в rejected без падения батча (TASK-12)."""
+        other_user_id = uuid.uuid4()
+        other_user = User(
+            id=other_user_id,
+            email=f"other_b_{other_user_id.hex[:8]}@example.com",
+            name="Other User 2",
+        )
+        db_session.add(other_user)
+
+        other_budget_id = uuid.uuid4()
+        other_budget = Budget(
+            id=other_budget_id,
+            user_id=other_user_id,
+            category=Category.health,
+            limit_amount=Decimal("5000.00"),
+            month=10,
+            year=2026,
+        )
+        db_session.add(other_budget)
+        await db_session.commit()
+
+        my_budget_id = str(uuid.uuid4())
+        payload = {
+            "transactions": [],
+            "budgets": [
+                {
+                    "id": str(other_budget_id),
+                    "category": "health",
+                    "limit_amount": 9999.0,
+                    "month": 10,
+                    "year": 2026,
+                },
+                {
+                    "id": my_budget_id,
+                    "category": "food",
+                    "limit_amount": 10000.0,
+                    "month": 10,
+                    "year": 2026,
+                },
+            ],
+        }
+
+        response = await client.post("/api/v1/sync/", json=payload, headers=auth_headers)
+        assert response.status_code == 200
+        data = response.json()["data"]
+
+        assert len(data["synced_budgets"]) == 1
+        assert data["synced_budgets"][0]["id"] == my_budget_id
+        assert len(data["rejected"]) == 1
+        assert data["rejected"][0]["id"] == str(other_budget_id)
+
+    @pytest.mark.asyncio
+    async def test_sync_unexpected_exception_returns_500_sync_failed(
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, str],
+    ):
+        """Непредвиденная системная ошибка возвращает 500 SYNC_FAILED, а не 400 (TASK-13)."""
+        from unittest.mock import patch
+
+        payload = {"transactions": [], "budgets": []}
+        with patch("app.routers.sync.BudgetService.enrich_multiple", side_effect=RuntimeError("Unexpected crash")):
+            response = await client.post("/api/v1/sync/", json=payload, headers=auth_headers)
+            assert response.status_code == 500
+            data = response.json()
+            assert data["code"] == "SYNC_FAILED"
+
+    @pytest.mark.asyncio
+    async def test_sync_combined_budget_deletion(
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, str],
+        db_session: AsyncSession,
+        test_user: User,
+    ):
+        """Единый запрос удаляет бюджеты из всех трех источников payload (TASK-11)."""
+        user_id = test_user.id
+        b1_id = uuid.uuid4()
+        b2_id = uuid.uuid4()
+        b3_id = uuid.uuid4()
+        b1 = Budget(
+            id=b1_id,
+            user_id=user_id,
+            category=Category.food,
+            limit_amount=Decimal("1000.00"),
+            month=1,
+            year=2026,
+        )
+        b2 = Budget(
+            id=b2_id,
+            user_id=user_id,
+            category=Category.transport,
+            limit_amount=Decimal("2000.00"),
+            month=2,
+            year=2026,
+        )
+        b3 = Budget(
+            id=b3_id,
+            user_id=user_id,
+            category=Category.entertainment,
+            limit_amount=Decimal("3000.00"),
+            month=3,
+            year=2026,
+        )
+        db_session.add_all([b1, b2, b3])
+        await db_session.commit()
+
+        payload = {
+            "transactions": [],
+            "budgets": [
+                {
+                    "category": "entertainment",
+                    "limit_amount": 3000.0,
+                    "month": 3,
+                    "year": 2026,
+                    "is_deleted": True,
+                }
+            ],
+            "deleted_budget_ids": [str(b1_id)],
+            "deleted_budgets": [
+                {
+                    "category": "transport",
+                    "limit_amount": 2000.0,
+                    "month": 2,
+                    "year": 2026,
+                }
+            ],
+        }
+
+        res = await client.post("/api/v1/sync/", json=payload, headers=auth_headers)
+        assert res.status_code == 200
+
+        db_session.expire_all()
+        remaining = (await db_session.execute(select(Budget).where(Budget.user_id == user_id))).scalars().all()
+        assert len(remaining) == 0

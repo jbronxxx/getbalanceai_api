@@ -510,13 +510,33 @@ class BudgetSyncItem(BaseModel):
 class SyncPayload(BaseModel):
     """Схема пакета данных для синхронизации."""
 
-    transactions: List[TransactionSyncItem] = Field(default_factory=list, description="Список транзакций")
-    budgets: List[BudgetSyncItem] = Field(default_factory=list, description="Список бюджетов")
-    deleted_budget_ids: List[uuid.UUID] = Field(default_factory=list, description="Список ID бюджетов для удаления")
+    transactions: List[TransactionSyncItem] = Field(
+        default_factory=list,
+        max_length=500,
+        description="Список транзакций (максимум 500 элементов)",
+    )
+    budgets: List[BudgetSyncItem] = Field(
+        default_factory=list,
+        max_length=500,
+        description="Список бюджетов (максимум 500 элементов)",
+    )
+    deleted_budget_ids: List[uuid.UUID] = Field(
+        default_factory=list,
+        max_length=500,
+        description="Список ID бюджетов для удаления (максимум 500 элементов)",
+    )
     deleted_budgets: List[BudgetSyncItem] = Field(
         default_factory=list,
-        description="Список объектов бюджетов для удаления по категории и периоду",
+        max_length=500,
+        description="Список объектов бюджетов для удаления по категории и периоду (максимум 500 элементов)",
     )
+
+
+class SyncRejectedItem(BaseModel):
+    """Схема элемента, отклоненного при пакетной синхронизации."""
+
+    id: Optional[uuid.UUID] = Field(default=None, description="Идентификатор отклоненного элемента")
+    reason: str = Field(..., description="Причина отклонения элемента")
 
 
 class SyncResponse(BaseModel):
@@ -524,6 +544,10 @@ class SyncResponse(BaseModel):
 
     synced_transactions: List[TransactionResponse] = Field(..., description="Синхронизированные транзакции")
     synced_budgets: List[BudgetResponse] = Field(..., description="Синхронизированные бюджеты")
+    rejected: List[SyncRejectedItem] = Field(
+        default_factory=list,
+        description="Список отклоненных элементов (конфликты ID или чужие записи)",
+    )
 
 
 # ============================================================================
@@ -554,3 +578,7 @@ class CurrencyRatesResponse(BaseModel):
     base: str = Field(default="USD", description="Базовая валюта котировок")
     rates: dict[str, Decimal] = Field(..., description="Словарь курсов валют к базовой (USD, EUR, RUB, UZS, KZT)")
     updated_at: datetime = Field(..., description="Дата и время актуализации котировок")
+    is_fallback: bool = Field(
+        default=False,
+        description="Признак резервных котировок при недоступности внешнего шлюза",
+    )

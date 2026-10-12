@@ -5,14 +5,20 @@ from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select, tuple_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.exceptions import AppException, BadRequestException, ErrorCode
+from app.exceptions import AppException, ErrorCode
 from app.models.models import Budget, Category, Transaction, User
-from app.schemas.schemas import ApiResponse, ErrorResponse, SyncPayload, SyncResponse
+from app.schemas.schemas import (
+    ApiResponse,
+    ErrorResponse,
+    SyncPayload,
+    SyncRejectedItem,
+    SyncResponse,
+)
 from app.services.auth_service import get_current_user
 from app.services.budget_service import BudgetService
 from app.services.currency_service import CurrencyService
@@ -24,14 +30,14 @@ router = APIRouter(
     responses={
         400: {
             "model": ErrorResponse,
-            "description": "Ошибка пакетной синхронизации (SYNC_FAILED)",
+            "description": "Ошибка валидации или параметров синхронизации",
         },
         401: {"model": ErrorResponse, "description": "Требуется авторизация"},
         403: {"model": ErrorResponse, "description": "Доступ запрещен"},
         422: {"model": ErrorResponse, "description": "Ошибка валидации входных данных"},
         500: {
             "model": ErrorResponse,
-            "description": "Внутренняя ошибка сервера при сохранении",
+            "description": "Внутренняя ошибка сервера при сохранении данных",
         },
     }
 )
@@ -45,7 +51,7 @@ router = APIRouter(
     description=(
         "Пакетная синхронизация транзакций и бюджетов. Выполняет идемпотентный UPSERT "
         "для бюджетов по ID или составному ключу (category + month + year) без дубликатов "
-        "и без нарушения уникальных ограничений базы данных."
+        "и без нарушения уникальных ограничений базы данных. Конфликтующие записи возвращаются в rejected."
     ),
 )
 async def sync_data(
@@ -56,14 +62,17 @@ async def sync_data(
     user_id = current_user.id
     user_base_currency = (current_user.base_currency or "RUB").strip().upper()
     logger.info(
-        f"Начало синхронизации для пользователя {user_id} (валюта {user_base_currency}), "
-        f"Транзакций: {len(payload.transactions)}, "
-        f"Бюджетов: {len(payload.budgets)}, "
-        f"Удаляемых ID бюджетов: {len(payload.deleted_budget_ids)}, "
-        f"Удаляемых бюджетов (объектов): {len(payload.deleted_budgets)}"
+        "Начало синхронизации для пользователя %s (валюта %s): txs=%s, budgets=%s, del_ids=%s, del_budgets=%s",
+        user_id,
+        user_base_currency,
+        len(payload.transactions),
+        len(payload.budgets),
+        len(payload.deleted_budget_ids),
+        len(payload.deleted_budgets),
     )
-    synced_transactions = []
-    synced_budgets = []
+    synced_transactions: list[Transaction] = []
+    synced_budgets: list[Budget] = []
+    rejected_items: list[SyncRejectedItem] = []
     budget_service = BudgetService(db)
 
     try:
@@ -77,24 +86,39 @@ async def sync_data(
             rates_response = await currency_service.get_rates()
             rates = rates_response.rates
 
-        # 1. Сохраняем или обновляем транзакции (Upsert)
+        # 1. Сохраняем или обновляем транзакции (Upsert) с разрешением конфликтов ID (TASK-12)
         incoming_tx_ids = [item.id for item in payload.transactions if item.id is not None]
-        existing_txs_map = {}
+        existing_txs_map: dict[uuid.UUID, Transaction] = {}
+        conflict_tx_ids: set[uuid.UUID] = set()
+
         if incoming_tx_ids:
-            query = select(Transaction).where(
-                Transaction.user_id == user_id,
-                Transaction.id.in_(incoming_tx_ids),
-            )
+            query = select(Transaction).where(Transaction.id.in_(incoming_tx_ids))
             result = await db.execute(query)
-            existing_txs = list(result.scalars().all())
-            existing_txs_map = {t.id: t for t in existing_txs}
+            for t in result.scalars().all():
+                if t.user_id == user_id:
+                    existing_txs_map[t.id] = t
+                else:
+                    conflict_tx_ids.add(t.id)
 
         seen_tx_ids: set[uuid.UUID] = set()
         for item in payload.transactions:
-            logger.debug(f"Синхронизация транзакции: {item}")
             tx_id = item.id or uuid.uuid4()
             if tx_id in seen_tx_ids:
                 continue
+
+            # TASK-12: чужой/конфликтный ID отклоняется без падения всего батча
+            if item.id and item.id in conflict_tx_ids:
+                logger.warning("Конфликт ID транзакции %s: принадлежит другому пользователю", item.id)
+                rejected_items.append(
+                    SyncRejectedItem(
+                        id=item.id,
+                        reason="Идентификатор транзакции отклонен (конфликт идентификатора)",
+                    )
+                )
+                continue
+
+            # TASK-13: безопасное логирование без персональных финансовых данных
+            logger.debug("Обработка транзакции с ID: %s", tx_id)
 
             curr = (item.currency or user_base_currency).strip().upper()
             rate, base_amt = CurrencyService.resolve_amounts(
@@ -136,64 +160,72 @@ async def sync_data(
             seen_tx_ids.add(tx_id)
             synced_transactions.append(db_transaction)
 
-        # 2. Удаляем бюджеты по ID из payload.deleted_budget_ids
-        if payload.deleted_budget_ids:
-            logger.debug(f"Удаление бюджетов по ID в процессе синхронизации: {payload.deleted_budget_ids}")
-            await db.execute(
-                delete(Budget).where(
-                    Budget.user_id == user_id,
-                    Budget.id.in_(payload.deleted_budget_ids),
-                )
-            )
-
-        # 3. Удаляем бюджеты из payload.deleted_budgets
-        for item in payload.deleted_budgets:
-            logger.debug(
-                f"Удаление бюджета по категории/периоду из deleted_budgets: {item.category} ({item.month}/{item.year})"
-            )
-            conditions = [
-                Budget.user_id == user_id,
-                Budget.category == item.category,
-                Budget.month == item.month,
-                Budget.year == item.year,
-            ]
-            if item.id:
-                conditions = [
-                    Budget.user_id == user_id,
-                    (Budget.id == item.id)
-                    | ((Budget.category == item.category) & (Budget.month == item.month) & (Budget.year == item.year)),
-                ]
-            await db.execute(delete(Budget).where(*conditions))
-
-        # 4. Сохраняем, обновляем или удаляем бюджеты из payload.budgets
+        # 2. Пакетное удаление бюджетов (TASK-11: объединение всех условий удаления в один запрос)
         to_delete_budgets = [item for item in payload.budgets if item.check_deleted]
         to_upsert_budgets = [item for item in payload.budgets if not item.check_deleted]
 
-        for item in to_delete_budgets:
-            logger.debug(f"Удаление бюджета при синхронизации: {item.category} ({item.month}/{item.year})")
-            if item.id:
-                await db.execute(
-                    delete(Budget).where(
-                        Budget.user_id == user_id,
-                        (Budget.id == item.id)
-                        | ((Budget.category == item.category) & (Budget.month == item.month) & (Budget.year == item.year)),
-                    )
-                )
-            else:
-                await db.execute(
-                    delete(Budget).where(
-                        Budget.user_id == user_id,
-                        Budget.category == item.category,
-                        Budget.month == item.month,
-                        Budget.year == item.year,
-                    )
-                )
+        del_budget_ids: set[uuid.UUID] = set(payload.deleted_budget_ids)
+        del_budget_tuples: set[tuple[Category, int, int]] = set()
 
+        for item in payload.deleted_budgets:
+            if item.id:
+                del_budget_ids.add(item.id)
+            del_budget_tuples.add((item.category, item.month, item.year))
+
+        for item in to_delete_budgets:
+            if item.id:
+                del_budget_ids.add(item.id)
+            del_budget_tuples.add((item.category, item.month, item.year))
+
+        delete_conditions = []
+        if del_budget_ids:
+            delete_conditions.append(Budget.id.in_(del_budget_ids))
+        if del_budget_tuples:
+            delete_conditions.append(tuple_(Budget.category, Budget.month, Budget.year).in_(del_budget_tuples))
+
+        if delete_conditions:
+            logger.debug(
+                "Пакетное удаление бюджетов: IDs=%s, tuples=%s",
+                len(del_budget_ids),
+                len(del_budget_tuples),
+            )
+            await db.execute(
+                delete(Budget).where(
+                    Budget.user_id == user_id,
+                    or_(*delete_conditions),
+                )
+            )
+
+        # 3. Сохранение и обновление бюджетов (TASK-11: загрузка только целевых бюджетов вместо всей истории)
         if to_upsert_budgets:
-            # Загружаем существующие бюджеты пользователя для корректного идемпотентного UPSERT
-            query = select(Budget).where(Budget.user_id == user_id)
-            result = await db.execute(query)
-            existing_user_budgets = list(result.scalars().all())
+            upsert_ids = [item.id for item in to_upsert_budgets if item.id is not None]
+            upsert_tuples = [(item.category, item.month, item.year) for item in to_upsert_budgets]
+
+            # Проверка конфликта чужих ID для бюджетов (TASK-12)
+            conflict_budget_ids: set[uuid.UUID] = set()
+            if upsert_ids:
+                foreign_budgets_res = await db.execute(
+                    select(Budget.id).where(
+                        Budget.id.in_(upsert_ids),
+                        Budget.user_id != user_id,
+                    )
+                )
+                conflict_budget_ids = set(foreign_budgets_res.scalars().all())
+
+            load_conditions = []
+            if upsert_ids:
+                load_conditions.append(Budget.id.in_(upsert_ids))
+            if upsert_tuples:
+                load_conditions.append(tuple_(Budget.category, Budget.month, Budget.year).in_(upsert_tuples))
+
+            existing_user_budgets: list[Budget] = []
+            if load_conditions:
+                b_query = select(Budget).where(
+                    Budget.user_id == user_id,
+                    or_(*load_conditions),
+                )
+                b_result = await db.execute(b_query)
+                existing_user_budgets = list(b_result.scalars().all())
 
             existing_by_id: dict[uuid.UUID, Budget] = {b.id: b for b in existing_user_budgets}
             existing_by_key: dict[tuple[Category, int, int], Budget] = {
@@ -203,18 +235,28 @@ async def sync_data(
             seen_budget_ids: set[uuid.UUID] = set()
 
             for item in to_upsert_budgets:
+                if item.id and item.id in conflict_budget_ids:
+                    logger.warning("Конфликт ID бюджета %s: принадлежит другому пользователю", item.id)
+                    rejected_items.append(
+                        SyncRejectedItem(
+                            id=item.id,
+                            reason="Идентификатор бюджета отклонен (конфликт идентификатора)",
+                        )
+                    )
+                    continue
+
                 item_key = (item.category, item.month, item.year)
                 target_budget: Budget | None = None
 
                 # 1. Поиск по составному ключу (category + month + year) имеет приоритет для предотвращения UniqueConstraint
                 if item_key in existing_by_key:
                     target_budget = existing_by_key[item_key]
-                    logger.debug(f"Обновление лимита бюджета по составному ключу {item_key}: {target_budget.id}")
+                    logger.debug("Обновление лимита бюджета по составному ключу: %s", target_budget.id)
                     target_budget.limit_amount = item.limit_amount
                 # 2. Если по составному ключу не найден, но передан ID — ищем по ID
                 elif item.id and item.id in existing_by_id:
                     target_budget = existing_by_id[item.id]
-                    logger.debug(f"Обновление бюджета по существующему ID {item.id}")
+                    logger.debug("Обновление бюджета по существующему ID: %s", item.id)
                     old_key = (target_budget.category, target_budget.month, target_budget.year)
                     existing_by_key.pop(old_key, None)
                     target_budget.category = item.category
@@ -225,7 +267,7 @@ async def sync_data(
                 # 3. Иначе создаем новый бюджет, сохраняя клиентский ID при наличии
                 else:
                     budget_id = item.id or uuid.uuid4()
-                    logger.debug(f"Создание нового бюджета {budget_id} для {item_key}")
+                    logger.debug("Создание нового бюджета %s", budget_id)
                     target_budget = Budget(
                         id=budget_id,
                         user_id=user_id,
@@ -242,12 +284,10 @@ async def sync_data(
                     seen_budget_ids.add(target_budget.id)
                     synced_budgets.append(target_budget)
 
+        # TASK-11: flush + commit с expire_on_commit=False исключает N+1 запросов db.refresh()
+        await db.flush()
+        db.sync_session.expire_on_commit = False
         await db.commit()
-        # Обновляем объекты из БД после коммита
-        for b in synced_budgets:
-            await db.refresh(b)
-        for t in synced_transactions:
-            await db.refresh(t)
 
         if (
             synced_budgets
@@ -264,10 +304,15 @@ async def sync_data(
             user_base_currency=user_base_currency,
         )
 
+    except AppException:
+        await db.rollback()
+        raise
     except SQLAlchemyError as e:
         await db.rollback()
         logger.error(
-            f"Ошибка базы данных при синхронизации пользователя {user_id}: {str(e)}",
+            "Ошибка базы данных при синхронизации пользователя %s: %s",
+            user_id,
+            str(e),
             exc_info=True,
         )
         raise AppException(
@@ -278,19 +323,23 @@ async def sync_data(
     except Exception as e:
         await db.rollback()
         logger.error(
-            f"Непредвиденная ошибка при синхронизации пользователя {user_id}: {str(e)}",
+            "Непредвиденная ошибка при синхронизации пользователя %s: %s",
+            user_id,
+            str(e),
             exc_info=True,
         )
-        raise BadRequestException(
+        raise AppException(
             code=ErrorCode.SYNC_FAILED,
-            message="Не удалось обработать запрос синхронизации",
+            message="Внутренняя ошибка сервера при синхронизации",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
-    logger.info(f"Синхронизация успешно завершена для пользователя {user_id}")
+    logger.info("Синхронизация успешно завершена для пользователя %s", user_id)
     return {
         "status": "success",
         "data": {
             "synced_transactions": synced_transactions,
             "synced_budgets": enriched_budgets,
+            "rejected": rejected_items,
         },
     }

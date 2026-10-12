@@ -473,3 +473,58 @@ class TestMultiCurrencyBackend:
 
         assert data_create["exchange_rate"] == data_sync["exchange_rate"]
         assert data_create["base_amount"] == data_sync["base_amount"]
+
+    @pytest.mark.asyncio
+    async def test_currency_service_negative_cache_on_gateway_failure(self):
+        """При сбое шлюза возвращаются fallback-котировки и записываются в негативный кэш Redis."""
+        service = CurrencyService()
+        from app.services import currency_service
+
+        await currency_service.redis_client.flushdb()
+
+        with patch.object(service, "_fetch_rates_from_gateway", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = None
+
+            # Первый вызов: шлюз недоступен, пишется в негативный кэш
+            res1 = await service.get_rates()
+            assert res1.is_fallback is True
+            assert mock_fetch.call_count == 1
+
+            # Второй вызов: берется из негативного кэша Redis без повторного запроса к шлюзу
+            res2 = await service.get_rates()
+            assert res2.is_fallback is True
+            assert mock_fetch.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_currency_service_uses_last_successful_rates_on_fallback(self):
+        """При падении шлюза fallback использует последние успешно сохраненные котировки."""
+        service = CurrencyService()
+        from app.services import currency_service
+
+        await currency_service.redis_client.flushdb()
+
+        custom_rates = {
+            "USD": Decimal("1.0"),
+            "EUR": Decimal("0.85"),
+            "RUB": Decimal("105.0"),
+            "UZS": Decimal("13000.0"),
+            "KZT": Decimal("510.0"),
+        }
+
+        # 1. Успешный запрос котировок из шлюза
+        with patch.object(service, "_fetch_rates_from_gateway", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = custom_rates
+            res_success = await service.get_rates()
+            assert res_success.is_fallback is False
+            assert res_success.rates["RUB"] == Decimal("105.0")
+
+        # 2. Истечение основного кэша (удаляем основной ключ, но постоянный last_successful остается)
+        await currency_service.redis_client.delete(currency_service.REDIS_CACHE_KEY)
+
+        # 3. Шлюз падает
+        with patch.object(service, "_fetch_rates_from_gateway", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = None
+            res_fallback = await service.get_rates()
+            assert res_fallback.is_fallback is True
+            # Должны вернуться сохраненные ранее успешные курсы (RUB=105.0), а не статическая таблица (RUB=96.0)
+            assert res_fallback.rates["RUB"] == Decimal("105.0")
