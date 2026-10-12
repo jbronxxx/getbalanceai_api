@@ -181,6 +181,29 @@ class TestRateLimiting:
         assert data["status"] == "error"
         assert data["code"] == ErrorCode.RATE_LIMIT_EXCEEDED
 
+    @pytest.mark.asyncio
+    async def test_patch_me_rate_limiting_exceeded(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Проверяет ограничение частоты запросов на обновление профиля (лимит 10/мин)."""
+        # Выполняем 10 разрешенных запросов
+        for i in range(10):
+            res = await client.patch(
+                "/api/v1/auth/me",
+                json={"name": f"Name {i}"},
+                headers=auth_headers,
+            )
+            assert res.status_code == 200
+
+        # 11-й запрос превышает лимит
+        response = await client.patch(
+            "/api/v1/auth/me",
+            json={"name": "Over Limit Name"},
+            headers=auth_headers,
+        )
+        assert response.status_code == 429
+        data = response.json()
+        assert data["status"] == "error"
+        assert data["code"] == ErrorCode.RATE_LIMIT_EXCEEDED
+
 
 class TestDefaultSecretsValidation:
     """Тестирование проверки дефолтных секретов в продакшне."""

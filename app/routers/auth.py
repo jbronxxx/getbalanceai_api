@@ -145,7 +145,9 @@ async def auth_me(
     response_model=ApiResponse[UserResponse],
     summary="Обновление профиля текущего пользователя",
 )
+@limiter.limit("10/minute")
 async def update_me(
+    request: Request,
     payload: UserUpdateRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),

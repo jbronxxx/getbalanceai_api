@@ -365,8 +365,21 @@ class TestAIService:
     @pytest.mark.asyncio
     async def test_invalidate_and_clear_cache_resilient_to_redis_failure(self):
         """Проверка безопасной обработки ошибок при недоступности Redis в методах очистки."""
-        with patch("app.services.ai_service.redis_client.keys", AsyncMock(side_effect=Exception("Redis keys error"))):
+        with patch("app.services.ai_service.redis_client.scan_iter", side_effect=Exception("Redis scan error")):
             await AIService.invalidate_cache(uuid.uuid4())
-
-        with patch("app.services.ai_service.redis_client.flushdb", AsyncMock(side_effect=Exception("Redis flushdb error"))):
             await AIService.clear_cache()
+
+    @pytest.mark.asyncio
+    async def test_clear_cache_does_not_call_flushdb_or_keys(self):
+        """Проверка, что clear_cache и invalidate_cache не вызывают опасные команды flushdb и keys."""
+        mock_flushdb = AsyncMock()
+        mock_keys = AsyncMock()
+        with (
+            patch("app.services.ai_service.redis_client.flushdb", mock_flushdb),
+            patch("app.services.ai_service.redis_client.keys", mock_keys),
+        ):
+            await AIService.invalidate_cache(uuid.uuid4())
+            await AIService.clear_cache()
+
+        mock_flushdb.assert_not_called()
+        mock_keys.assert_not_called()

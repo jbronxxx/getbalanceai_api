@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import Union
 
 import bcrypt
@@ -13,7 +13,7 @@ from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
 from jwt.exceptions import InvalidTokenError as JWTError
-from sqlalchemy import select
+from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -23,7 +23,7 @@ from app.exceptions import (
     NotFoundException,
     UnauthorizedException,
 )
-from app.models.models import Budget, Token, Transaction, User
+from app.models.models import SUPPORTED_CURRENCIES, Budget, Token, Transaction, User
 from app.schemas.schemas import (
     AppleSignInRequest,
     GoogleSignInRequest,
@@ -105,6 +105,7 @@ class AuthService:
             old_currency = user.base_currency or "RUB"
             if new_currency != old_currency:
                 user.base_currency = new_currency
+                await self.db.flush()
                 await self._recalculate_user_finances(
                     user_id=user.id,
                     old_currency=old_currency,
@@ -124,10 +125,8 @@ class AuthService:
     ) -> None:
         """Пересчитать базовые суммы транзакций и лимиты бюджетов при смене базовой валюты пользователя.
 
-        Аргументы:
-            user_id (uuid.UUID): Идентификатор пользователя.
-            old_currency (str): Предыдущая базовая валюта (например, 'RUB').
-            new_currency (str): Новая базовая валюта (например, 'USD').
+        Выполняется едиными пакетными SQL UPDATE запросами без загрузки тысяч ORM-объектов в память.
+        Для транзакций в новой базовой валюте exchange_rate устанавливается в 1.0, а base_amount = amount.
         """
         logger.info(
             f"Запущен пересчет финансов пользователя {user_id} в связи со сменой базовой валюты: "
@@ -137,41 +136,60 @@ class AuthService:
         rates_response = await currency_service.get_rates()
         rates = rates_response.rates
 
-        # 1. Пересчет существующих транзакций пользователя
-        tx_query = select(Transaction).where(Transaction.user_id == user_id)
-        tx_res = await self.db.execute(tx_query)
-        transactions = list(tx_res.scalars().all())
+        # 1. Пакетный пересчет транзакций одним SQL UPDATE (без N+1 и загрузки объектов в память)
+        rate_cases = {
+            c: (Decimal("1.0") if c == new_currency else CurrencyService.calculate_cross_rate(c, new_currency, rates))
+            for c in SUPPORTED_CURRENCIES
+        }
 
-        for tx in transactions:
-            tx_currency = (tx.currency or old_currency).strip().upper()
-            new_exchange_rate = CurrencyService.calculate_cross_rate(tx_currency, new_currency, rates)
-            tx.exchange_rate = new_exchange_rate
-            tx.base_amount = (tx.amount * new_exchange_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        rate_whens = [(Transaction.currency == curr, rate) for curr, rate in rate_cases.items()]
+        exchange_rate_expr = case(*rate_whens, else_=Decimal("1.0"))
 
-        # 2. Пересчет лимитов бюджетов пользователя (бюджеты ведутся в базовой валюте)
-        budget_query = select(Budget).where(Budget.user_id == user_id)
-        budget_res = await self.db.execute(budget_query)
-        budgets = list(budget_res.scalars().all())
+        base_whens = [
+            (
+                Transaction.currency == curr,
+                Transaction.amount if curr == new_currency else func.round(Transaction.amount * rate, 2),
+            )
+            for curr, rate in rate_cases.items()
+        ]
+        base_amount_expr = case(*base_whens, else_=Transaction.amount)
 
-        budget_rate = CurrencyService.calculate_cross_rate(old_currency, new_currency, rates)
-        for budget in budgets:
-            budget.limit_amount = (budget.limit_amount * budget_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-        logger.info(
-            f"Успешно пересчитано {len(transactions)} транзакций и {len(budgets)} бюджетов для пользователя {user_id}"
+        tx_stmt = (
+            update(Transaction)
+            .where(Transaction.user_id == user_id)
+            .values(
+                exchange_rate=exchange_rate_expr,
+                base_amount=base_amount_expr,
+            )
         )
+        await self.db.execute(tx_stmt)
+
+        # 2. Пакетный пересчет лимитов бюджетов пользователя (бюджеты ведутся в базовой валюте)
+        budget_rate = (
+            Decimal("1.0")
+            if old_currency == new_currency
+            else CurrencyService.calculate_cross_rate(old_currency, new_currency, rates)
+        )
+        budget_stmt = (
+            update(Budget)
+            .where(Budget.user_id == user_id)
+            .values(
+                limit_amount=func.round(Budget.limit_amount * budget_rate, 2),
+            )
+        )
+        await self.db.execute(budget_stmt)
+
+        logger.info(f"Успешно пересчитаны транзакции и бюджеты в БД для пользователя {user_id}")
 
         # 3. Инвалидация ETag кэша бюджетов пользователя
         await BudgetService.invalidate_etag(user_id)
 
-        # 4. Инвалидация кэша инсайтов AI в Redis
+        # 4. Инвалидация кэша инсайтов AI в Redis без блокировки ключей
         try:
-            from app.services.ai_service import redis_client
+            from app.services.ai_service import AIService
 
-            keys = await redis_client.keys(f"insights_*:{user_id}:*")
-            if keys:
-                await redis_client.delete(*keys)
-                logger.info(f"Инвалидировано {len(keys)} ключей кэша инсайтов для пользователя {user_id}")
+            await AIService.invalidate_cache(user_id)
+            logger.info(f"Инвалидирован кэш инсайтов для пользователя {user_id}")
         except Exception as err:
             logger.warning(f"Не удалось инвалидировать кэш инсайтов в Redis при смене валюты: {err}")
 

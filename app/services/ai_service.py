@@ -45,22 +45,37 @@ class AIService:
 
     @classmethod
     async def invalidate_cache(cls, user_id: uuid.UUID) -> None:
-        """Инвалидировать кэш инсайтов для конкретного пользователя."""
+        """Инвалидировать кэш инсайтов для конкретного пользователя без блокировки Redis."""
         try:
-            keys = await redis_client.keys(f"insights_cache:{user_id}*")
-            if keys:
-                await redis_client.delete(*keys)
-            count_keys = await redis_client.keys(f"insights_tx_count:{user_id}*")
-            if count_keys:
-                await redis_client.delete(*count_keys)
+            patterns = (
+                f"insights_cache:{user_id}*",
+                f"insights_tx_count:{user_id}*",
+                f"insights_*:{user_id}*",
+            )
+            for pattern in patterns:
+                batch = []
+                async for key in redis_client.scan_iter(match=pattern, count=500):
+                    batch.append(key)
+                    if len(batch) >= 500:
+                        await redis_client.unlink(*batch)
+                        batch.clear()
+                if batch:
+                    await redis_client.unlink(*batch)
         except Exception as err:
             logger.warning(f"Ошибка инвалидации кэша Redis для пользователя {user_id}: {err}")
 
     @classmethod
     async def clear_cache(cls) -> None:
-        """Очистить весь кэш инсайтов."""
+        """Очистить весь кэш инсайтов без блокировки Redis и без удаления других данных."""
         try:
-            await redis_client.flushdb()
+            batch = []
+            async for key in redis_client.scan_iter(match="insights_*", count=500):
+                batch.append(key)
+                if len(batch) >= 500:
+                    await redis_client.unlink(*batch)
+                    batch.clear()
+            if batch:
+                await redis_client.unlink(*batch)
         except Exception as err:
             logger.warning(f"Ошибка полной очистки кэша Redis: {err}")
 
