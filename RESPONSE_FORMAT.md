@@ -55,6 +55,37 @@ API использует единообразный формат ответов 
 }
 ```
 
+#### Вход или регистрация через Google (POST /api/v1/auth/google)
+
+**Тело запроса (`GoogleSignInRequest`):**
+```json
+{
+  "id_token": "eyJhbGciOiJSUzI1NiIs...",
+  "avatar_url": "https://lh3.googleusercontent.com/avatar.png",
+  "name": "John Doe"
+}
+```
+
+**Успешный ответ (`ApiResponse[TokenResponse]`):**
+```json
+{
+  "status": "success",
+  "data": {
+    "access_token": "eyJhbGciOiJIUzI1NiIsIn...",
+    "refresh_token": "eyJhbGciOiJIUzI1NiIsIn...",
+    "token_type": "bearer",
+    "user": {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "email": "user@example.com",
+      "name": "John Doe",
+      "avatar_url": "https://lh3.googleusercontent.com/avatar.png",
+      "base_currency": "RUB",
+      "created_at": "2026-09-10T10:30:00Z"
+    }
+  }
+}
+```
+
 #### Обновление профиля пользователя (PATCH /api/v1/auth/me)
 
 ```json

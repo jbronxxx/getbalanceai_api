@@ -187,6 +187,9 @@ class TestAuthServiceUnit:
         tokens = await service.google_login(payload)
         assert tokens.access_token is not None
         assert tokens.refresh_token is not None
+        assert tokens.user is not None
+        assert tokens.user.avatar_url == "https://example.com/avatar.png"
+        assert tokens.user.name == "Google User"
 
         # Убеждаемся, что пользователь создан
         result = await db_session.execute(select(User).where(User.email == "googleuser@example.com"))
@@ -194,6 +197,106 @@ class TestAuthServiceUnit:
         assert user is not None
         assert user.avatar_url == "https://example.com/avatar.png"
         assert user.hashed_password is None
+
+    @pytest.mark.asyncio
+    @patch("app.services.auth_service.PyJWKClient")
+    @patch("app.services.auth_service.jwt.decode")
+    async def test_google_login_fallback_avatar_and_name_from_payload(
+        self, mock_jwt_decode, mock_jwk_client, db_session: AsyncSession
+    ):
+        """Проверка fallback на avatar_url и name из payload при их отсутствии в Google JWT."""
+        mock_jwt_decode.return_value = {
+            "email": "fallbackuser@example.com",
+            "name": None,
+            "picture": None,
+        }
+
+        service = AuthService(db_session)
+        payload = GoogleSignInRequest(
+            id_token="mock_id_token",
+            avatar_url="https://example.com/fallback.png",
+            name="Custom Name",
+        )
+
+        tokens = await service.google_login(payload)
+        assert tokens.user is not None
+        assert tokens.user.avatar_url == "https://example.com/fallback.png"
+        assert tokens.user.name == "Custom Name"
+
+        result = await db_session.execute(select(User).where(User.email == "fallbackuser@example.com"))
+        user = result.scalar_one_or_none()
+        assert user is not None
+        assert user.avatar_url == "https://example.com/fallback.png"
+        assert user.name == "Custom Name"
+
+    @pytest.mark.asyncio
+    @patch("app.services.auth_service.PyJWKClient")
+    @patch("app.services.auth_service.jwt.decode")
+    async def test_google_login_updates_existing_user_avatar_and_name(
+        self, mock_jwt_decode, mock_jwk_client, db_session: AsyncSession
+    ):
+        """Повторный вход через Google обновляет аватар и имя существующего пользователя."""
+        mock_jwt_decode.return_value = {
+            "email": "repeatuser@example.com",
+            "name": None,
+            "picture": None,
+        }
+
+        service = AuthService(db_session)
+        # 1. Первый вход без аватара
+        first_payload = GoogleSignInRequest(id_token="mock_id_token_1")
+        tokens_1 = await service.google_login(first_payload)
+        assert tokens_1.user.avatar_url is None
+        assert tokens_1.user.name == "repeatuser"
+
+        # 2. Повторный вход с установленным аватаром и именем
+        mock_jwt_decode.return_value = {
+            "email": "repeatuser@example.com",
+            "name": "Updated Repeat User",
+            "picture": "https://example.com/updated_avatar.png",
+        }
+        second_payload = GoogleSignInRequest(id_token="mock_id_token_2")
+        tokens_2 = await service.google_login(second_payload)
+        assert tokens_2.user.avatar_url == "https://example.com/updated_avatar.png"
+        assert tokens_2.user.name == "Updated Repeat User"
+
+        # Проверка актуального состояния в БД
+        result = await db_session.execute(select(User).where(User.email == "repeatuser@example.com"))
+        user = result.scalar_one_or_none()
+        assert user is not None
+        assert user.avatar_url == "https://example.com/updated_avatar.png"
+        assert user.name == "Updated Repeat User"
+
+    @pytest.mark.asyncio
+    @patch("app.services.auth_service.PyJWKClient")
+    @patch("app.services.auth_service.jwt.decode")
+    async def test_google_login_payload_avatar_overrides_stale_jwt_picture(
+        self, mock_jwt_decode, mock_jwk_client, db_session: AsyncSession
+    ):
+        """Проверка того, что переданный клиентом avatar_url имеет приоритет над старым picture в JWT."""
+        mock_jwt_decode.return_value = {
+            "email": "stale_jwt_user@example.com",
+            "name": "Old JWT Name",
+            "picture": "https://example.com/old_stale_avatar.png",
+        }
+
+        service = AuthService(db_session)
+        # Пользователь логинится со свежим аватаром в payload, хотя в токене старый avatar
+        payload = GoogleSignInRequest(
+            id_token="mock_id_token",
+            avatar_url="https://example.com/new_fresh_avatar.png",
+            name="New Fresh Name",
+        )
+        tokens = await service.google_login(payload)
+        assert tokens.user is not None
+        assert tokens.user.avatar_url == "https://example.com/new_fresh_avatar.png"
+        assert tokens.user.name == "New Fresh Name"
+
+        result = await db_session.execute(select(User).where(User.email == "stale_jwt_user@example.com"))
+        user = result.scalar_one_or_none()
+        assert user is not None
+        assert user.avatar_url == "https://example.com/new_fresh_avatar.png"
+        assert user.name == "New Fresh Name"
 
     @pytest.mark.asyncio
     @patch("app.services.auth_service.PyJWKClient")

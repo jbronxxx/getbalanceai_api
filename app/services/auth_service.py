@@ -30,6 +30,7 @@ from app.schemas.schemas import (
     TokenResponse,
     UserLogin,
     UserRegister,
+    UserResponse,
     UserUpdateRequest,
 )
 from app.services.budget_service import BudgetService
@@ -217,6 +218,7 @@ class AuthService:
             access_token=access_token,
             refresh_token=refresh_token,
             token_type="bearer",
+            user=UserResponse.model_validate(user),
         )
 
     async def _handle_oauth_user(self, email: str, name: str, avatar_url: str | None = None) -> TokenResponse:
@@ -230,6 +232,8 @@ class AuthService:
         else:
             if avatar_url and user.avatar_url != avatar_url:
                 user.avatar_url = avatar_url
+            if name and user.name == user.email.split("@")[0] and name != user.name:
+                user.name = name
         await self.db.flush()
         await self.db.refresh(user)
 
@@ -239,6 +243,7 @@ class AuthService:
             access_token=access_token,
             refresh_token=refresh_token,
             token_type="bearer",
+            user=UserResponse.model_validate(user),
         )
 
     async def google_login(self, payload: GoogleSignInRequest) -> TokenResponse:
@@ -260,8 +265,8 @@ class AuthService:
             if not email:
                 raise ValueError("Email not provided by Google")
 
-            name = data.get("name", email.split("@")[0])
-            picture = data.get("picture")
+            name = payload.name or data.get("name") or email.split("@")[0]
+            picture = payload.avatar_url or data.get("picture")
 
             return await self._handle_oauth_user(email, name, picture)
         except Exception as e:
