@@ -251,3 +251,67 @@ class TestUserProfileAndBaseCurrency:
             # Транзакция в USD сконвертирована по актуальному курсу (50 USD * 100 = 5000.00 RUB)
             assert float(items_rub[tx_usd_id]["exchange_rate"]) == 100.0
             assert float(items_rub[tx_usd_id]["base_amount"]) == 5000.00
+
+
+class TestGoogleAuthEndpoint:
+    """Интеграционные тесты для эндпоинта POST /api/v1/auth/google."""
+
+    @pytest.mark.asyncio
+    @patch("app.services.auth_service.PyJWKClient")
+    @patch("app.services.auth_service.jwt.decode")
+    async def test_google_login_endpoint_success(self, mock_jwt_decode, mock_jwk_client, client: AsyncClient):
+        """Успешная авторизация через Google возвращает токены и объект профиля пользователя."""
+        mock_jwt_decode.return_value = {
+            "email": "api_google_user@example.com",
+            "name": "API Google User",
+            "picture": "https://lh3.googleusercontent.com/avatar.png",
+        }
+
+        payload = {"id_token": "valid_mock_token"}
+        response = await client.post("/api/v1/auth/google", json=payload)
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["status"] == "success"
+        token_data = data["data"]
+        assert "access_token" in token_data
+        assert "refresh_token" in token_data
+        assert token_data["token_type"] == "bearer"
+        assert token_data["user"] is not None
+        assert token_data["user"]["email"] == "api_google_user@example.com"
+        assert token_data["user"]["avatar_url"] == "https://lh3.googleusercontent.com/avatar.png"
+        assert token_data["user"]["name"] == "API Google User"
+
+    @pytest.mark.asyncio
+    @patch("app.services.auth_service.PyJWKClient")
+    @patch("app.services.auth_service.jwt.decode")
+    async def test_google_login_endpoint_with_fallback_payload(self, mock_jwt_decode, mock_jwk_client, client: AsyncClient):
+        """Передача avatar_url и name в теле запроса работает как fallback, если в Google JWT они отсутствуют."""
+        mock_jwt_decode.return_value = {
+            "email": "fallback_api_user@example.com",
+            "name": None,
+            "picture": None,
+        }
+
+        payload = {
+            "id_token": "valid_mock_token",
+            "avatar_url": "https://example.com/client_avatar.png",
+            "name": "Client Name",
+        }
+        response = await client.post("/api/v1/auth/google", json=payload)
+        assert response.status_code == 200
+
+        data = response.json()
+        token_data = data["data"]
+        assert token_data["user"]["avatar_url"] == "https://example.com/client_avatar.png"
+        assert token_data["user"]["name"] == "Client Name"
+
+    @pytest.mark.asyncio
+    async def test_google_login_endpoint_validation_error(self, client: AsyncClient):
+        """Передача слишком длинного avatar_url вызывает ошибку валидации 422."""
+        payload = {
+            "id_token": "valid_mock_token",
+            "avatar_url": "https://example.com/" + "a" * 501,
+        }
+        response = await client.post("/api/v1/auth/google", json=payload)
+        assert response.status_code == 422

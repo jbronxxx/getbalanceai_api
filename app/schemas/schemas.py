@@ -160,6 +160,12 @@ class GoogleSignInRequest(BaseModel):
     """Схема запроса для аутентификации через Google."""
 
     id_token: str = Field(..., description="Токен идентификации от Google")
+    avatar_url: Optional[str] = Field(
+        default=None, max_length=500, description="URL аватара от клиента (резервный источник при кэшировании токена)"
+    )
+    name: Optional[str] = Field(
+        default=None, max_length=100, description="Имя пользователя от клиента (резервный источник при кэшировании токена)"
+    )
 
 
 class AppleSignInRequest(BaseModel):
@@ -176,20 +182,6 @@ class RefreshTokenRequest(BaseModel):
     """
 
     refresh_token: str = Field(..., description="JWT refresh токен для обновления access токена")
-
-
-class TokenResponse(BaseModel):
-    """Схема ответа с JWT-токенами доступа и обновления.
-
-    Атрибуты:
-        access_token (str): Сгенерированный JWT-токен доступа.
-        refresh_token (str): JWT-токен для обновления access-токена.
-        token_type (str): Тип токена (по умолчанию "bearer").
-    """
-
-    access_token: str = Field(..., description="JWT токен доступа")
-    refresh_token: str = Field(..., description="JWT токен для обновления access токена")
-    token_type: str = Field(default="bearer", description="Тип токена авторизации")
 
 
 class UserResponse(BaseModel):
@@ -212,6 +204,22 @@ class UserResponse(BaseModel):
     avatar_url: Optional[str] = Field(default=None, description="URL аватара пользователя")
     base_currency: str = Field(default=CurrencyCode.RUB.value, description="Основная валюта учета пользователя")
     created_at: datetime = Field(..., description="Дата и время создания аккаунта")
+
+
+class TokenResponse(BaseModel):
+    """Схема ответа с JWT-токенами доступа и обновления.
+
+    Атрибуты:
+        access_token (str): Сгенерированный JWT-токен доступа.
+        refresh_token (str): JWT-токен для обновления access-токена.
+        token_type (str): Тип токена (по умолчанию "bearer").
+        user (Optional[UserResponse]): Данные профиля пользователя.
+    """
+
+    access_token: str = Field(..., description="JWT токен доступа")
+    refresh_token: str = Field(..., description="JWT токен для обновления access токена")
+    token_type: str = Field(default="bearer", description="Тип токена авторизации")
+    user: Optional[UserResponse] = Field(default=None, description="Данные профиля пользователя")
 
 
 class UserUpdateRequest(BaseModel):
