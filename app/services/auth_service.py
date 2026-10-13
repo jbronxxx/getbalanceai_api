@@ -265,8 +265,8 @@ class AuthService:
             if not email:
                 raise ValueError("Email not provided by Google")
 
-            name = data.get("name") or payload.name or email.split("@")[0]
-            picture = data.get("picture") or payload.avatar_url
+            name = payload.name or data.get("name") or email.split("@")[0]
+            picture = payload.avatar_url or data.get("picture")
 
             return await self._handle_oauth_user(email, name, picture)
         except Exception as e:
