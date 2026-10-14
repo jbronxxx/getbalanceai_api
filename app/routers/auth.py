@@ -122,7 +122,7 @@ async def logout(
     current_user: User = Depends(get_current_user),
     credentials: HTTPBearer = Depends(AuthService.bearer_scheme),
 ) -> dict[str, str]:
-    """Выйти из системы, деактивируя токен в памяти."""
+    """Выйти из системы, деактивируя токен асинхронно."""
     service = AuthService(db)
     service.logout(current_user.id, credentials.credentials)
     return {"status": "success", "message": "Successfully logged out"}
