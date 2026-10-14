@@ -143,7 +143,9 @@ class TestInsights:
                 mock_count.scalar_one.return_value = 10
                 mock_txs = MagicMock()
                 mock_txs.scalars.return_value.all.return_value = [tx]
-                mock_db.execute = AsyncMock(side_effect=[mock_count, mock_txs, mock_count, mock_txs])
+                mock_budgets = MagicMock()
+                mock_budgets.scalars.return_value.all.return_value = []
+                mock_db.execute = AsyncMock(side_effect=[mock_count, mock_txs, mock_budgets, mock_count, mock_txs])
 
                 try:
                     # Первый HTTP-запрос (вызывает Claude API)
@@ -189,7 +191,9 @@ class TestInsights:
                 mock_count.scalar_one.return_value = 10
                 mock_txs = MagicMock()
                 mock_txs.scalars.return_value.all.return_value = [tx]
-                mock_db.execute = AsyncMock(side_effect=[mock_count, mock_txs, mock_count, mock_txs])
+                mock_budgets = MagicMock()
+                mock_budgets.scalars.return_value.all.return_value = []
+                mock_db.execute = AsyncMock(side_effect=[mock_count, mock_txs, mock_budgets, mock_count, mock_txs])
 
                 try:
                     transport = ASGITransport(app=app)

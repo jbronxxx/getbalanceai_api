@@ -16,15 +16,24 @@ from app.models.models import Category, Transaction, TransactionType, User
 from app.schemas.schemas import BudgetCreate, TransactionCreate
 from app.services.ai_service import AIService
 from app.services.budget_service import BudgetService
-from app.services.currency_service import CurrencyService
+from app.services.currency_service import FALLBACK_RATES, CurrencyService
 from app.services.transaction_service import TransactionService
+
+
+@pytest.fixture
+def mock_rates_gateway():
+    """Фикстура для изоляции тестов от внешнего шлюза котировок."""
+    with patch.object(CurrencyService, "_fetch_rates_from_gateway", new_callable=AsyncMock, return_value=FALLBACK_RATES):
+        yield
 
 
 class TestMultiCurrencyBackend:
     """Тесты бизнес-логики и эндпоинтов мультивалютности."""
 
     @pytest.mark.asyncio
-    async def test_create_transaction_with_explicit_currency(self, db_session: AsyncSession, test_user: User):
+    async def test_create_transaction_with_explicit_currency(
+        self, db_session: AsyncSession, test_user: User, mock_rates_gateway
+    ):
         """Создание транзакции с указанием валюты и курса сохраняет base_amount."""
         service = TransactionService(db_session)
         payload = TransactionCreate(
@@ -45,7 +54,7 @@ class TestMultiCurrencyBackend:
 
     @pytest.mark.asyncio
     async def test_create_transaction_auto_calculates_and_quantizes_base_amount(
-        self, db_session: AsyncSession, test_user: User
+        self, db_session: AsyncSession, test_user: User, mock_rates_gateway
     ):
         """Если base_amount не передан, он автоматически рассчитывается и квантуется до 2 знаков."""
         service = TransactionService(db_session)
@@ -65,7 +74,7 @@ class TestMultiCurrencyBackend:
         assert tx.base_amount == Decimal("4827.78")
 
     @pytest.mark.asyncio
-    async def test_budget_spent_uses_base_amount(self, db_session: AsyncSession, test_user: User):
+    async def test_budget_spent_uses_base_amount(self, db_session: AsyncSession, test_user: User, mock_rates_gateway):
         """Проверка, что расходы бюджета суммируются строго по base_amount, а не по сумме в чеке."""
         tx_service = TransactionService(db_session)
         budget_service = BudgetService(db_session)
@@ -102,7 +111,9 @@ class TestMultiCurrencyBackend:
         assert budget_resp.remaining == Decimal("6250.00")
 
     @pytest.mark.asyncio
-    async def test_create_transaction_http_api_success(self, client: AsyncClient, auth_headers: dict[str, str]):
+    async def test_create_transaction_http_api_success(
+        self, client: AsyncClient, auth_headers: dict[str, str], mock_rates_gateway
+    ):
         """HTTP-эндпоинт создания транзакции корректно сохраняет и возвращает мультивалютные поля."""
         payload = {
             "amount": 100.50,
@@ -192,7 +203,12 @@ class TestMultiCurrencyBackend:
 
     @pytest.mark.asyncio
     async def test_sync_multi_currency_transactions(
-        self, client: AsyncClient, auth_headers: dict[str, str], db_session: AsyncSession, test_user: User
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, str],
+        db_session: AsyncSession,
+        test_user: User,
+        mock_rates_gateway,
     ):
         """Пакетная синхронизация корректно сохраняет мультивалютные поля транзакций."""
         tx_id = str(uuid.uuid4())
@@ -252,7 +268,7 @@ class TestMultiCurrencyBackend:
 
     @pytest.mark.asyncio
     async def test_large_nominal_currency_does_not_overflow_numeric_precision(
-        self, db_session: AsyncSession, test_user: User
+        self, db_session: AsyncSession, test_user: User, mock_rates_gateway
     ):
         """Проверка, что суммы > 10^10 (например, при конвертации в UZS) не вызывают numeric overflow."""
         test_user.base_currency = "UZS"
@@ -435,7 +451,12 @@ class TestMultiCurrencyBackend:
 
     @pytest.mark.asyncio
     async def test_create_and_sync_give_identical_rate_and_base_amount(
-        self, client: AsyncClient, auth_headers: dict[str, str], db_session: AsyncSession, test_user: User
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, str],
+        db_session: AsyncSession,
+        test_user: User,
+        mock_rates_gateway,
     ):
         """Эндпоинты create и sync дают строго одинаковые rate и base_amount при одинаковых входных данных."""
         test_user.base_currency = "RUB"

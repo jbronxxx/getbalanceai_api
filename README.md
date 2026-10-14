@@ -1,6 +1,6 @@
 # Finance App API
 
-FastAPI бэкенд для персонального финансового трекера с аналитикой расходов и AI-рекомендациями на базе Anthropic Claude.
+FastAPI бэкенд для персонального финансового трекера с аналитикой расходов и AI-рекомендациями на базе Google Gemini.
 
 ---
 
@@ -10,7 +10,7 @@ FastAPI бэкенд для персонального финансового т
 * **База данных:** PostgreSQL 16
 * **ORM & Миграции:** SQLAlchemy 2.0 + Alembic
 * **Безопасность & Авторизация:** JWT Access & Refresh токенов с ротацией (`python-jose`) + хеширование паролей (`bcrypt`)
-* **AI Интеграция:** Anthropic Claude API (модель `claude-haiku-4-5`)
+* **AI Интеграция:** Google Gemini API (модель `gemini-3.5-flash-lite`)
 * **Контейнеризация:** Docker & Docker Compose
 * **Тестирование:** Pytest + HTTPX / TestClient
 

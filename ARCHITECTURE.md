@@ -8,7 +8,7 @@
 
 ## 1. Назначение и стек технологий
 
-**Finance App API** — бэкенд-сервис (REST API) для персонального учета финансов с интеграцией искусственного интеллекта (Anthropic Claude) и возможностью пакетной офлайн-синхронизации.
+**Finance App API** — бэкенд-сервис (REST API) для персонального учета финансов с интеграцией искусственного интеллекта (Google Gemini) и возможностью пакетной офлайн-синхронизации.
 
 * **Репозиторий**: `jbronxxx/finance_app_api`
 * **Фреймворк**: FastAPI (Python 3.11+)
@@ -33,7 +33,7 @@ flowchart TD
     Client(["HTTP Client / Frontend / Swagger UI"]) -->|HTTP Requests / JSON| Routers["API Routers Layer (FastAPI)"]
     Routers -->|DTO / Validation| Schemas["Schemas Layer (Pydantic v2)"]
     Routers -->|Calls Business Logic| Services["Service Layer (Business Logic)"]
-    Services -->|Async Claude API| ExternalAI["Anthropic AI Service"]
+    Services -->|Async Gemini API| ExternalAI["Google Gemini AI Service"]
     Services -->|ORM / Queries| Database["Database Layer (SQLAlchemy 2.0)"]
     Database -->|SQL Engine| DB[("Postgres 16")]
     Config["Config Reader & .env / YAML"] -.->|Settings| Routers
@@ -169,7 +169,7 @@ finance_app/
 │   ├── schemas/                # Pydantic v2 DTO
 │   │   └── schemas.py          # ApiResponse[T], ErrorResponse, схемы сущностей
 │   ├── services/               # Слой бизнес-логики
-│   │   ├── ai_service.py       # Интеграция с Anthropic Claude и кэширование инсайтов
+│   │   ├── ai_service.py       # Интеграция с Google Gemini и кэширование инсайтов
 │   │   ├── auth_service.py     # Пароли, JWT, ротация и очистка токенов
 │   │   ├── budget_service.py   # Лимиты бюджетов и подсчет расходов
 │   │   ├── currency_service.py # Получение и кэширование котировок валют (Redis, fallback)
@@ -284,12 +284,17 @@ finance_app/
 
 ## 6. Специфика AI Service (`app/services/ai_service.py`)
 
-Сервис `AIService` формирует персонализированные финансовые рекомендации на основе последних транзакций пользователя:
-* **Асинхронность и неблокирующие вызовы**: Использует официальный асинхронный клиент `anthropic.AsyncAnthropic` с неблокирующим вызовом `await self.client.messages.create(...)`. Поддерживает внедрение зависимостей (`Dependency Injection`) при инициализации в тестах.
-* **Надежное извлечение JSON**: Реализован статический метод `_extract_json()`, очищающий markdown-обертки блоков кода (` ```json ... ``` ` или ` ``` ... ``` `) и выделяющий валидный JSON-объект от первой `{` до последней `}`. Ошибки декодирования безопасно перехватываются без падения сервера.
-* **Кэширование аналитики (SHA-256)**: Для предотвращения лишних платных обращений к LLM сервис вычисляет SHA-256 хэш от сводки последних транзакций пользователя. Если состав и свойства транзакций не изменились, результат возвращается мгновенно из in-memory кэша `_cache`. Поддерживается принудительная инвалидация через `invalidate_cache(user_id)` и `clear_cache()`.
+Сервис `AIService` формирует персонализированные финансовые рекомендации на основе транзакций и соблюдения лимитов бюджетов пользователя:
+* **Асинхронность и неблокирующие вызовы**: Использует официальный SDK `google-genai` с асинхронным вызовом `await self.client.aio.models.generate_content(...)` на базе легковесной модели `gemini-3.5-flash-lite`. Поддерживает внедрение зависимостей (`Dependency Injection`) при инициализации в тестах.
+* **Нативный Structured Outputs и надежный fallback**: Запросы отправляются с конфигурацией `types.GenerateContentConfig(response_mime_type="application/json", system_instruction=...)`. Вспомогательный метод `_extract_json()` гарантирует надежное извлечение валидного JSON-объекта даже при наличии markdown-оберток или поясняющего текста модели.
+* **Учет бюджетов и защита от Prompt Injection**: В системную сводку `_build_summary` включаются два блока: 1) Сводка по лимитам категорий на месяц (`category | limit_amount | spent | remaining | статус превышения`); 2) Список транзакций. Описания транзакций `description` предварительно очищаются от управляющих символов, переводов строк (`\n`, `\r`) и символа пайпа (`|`).
+* **Многоуровневое кэширование и суточная квота (Redis)**:
+  - Кэш рекомендаций партиционируется по пользователю, локали, валюте, месяцу и году: `insights_cache:{user_id}:{locale}:{currency}:{month}:{year}`.
+  - Порог 5 транзакций (`insights_tx_count`): если количество новых операций меньше 5, отдается кэш без повторного вызова LLM.
+  - Суточная квота (`insights_daily_calls:{user_id}:{date_str}`): защита от обхода порога 5 транзакций через изменение параметров запроса; при исчерпании лимита (`ai_daily_limit_per_user`) возвращается последний доступный кэш или локализованное сообщение о достижении суточной квоты.
+* **Интернационализация (i18n)**: Полная поддержка локалей `ru`, `uz`, `en`, `kk` (казахский язык) во всех заглушках, сервисных и фолбэк-сообщениях.
 * **Временные метки в UTC**: Все генерируемые ответы содержат timezone-aware временные метки `datetime.now(timezone.utc)`.
-* **Заглушки при отсутствии ключа**: При пустом или тестовом ключе `ANTHROPIC_API_KEY` (например, `sk-ant-your-key...`) возвращается информационная заглушка `InsightResponse(insights=["В разработке..."])`.
+* **Заглушки при отсутствии ключа**: При пустом или тестовом ключе `GEMINI_API_KEY` (например, `sk-...`, `your-...`) возвращается информационная заглушка `InsightResponse(insights=["В разработке..."])`.
 
 ---
 
