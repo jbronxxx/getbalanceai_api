@@ -27,14 +27,35 @@ def get_budgets_version_key(user_id: uuid.UUID | str) -> str:
     return f"budgets_version:{user_id}"
 
 
-def get_insights_cache_key(user_id: uuid.UUID | str, locale: str = "ru", currency: str = "RUB") -> str:
+def get_insights_cache_key(
+    user_id: uuid.UUID | str,
+    locale: str = "ru",
+    currency: str = "RUB",
+    month: int | None = None,
+    year: int | None = None,
+) -> str:
     """Сформировать ключ кэшированных рекомендаций AI-инсайтов пользователя."""
+    if month is not None and year is not None:
+        return f"insights_cache:{user_id}:{locale}:{currency}:{month}:{year}"
     return f"insights_cache:{user_id}:{locale}:{currency}"
 
 
-def get_insights_count_key(user_id: uuid.UUID | str, locale: str = "ru", currency: str = "RUB") -> str:
+def get_insights_count_key(
+    user_id: uuid.UUID | str,
+    locale: str = "ru",
+    currency: str = "RUB",
+    month: int | None = None,
+    year: int | None = None,
+) -> str:
     """Сформировать ключ счетчика транзакций пользователя для валидации кэша инсайтов."""
+    if month is not None and year is not None:
+        return f"insights_tx_count:{user_id}:{locale}:{currency}:{month}:{year}"
     return f"insights_tx_count:{user_id}:{locale}:{currency}"
+
+
+def get_insights_daily_quota_key(user_id: uuid.UUID | str, date_str: str) -> str:
+    """Сформировать ключ суточного счетчика вызовов LLM для пользователя."""
+    return f"insights_daily_calls:{user_id}:{date_str}"
 
 
 def get_insights_user_patterns(user_id: uuid.UUID | str) -> tuple[str, ...]:

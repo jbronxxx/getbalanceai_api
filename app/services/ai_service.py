@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 
 from google import genai
+from google.genai import types
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,10 +14,12 @@ from app.models.models import Transaction
 from app.redis import (
     get_insights_cache_key,
     get_insights_count_key,
+    get_insights_daily_quota_key,
     get_insights_user_patterns,
     get_redis,
 )
-from app.schemas.schemas import InsightResponse
+from app.schemas.schemas import BudgetResponse, InsightResponse
+from app.services.budget_service import BudgetService
 from config_reader.config_reader import config
 from logger.logger import get_logger
 
@@ -104,23 +107,59 @@ class AIService:
 
         return json.loads(cleaned)
 
-    async def get_insights(self, user_id: uuid.UUID, currency: str = "RUB", locale: str = "ru") -> InsightResponse:
-        """Сформировать персональные рекомендации по расходам пользователя."""
+    @staticmethod
+    async def _find_latest_cached_insights(user_id: uuid.UUID) -> InsightResponse | None:
+        """Найти последнюю доступную сохраненную рекомендацию пользователя в Redis."""
+        try:
+            async for key in redis_client.scan_iter(match=f"insights_cache:{user_id}*", count=10):
+                val = await redis_client.get(key)
+                if val:
+                    try:
+                        cached_data = json.loads(val)
+                        if "insights" in cached_data and "generated_at" in cached_data:
+                            return InsightResponse(
+                                insights=cached_data["insights"],
+                                generated_at=datetime.fromisoformat(cached_data["generated_at"]),
+                            )
+                    except Exception:
+                        pass
+        except Exception as err:
+            logger.warning(f"Ошибка при поиске последнего кэша пользователя {user_id}: {err}")
+        return None
+
+    async def get_insights(
+        self,
+        user_id: uuid.UUID,
+        currency: str = "RUB",
+        locale: str = "ru",
+        month: int | None = None,
+        year: int | None = None,
+    ) -> InsightResponse:
+        """Сформировать персональные рекомендации по расходам и бюджетам пользователя."""
+        now = datetime.now(timezone.utc)
+        target_month = month or now.month
+        target_year = year or now.year
+
         is_placeholder = (
             not config.gemini_api_key
             or config.gemini_api_key.startswith("sk-")
             or config.gemini_api_key.startswith("your-")
             or config.gemini_api_key == "valid-real-api-key"
         )
-        # Для тестов пропускаем проверку плейсхолдера, если ключ явно valid-real-key
+        # Для тестов пропускаем проверку плейсхолдера, если ключ явно valid-real-key или test-api-key
         lang_prefix = locale[:2].lower()
 
         if is_placeholder and config.gemini_api_key != "valid-real-key" and config.gemini_api_key != "test-api-key":
             logger.warning("GEMINI_API_KEY is not set or is a placeholder, returning stub insights")
-            stub_msg = {"ru": "В разработке...", "uz": "Ishlab chiqilmoqda...", "en": "In development..."}
+            stub_msg = {
+                "ru": "В разработке...",
+                "uz": "Ishlab chiqilmoqda...",
+                "en": "In development...",
+                "kk": "Әзірленуде...",
+            }
             return InsightResponse(
                 insights=[stub_msg.get(lang_prefix, stub_msg["en"])],
-                generated_at=datetime.now(timezone.utc),
+                generated_at=now,
             )
 
         # Получаем общее количество транзакций пользователя
@@ -133,14 +172,15 @@ class AIService:
                 "ru": "Добавьте первые транзакции, чтобы получить анализ.",
                 "uz": "Tahlil olish uchun birinchi tranzaksiyalarni qo'shing.",
                 "en": "Add your first transactions to get an analysis.",
+                "kk": "Талдау алу үшін алғашқы транзакцияларды қосыңыз.",
             }
             return InsightResponse(
                 insights=[empty_msg.get(lang_prefix, empty_msg["en"])],
-                generated_at=datetime.now(timezone.utc),
+                generated_at=now,
             )
 
-        cache_key = get_insights_cache_key(user_id, locale, currency)
-        count_key = get_insights_count_key(user_id, locale, currency)
+        cache_key = get_insights_cache_key(user_id, locale, currency, month=target_month, year=target_year)
+        count_key = get_insights_count_key(user_id, locale, currency, month=target_month, year=target_year)
 
         cached_data_str = None
         last_tx_count_str = None
@@ -167,12 +207,126 @@ class AIService:
                 except Exception as e:
                     logger.error(f"Error reading cache for user {user_id}: {e}")
 
-        # Запрашиваем последние 50 транзакций для анализа
-        query = select(Transaction).where(Transaction.user_id == user_id).order_by(Transaction.date.desc()).limit(50)
+        # Проверка суточного лимита обращений к LLM
+        date_str = now.strftime("%Y-%m-%d")
+        daily_quota_key = get_insights_daily_quota_key(user_id, date_str)
+        daily_calls = 0
+        try:
+            calls_val = await redis_client.get(daily_quota_key)
+            if calls_val:
+                daily_calls = int(calls_val)
+        except Exception as err:
+            logger.warning(f"Не удалось прочитать счетчик квоты из Redis для пользователя {user_id}: {err}")
+
+        if daily_calls >= config.ai_daily_limit_per_user:
+            logger.warning(
+                "Суточный лимит вызовов AI исчерпан для пользователя %s (%s/%s)",
+                user_id,
+                daily_calls,
+                config.ai_daily_limit_per_user,
+            )
+            # 1. Возвращаем кэш текущего периода, если есть
+            if cached_data_str:
+                try:
+                    cached_data = json.loads(cached_data_str)
+                    return InsightResponse(
+                        insights=cached_data["insights"],
+                        generated_at=datetime.fromisoformat(cached_data["generated_at"]),
+                    )
+                except Exception:
+                    pass
+
+            # 2. Поиск последнего доступного кэша пользователя
+            fallback_cached = await self._find_latest_cached_insights(user_id)
+            if fallback_cached:
+                return fallback_cached
+
+            # 3. Локализованное вежливое сообщение о достижении суточного лимита
+            quota_messages = {
+                "ru": [
+                    "Вы достигли дневного лимита запросов к финансовому помощнику (максимум 5 обновлений в день).",
+                    "Пожалуйста, возвращайтесь завтра или продолжайте пользоваться текущей аналитикой.",
+                ],
+                "en": [
+                    "You have reached your daily limit for financial assistant requests (maximum 5 updates per day).",
+                    "Please return tomorrow or continue using your current insights.",
+                ],
+                "uz": [
+                    "Siz moliyaviy yordamchiga kunlik so'rovlar limitiga yetdingiz (kuniga ko'pi bilan 5 ta yangilanish).",
+                    "Iltimos, ertaga qaytib keling yoki joriy tahlildan foydalanishda davom eting.",
+                ],
+                "kk": [
+                    "Сіз қаржылық көмекшіге тәуліктік сұраныс шегіне жеттіңіз (күніне ең көбі 5 жаңарту).",
+                    "Ертең қайта келіңіз немесе ағымдағы талдауды пайдалануды жалғастырыңыз.",
+                ],
+            }
+            return InsightResponse(
+                insights=quota_messages.get(lang_prefix, quota_messages["en"]),
+                generated_at=now,
+            )
+
+        # Запрашиваем транзакции пользователя за выбранный период
+        start_date = datetime(target_year, target_month, 1, tzinfo=timezone.utc)
+        end_date = (
+            datetime(target_year + 1, 1, 1, tzinfo=timezone.utc)
+            if target_month == 12
+            else datetime(target_year, target_month + 1, 1, tzinfo=timezone.utc)
+        )
+
+        query = (
+            select(Transaction)
+            .where(
+                Transaction.user_id == user_id,
+                Transaction.date >= start_date,
+                Transaction.date < end_date,
+            )
+            .order_by(Transaction.date.desc())
+            .limit(50)
+        )
         result = await self.db.execute(query)
         transactions = list(result.scalars().all())
 
-        summary = self._build_summary(transactions, currency)
+        # Если в выбранном периоде транзакций нет, загружаем последние 50 транзакций
+        if not transactions:
+            fallback_query = (
+                select(Transaction).where(Transaction.user_id == user_id).order_by(Transaction.date.desc()).limit(50)
+            )
+            fallback_res = await self.db.execute(fallback_query)
+            transactions = list(fallback_res.scalars().all())
+
+        # Загружаем активные лимиты бюджетов за выбранный период
+        budgets: list[BudgetResponse] = []
+        try:
+            budget_service = BudgetService(self.db)
+            budgets = await budget_service.get_all(
+                user_id,
+                month=target_month,
+                year=target_year,
+                user_base_currency=currency,
+            )
+        except Exception as err:
+            logger.warning(f"Не удалось загрузить бюджеты для пользователя {user_id}: {err}")
+
+        summary = self._build_summary(transactions, budgets, currency)
+
+        fallback_messages = {
+            "ru": [
+                "К сожалению, наши умные помощники сейчас очень заняты и не могут проанализировать данные.",
+                "Пожалуйста, загляните за советами немного позже.",
+            ],
+            "en": [
+                "Unfortunately, our smart assistants are currently very busy and cannot analyze the data.",
+                "Please check back for tips a little later.",
+            ],
+            "uz": [
+                "Afsuski, aqlli yordamchilarimiz hozir juda band va ma'lumotlarni tahlil qila olmaydilar.",
+                "Iltimos, maslahatlar uchun biroz keyinroq qaytib keling.",
+            ],
+            "kk": [
+                "Өкінішке қарай, біздің ақылды көмекшілеріміз қазір өте бос емес және деректерді талдай алмайды.",
+                "Кеңестер алу үшін сәл кейінірек кіріңіз.",
+            ],
+        }
 
         try:
             insights = await self._call_gemini(summary, locale, currency)
@@ -183,72 +337,125 @@ class AIService:
                     {
                         "insights": insights,
                         "generated_at": response.generated_at.isoformat(),
-                    }
+                    },
+                    ensure_ascii=False,
                 )
                 await redis_client.setex(cache_key, 7 * 86400, cache_val)
                 await redis_client.setex(count_key, 7 * 86400, str(total_tx_count))
             except Exception as err:
                 logger.warning(f"Не удалось записать кэш инсайтов в Redis для пользователя {user_id}: {err}")
 
+            try:
+                pipe = redis_client.pipeline()
+                pipe.incr(daily_quota_key)
+                pipe.expire(daily_quota_key, 86400)
+                await pipe.execute()
+            except Exception as err:
+                logger.warning(f"Не удалось обновить счетчик суточной квоты в Redis: {err}")
+
             return response
         except Exception as e:
             logger.error(f"Error requesting insights from Gemini API: {e}")
-            fallback_messages = {
-                "ru": [
-                    "К сожалению, наши умные помощники сейчас очень заняты и не могут проанализировать данные.",
-                    "Пожалуйста, загляните за советами немного позже.",
-                ],
-                "en": [
-                    "Unfortunately, our smart assistants are currently very busy and cannot analyze the data.",
-                    "Please check back for tips a little later.",
-                ],
-                "uz": [
-                    "Afsuski, aqlli yordamchilarimiz hozir juda band va ma'lumotlarni tahlil qila olmaydilar.",
-                    "Iltimos, maslahatlar uchun biroz keyinroq qaytib keling.",
-                ],
-            }
             return InsightResponse(
                 insights=fallback_messages.get(lang_prefix, fallback_messages["en"]),
                 generated_at=datetime.now(timezone.utc),
             )
 
-    def _build_summary(self, transactions: list[Transaction], currency: str) -> str:
-        """Сформировать текстовую сводку транзакций для передачи в системный промпт LLM."""
-        lines = []
-        for tx in transactions:
-            tx_curr = getattr(tx, "currency", None) or currency
-            base_amt = getattr(tx, "base_amount", None)
-            if tx_curr != currency and base_amt is not None:
-                amount_str = f"{tx.amount} {tx_curr} (эквивалент: {base_amt} {currency})"
-            else:
-                amount_str = f"{tx.amount} {tx_curr}"
+    def _build_summary(
+        self,
+        transactions: list[Transaction],
+        budgets: list[BudgetResponse] | str | None = None,
+        currency: str = "RUB",
+    ) -> str:
+        """Сформировать текстовую сводку транзакций и бюджетов для системного промпта LLM."""
+        if isinstance(budgets, str):
+            currency = budgets
+            budgets_list: list[BudgetResponse] = []
+        else:
+            budgets_list = budgets or []
 
-            parts = [
-                tx.date.strftime("%Y-%m-%d"),
-                tx.type.value,
-                tx.category.value,
-                amount_str,
-                tx.description,
-            ]
-            lines.append(" | ".join(parts))
-        return "\n".join(lines)
+        blocks = []
+
+        # Блок 1: Сводка по лимитам категорий на месяц
+        blocks.append("Блок 1: Сводка по лимитам категорий на месяц:")
+        if budgets_list:
+            for b in budgets_list:
+                cat = b.category.value if hasattr(b.category, "value") else str(b.category)
+                status = "Превышен" if b.spent > b.limit_amount else "В пределах лимита"
+                blocks.append(
+                    f"{cat} | Лимит: {b.limit_amount} {currency} | Потрачено: {b.spent} {currency} | "
+                    f"Остаток: {b.remaining} {currency} | {status}"
+                )
+        else:
+            blocks.append("Лимиты бюджетов на данный период не установлены.")
+
+        # Блок 2: Список транзакций
+        blocks.append("\nБлок 2: Список транзакций:")
+        if transactions:
+            for tx in transactions:
+                tx_curr = getattr(tx, "currency", None) or currency
+                base_amt = getattr(tx, "base_amount", None)
+                if tx_curr != currency and base_amt is not None:
+                    amount_str = f"{tx.amount} {tx_curr} (эквивалент: {base_amt} {currency})"
+                else:
+                    amount_str = f"{tx.amount} {tx_curr}"
+
+                type_val = tx.type.value if hasattr(tx.type, "value") else str(tx.type)
+                cat_val = tx.category.value if hasattr(tx.category, "value") else str(tx.category)
+                date_str = tx.date.strftime("%Y-%m-%d") if hasattr(tx.date, "strftime") else str(tx.date)
+
+                # Очистка описания от управляющих символов, переводов строк и разделителей (|) для защиты от Prompt Injection
+                raw_desc = getattr(tx, "description", None) or ""
+                clean_desc = re.sub(r"[\r\n\t|]+", " ", raw_desc)
+                clean_desc = "".join(ch for ch in clean_desc if ch >= " ")
+                clean_desc = re.sub(r"\s+", " ", clean_desc).strip()
+                clean_desc = clean_desc or "Без описания"
+
+                parts = [
+                    date_str,
+                    type_val,
+                    cat_val,
+                    amount_str,
+                    clean_desc,
+                ]
+                blocks.append(" | ".join(parts))
+        else:
+            blocks.append("Транзакции за данный период отсутствуют.")
+
+        return "\n".join(blocks)
 
     async def _call_gemini(self, summary: str, locale: str, currency: str) -> list[str]:
-        """Отправить запрос в Gemini API и распарсить JSON с рекомендациями."""
-        prompt = f"""Вот транзакции пользователя за последнее время:
+        """Отправить запрос в Gemini API со Structured Outputs и распарсить JSON с рекомендациями."""
+        system_instruction = (
+            "Ты — персональный финансовый ассистент. Анализируй расходы пользователя и соблюдение им "
+            "установленных месячных лимитов бюджетов по категориям. Формируй практичные, понятные "
+            "и действенные советы на основе предоставленных данных. Ответ всегда возвращай строго "
+            'в формате JSON: {"insights": ["совет 1", "совет 2", "совет 3"]}.'
+        )
+
+        prompt = f"""Вот финансовые данные пользователя за выбранный период:
 
 {summary}
 
-Дай 3 конкретных совета по управлению бюджетом на основе этих данных.
+Дай 3 конкретных совета по управлению финансами и бюджетом на основе этих данных.
+Учитывай как фактические транзакции, так и состояние месячных лимитов категорий (превышения, остатки).
 Выдача советов должна быть максимально простой, без сложных финансовых слов и фраз.
 Пиши доступным языком для среднестатистического человека.
-Учитывай, что валюта пользователя - {currency}. Суммы указаны в этой валюте, соразмеряй советы с реалиями этой валюты.
-Ответ сформируй на языке/локали: {locale}. Обязательно переведи названия категорий
-(например, food -> Питание, и т.д.) на этот язык.
-Ответь в формате JSON: {{"insights": ["совет 1", "совет 2", "совет 3"]}}
+Учитывай, что валюта пользователя — {currency}. Суммы указаны в этой валюте, соразмеряй советы с реалиями этой валюты.
+Ответ сформируй на языке/локали: {locale}. Обязательно переведи названия категорий на этот язык.
+Формат ответа JSON: {{"insights": ["совет 1", "совет 2", "совет 3"]}}
 Только JSON, без лишнего текста."""
 
-        response = await self.client.aio.models.generate_content(model=self.model_name, contents=prompt)
+        gen_config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            system_instruction=system_instruction,
+        )
+
+        response = await self.client.aio.models.generate_content(
+            model=self.model_name,
+            contents=prompt,
+            config=gen_config,
+        )
         text = response.text
         try:
             data = self._extract_json(text)

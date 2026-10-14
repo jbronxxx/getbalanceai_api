@@ -36,7 +36,8 @@ class Settings(BaseSettings):
     cors_allow_headers: list[str] = Field(["*"], alias="CORS_ALLOW_HEADERS")
 
     gemini_api_key: str = Field("", alias="GEMINI_API_KEY")
-    ai_model: str = Field("gemini-3.8-flash", alias="AI_MODEL")
+    ai_model: str = Field("gemini-3.5-flash-lite", alias="AI_MODEL")
+    ai_daily_limit_per_user: int = Field(5, alias="AI_DAILY_LIMIT_PER_USER")
 
     redis_url: str = Field("redis://localhost:6379/0", alias="REDIS_URL")
 
