@@ -49,7 +49,7 @@ API использует единообразный формат ответов 
     "email": "user@example.com",
     "name": "John Doe",
     "avatar_url": null,
-    "base_currency": "RUB",
+    "base_currency": "EUR",
     "created_at": "2026-09-10T10:30:00Z"
   }
 }
@@ -79,7 +79,7 @@ API использует единообразный формат ответов 
       "email": "user@example.com",
       "name": "John Doe",
       "avatar_url": "https://lh3.googleusercontent.com/avatar.png",
-      "base_currency": "RUB",
+      "base_currency": "EUR",
       "created_at": "2026-09-10T10:30:00Z"
     }
   }
@@ -110,7 +110,7 @@ API использует единообразный формат ответов 
   "data": {
     "id": "550e8400-e29b-41d4-a716-446655440001",
     "amount": 1500.50,
-    "currency": "RUB",
+    "currency": "EUR",
     "exchange_rate": 1.0,
     "base_amount": 1500.50,
     "description": "Зарплата",
@@ -123,7 +123,7 @@ API использует единообразный формат ответов 
 ```
 
 ##### Мультивалютные правила для транзакций (`POST /api/v1/transactions` и `POST /api/v1/sync`):
-1. **Валидация валюты (`currency`)**: разрешены только поддерживаемые ISO-коды (`RUB`, `USD`, `EUR`, `KZT`, `UZS`). Любой иной код отклоняется со статусом `422 Unprocessable Entity` (`code: VALIDATION_ERROR`).
+1. **Валидация валюты (`currency`)**: разрешены только поддерживаемые ISO-коды (`USD`, `EUR`, `KZT`, `UZS`). Любой иной код отклоняется со статусом `422 Unprocessable Entity` (`code: VALIDATION_ERROR`).
 2. **Значение по умолчанию**: если поле `currency` не передано или передано как `null`, сервер автоматически устанавливает базовую валюту профиля текущего пользователя (`users.base_currency`).
 3. **Единое согласование сумм и курсов (`resolve_amounts`)**:
    - При совпадении валюты операции с базовой валютой пользователя: строго `exchange_rate = 1.0` и `base_amount = amount`. Любые переданные клиентом курсы или `base_amount` игнорируются для защиты от искажения финансовых данных.
@@ -151,7 +151,7 @@ API использует единообразный формат ответов 
     "rates": {
       "USD": 1.0,
       "EUR": 0.92,
-      "RUB": 96.5,
+      "EUR": 0.92,
       "UZS": 12850.0,
       "KZT": 490.0
     },

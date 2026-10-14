@@ -40,7 +40,7 @@ class TransactionService:
         """Создать новую транзакцию (доход или расход) для пользователя."""
         if not user_base_currency:
             user_res = await self.db.execute(select(User.base_currency).where(User.id == user_id))
-            user_base_currency = (user_res.scalar_one_or_none() or "RUB").strip().upper()
+            user_base_currency = (user_res.scalar_one_or_none() or "USD").strip().upper()
         else:
             user_base_currency = user_base_currency.strip().upper()
 

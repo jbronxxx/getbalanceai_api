@@ -202,7 +202,7 @@ class UserResponse(BaseModel):
     email: str = Field(..., description="Email пользователя")
     name: str = Field(..., description="Имя пользователя")
     avatar_url: Optional[str] = Field(default=None, description="URL аватара пользователя")
-    base_currency: str = Field(default=CurrencyCode.RUB.value, description="Основная валюта учета пользователя")
+    base_currency: str = Field(default=CurrencyCode.USD.value, description="Основная валюта учета пользователя")
     created_at: datetime = Field(..., description="Дата и время создания аккаунта")
 
 
@@ -228,7 +228,7 @@ class UserUpdateRequest(BaseModel):
     Атрибуты:
         name (str | None): Новое имя пользователя.
         avatar_url (str | None): URL нового аватара.
-        base_currency (str | None): Базовая валюта учета (RUB, USD, EUR, KZT, UZS).
+        base_currency (str | None): Базовая валюта учета (USD, EUR, KZT, UZS).
     """
 
     name: Optional[str] = Field(default=None, max_length=100, description="Имя пользователя")
@@ -256,7 +256,7 @@ class TransactionCreate(BaseModel):
 
     Атрибуты:
         amount (Decimal): Сумма операции (> 0).
-        currency (str): Код валюты операции (RUB, UZS, USD и др.).
+        currency (str): Код валюты операции (USD, UZS, EUR и др.).
         exchange_rate (Decimal): Курс к базовой валюте.
         base_amount (Decimal | None): Сумма в базовой валюте.
         description (str): Описание операции.
@@ -268,7 +268,7 @@ class TransactionCreate(BaseModel):
     amount: Decimal = Field(..., gt=Decimal("0"), description="Сумма операции (должна быть больше 0)")
     currency: Optional[str] = Field(
         default=None,
-        description="Код валюты операции (RUB, USD, EUR, KZT, UZS). По умолчанию базовая валюта пользователя",
+        description="Код валюты операции (USD, EUR, KZT, UZS). По умолчанию базовая валюта пользователя",
     )
     exchange_rate: Optional[Decimal] = Field(
         default=None,
@@ -339,7 +339,7 @@ class TransactionResponse(BaseModel):
 
     id: uuid.UUID = Field(..., description="ID транзакции")
     amount: Decimal = Field(..., description="Сумма транзакции")
-    currency: str = Field(default="RUB", description="Код валюты операции")
+    currency: str = Field(default="USD", description="Код валюты операции")
     exchange_rate: Decimal = Field(default=Decimal("1.0"), description="Курс валюты к базовой валюте")
     base_amount: Decimal = Field(..., description="Сумма в базовой валюте")
     description: str = Field(..., description="Описание транзакции")
@@ -429,7 +429,7 @@ class TransactionSyncItem(BaseModel):
     amount: Decimal = Field(..., gt=Decimal("0"), description="Сумма")
     currency: Optional[str] = Field(
         default=None,
-        description="Код валюты операции (RUB, USD, EUR, KZT, UZS). По умолчанию базовая валюта пользователя",
+        description="Код валюты операции (USD, EUR, KZT, UZS). По умолчанию базовая валюта пользователя",
     )
     exchange_rate: Optional[Decimal] = Field(
         default=None,
@@ -589,7 +589,7 @@ class CurrencyRatesResponse(BaseModel):
     """Схема ответа со справочником актуальных курсов валют."""
 
     base: str = Field(default="USD", description="Базовая валюта котировок")
-    rates: dict[str, Decimal] = Field(..., description="Словарь курсов валют к базовой (USD, EUR, RUB, UZS, KZT)")
+    rates: dict[str, Decimal] = Field(..., description="Словарь курсов валют к базовой (USD, EUR, UZS, KZT)")
     updated_at: datetime = Field(..., description="Дата и время актуализации котировок")
     is_fallback: bool = Field(
         default=False,

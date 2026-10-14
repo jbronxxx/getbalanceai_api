@@ -50,7 +50,6 @@ class TestBudgets:
             rates={
                 "USD": Decimal("1.0"),
                 "EUR": Decimal("0.92"),
-                "RUB": Decimal("96.0"),
                 "UZS": Decimal("12800.0"),
                 "KZT": Decimal("495.0"),
             },
@@ -128,7 +127,6 @@ class TestBudgets:
             rates={
                 "USD": Decimal("1.0"),
                 "EUR": Decimal("0.92"),
-                "RUB": Decimal("96.0"),
                 "UZS": Decimal("12800.0"),
                 "KZT": Decimal("495.0"),
             },
@@ -299,7 +297,7 @@ class TestBudgets:
             "/api/v1/transactions/",
             json={
                 "amount": 25.00,
-                "currency": "RUB",
+                "currency": "USD",
                 "category": "entertainment",
                 "type": "expense",
                 "date": "2026-05-10T10:00:00Z",

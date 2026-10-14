@@ -26,11 +26,11 @@ def test_redis_key_builders():
     assert budgets_key == f"budgets_version:{test_id}"
 
     # 2. Ключи кэша инсайтов без указания периода
-    cache_key = get_insights_cache_key(test_id, locale="ru", currency="RUB")
-    assert cache_key == f"insights_cache:{test_id}:ru:RUB"
+    cache_key = get_insights_cache_key(test_id, locale="ru", currency="UZS")
+    assert cache_key == f"insights_cache:{test_id}:ru:UZS"
 
-    count_key = get_insights_count_key(test_id, locale="ru", currency="RUB")
-    assert count_key == f"insights_tx_count:{test_id}:ru:RUB"
+    count_key = get_insights_count_key(test_id, locale="ru", currency="UZS")
+    assert count_key == f"insights_tx_count:{test_id}:ru:UZS"
 
     # 3. Ключи кэша инсайтов с учетом месяца и года
     cache_key_period = get_insights_cache_key(test_id, locale="kk", currency="KZT", month=10, year=2026)

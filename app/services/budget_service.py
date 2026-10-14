@@ -160,7 +160,7 @@ class BudgetService:
         """Быстрый расчет ETag с учетом лимитов бюджетов, расходов и базовой валюты пользователя."""
         if not base_currency:
             user_res = await self.db.execute(select(User.base_currency).where(User.id == user_id))
-            base_currency = (user_res.scalar_one_or_none() or "RUB").strip().upper()
+            base_currency = (user_res.scalar_one_or_none() or "USD").strip().upper()
         else:
             base_currency = base_currency.strip().upper()
 

@@ -37,10 +37,10 @@ class TestMultiCurrencyBackend:
         """Создание транзакции с указанием валюты и курса сохраняет base_amount."""
         service = TransactionService(db_session)
         payload = TransactionCreate(
-            amount=Decimal("120000.00"),
+            amount=Decimal("128000.00"),
             currency="uzs",
-            exchange_rate=Decimal("0.007500"),
-            base_amount=Decimal("900.00"),
+            exchange_rate=Decimal("0.000078"),
+            base_amount=Decimal("9.98"),
             description="Обед в Ташкенте",
             category=Category.food,
             type=TransactionType.expense,
@@ -48,9 +48,9 @@ class TestMultiCurrencyBackend:
         tx = await service.create(test_user.id, payload)
 
         assert tx.currency == "UZS"
-        assert tx.exchange_rate == Decimal("0.007500")
-        assert tx.base_amount == Decimal("900.00")
-        assert tx.amount == Decimal("120000.00")
+        assert tx.exchange_rate == Decimal("0.000078")
+        assert tx.base_amount == Decimal("9.98")
+        assert tx.amount == Decimal("128000.00")
 
     @pytest.mark.asyncio
     async def test_create_transaction_auto_calculates_and_quantizes_base_amount(
@@ -60,18 +60,18 @@ class TestMultiCurrencyBackend:
         service = TransactionService(db_session)
         payload = TransactionCreate(
             amount=Decimal("50.00"),
-            currency="USD",
-            exchange_rate=Decimal("96.555555"),
+            currency="EUR",
+            exchange_rate=Decimal("1.086957"),
             description="Покупка книги",
             category=Category.shopping,
             type=TransactionType.expense,
         )
         tx = await service.create(test_user.id, payload)
 
-        assert tx.currency == "USD"
-        assert tx.exchange_rate == Decimal("96.555555")
-        # 50.00 * 96.555555 = 4827.77775 -> 4827.78
-        assert tx.base_amount == Decimal("4827.78")
+        assert tx.currency == "EUR"
+        assert tx.exchange_rate == Decimal("1.086957")
+        # 50.00 EUR / 0.92 = 54.347826 -> 54.35
+        assert tx.base_amount == Decimal("54.35")
 
     @pytest.mark.asyncio
     async def test_budget_spent_uses_base_amount(self, db_session: AsyncSession, test_user: User, mock_rates_gateway):
@@ -80,14 +80,14 @@ class TestMultiCurrencyBackend:
         budget_service = BudgetService(db_session)
 
         now = datetime.now(timezone.utc)
-        # Создаем транзакцию в сумах на 500 000 сум (~3 750 руб)
+        # Создаем транзакцию в сумах на 128 000 сум (10 USD)
         await tx_service.create(
             test_user.id,
             TransactionCreate(
-                amount=Decimal("500000.00"),
+                amount=Decimal("128000.00"),
                 currency="UZS",
-                exchange_rate=Decimal("0.007500"),
-                base_amount=Decimal("3750.00"),
+                exchange_rate=Decimal("0.000078"),
+                base_amount=Decimal("9.98"),
                 description="Ресторан",
                 category=Category.food,
                 type=TransactionType.expense,
@@ -95,20 +95,20 @@ class TestMultiCurrencyBackend:
             ),
         )
 
-        # Создаем бюджет на 10 000 руб
+        # Создаем бюджет на 100 USD
         budget_resp = await budget_service.create(
             test_user.id,
             BudgetCreate(
                 category=Category.food,
-                limit_amount=Decimal("10000.00"),
+                limit_amount=Decimal("100.00"),
                 month=now.month,
                 year=now.year,
             ),
         )
 
-        # Потраченная сумма должна быть 3750.00 руб, а не 500000.00!
-        assert budget_resp.spent == Decimal("3750.00")
-        assert budget_resp.remaining == Decimal("6250.00")
+        # Потраченная сумма должна быть 9.98 USD, а не 128000.00!
+        assert budget_resp.spent == Decimal("9.98")
+        assert budget_resp.remaining == Decimal("90.02")
 
     @pytest.mark.asyncio
     async def test_create_transaction_http_api_success(
@@ -116,9 +116,9 @@ class TestMultiCurrencyBackend:
     ):
         """HTTP-эндпоинт создания транзакции корректно сохраняет и возвращает мультивалютные поля."""
         payload = {
-            "amount": 100.50,
-            "currency": "usd",
-            "exchange_rate": 96.50,
+            "amount": 92.00,
+            "currency": "eur",
+            "exchange_rate": 1.086957,
             "description": "Подписка",
             "category": "subscriptions",
             "type": "expense",
@@ -129,10 +129,10 @@ class TestMultiCurrencyBackend:
         data = response.json()
         assert data["status"] == "success"
         tx_data = data["data"]
-        assert tx_data["currency"] == "USD"
-        assert Decimal(str(tx_data["exchange_rate"])) == Decimal("96.50")
-        # 100.50 * 96.50 = 9698.25
-        assert Decimal(str(tx_data["base_amount"])) == Decimal("9698.25")
+        assert tx_data["currency"] == "EUR"
+        assert Decimal(str(tx_data["exchange_rate"])) == Decimal("1.086957")
+        # 92.00 EUR / 0.92 = 100.00 USD
+        assert Decimal(str(tx_data["base_amount"])) == Decimal("100.00")
 
     @pytest.mark.asyncio
     async def test_create_transaction_negative_base_amount_rejected(self, client: AsyncClient, auth_headers: dict[str, str]):
@@ -171,7 +171,6 @@ class TestMultiCurrencyBackend:
         mocked_rates = {
             "USD": Decimal("1.0"),
             "EUR": Decimal("0.925"),
-            "RUB": Decimal("97.2"),
             "UZS": Decimal("12850.0"),
             "KZT": Decimal("492.0"),
         }
@@ -186,7 +185,7 @@ class TestMultiCurrencyBackend:
             rates = data["data"]["rates"]
             assert Decimal(str(rates["USD"])) == Decimal("1.0")
             assert Decimal(str(rates["EUR"])) == Decimal("0.925")
-            assert Decimal(str(rates["RUB"])) == Decimal("97.2")
+            assert Decimal(str(rates["EUR"])) == Decimal("0.925")
             assert Decimal(str(rates["UZS"])) == Decimal("12850.0")
             assert Decimal(str(rates["KZT"])) == Decimal("492.0")
 
@@ -198,7 +197,7 @@ class TestMultiCurrencyBackend:
             response_data = await service.get_rates()
             assert response_data.base == "USD"
             assert "USD" in response_data.rates
-            assert "RUB" in response_data.rates
+            assert "KZT" in response_data.rates
             assert response_data.rates["USD"] == Decimal("1.0")
 
     @pytest.mark.asyncio
@@ -216,9 +215,9 @@ class TestMultiCurrencyBackend:
             "transactions": [
                 {
                     "id": tx_id,
-                    "amount": 250000.0,
+                    "amount": 256000.0,
                     "currency": "uzs",
-                    "exchange_rate": 0.0075,
+                    "exchange_rate": 0.000078,
                     "description": "Такси Самарканд",
                     "category": "transport",
                     "type": "expense",
@@ -236,14 +235,14 @@ class TestMultiCurrencyBackend:
         synced_txs = data["data"]["synced_transactions"]
         assert len(synced_txs) == 1
         assert synced_txs[0]["currency"] == "UZS"
-        # 250000.0 * 0.0075 = 1875.00
-        assert Decimal(str(synced_txs[0]["base_amount"])) == Decimal("1875.00")
+        # 256000 * 0.000078 = 19.968 -> 19.97 USD
+        assert Decimal(str(synced_txs[0]["base_amount"])) == Decimal("19.97")
 
         # Проверяем напрямую в БД
         res = await db_session.execute(select(Transaction).where(Transaction.id == uuid.UUID(tx_id)))
         db_tx = res.scalar_one()
         assert db_tx.currency == "UZS"
-        assert db_tx.base_amount == Decimal("1875.00")
+        assert db_tx.base_amount == Decimal("19.97")
 
     @pytest.mark.asyncio
     async def test_ai_service_multi_currency_summary(self, db_session: AsyncSession, test_user: User):
@@ -262,9 +261,9 @@ class TestMultiCurrencyBackend:
             date=datetime(2026, 10, 10, 10, 0, 0, tzinfo=timezone.utc),
         )
 
-        summary = ai_service._build_summary([tx], currency="RUB")
+        summary = ai_service._build_summary([tx], currency="KZT")
         assert "500000.00 UZS" in summary
-        assert "3750.00 RUB" in summary
+        assert "3750.00 KZT" in summary
 
     @pytest.mark.asyncio
     async def test_large_nominal_currency_does_not_overflow_numeric_precision(
@@ -349,7 +348,7 @@ class TestMultiCurrencyBackend:
     def test_calculate_cross_rate_raises_on_unsupported_currency(self):
         """calculate_cross_rate бросает InvalidCurrencyException для неизвестной валюты."""
         with pytest.raises(InvalidCurrencyException):
-            CurrencyService.calculate_cross_rate("UNKNOWN", "RUB")
+            CurrencyService.calculate_cross_rate("UNKNOWN", "KZT")
 
         with pytest.raises(InvalidCurrencyException):
             CurrencyService.calculate_cross_rate("USD", "UNKNOWN")
@@ -410,8 +409,8 @@ class TestMultiCurrencyBackend:
         """При совпадении валюты с базовой курс строго 1.0, а base_amount равен amount даже при подделке."""
         rate, base_amount = CurrencyService.resolve_amounts(
             amount=Decimal("100.00"),
-            currency="RUB",
-            base_currency="RUB",
+            currency="KZT",
+            base_currency="KZT",
             client_rate=Decimal("999.0"),
             client_base_amount=Decimal("1000000.00"),
         )
@@ -420,13 +419,13 @@ class TestMultiCurrencyBackend:
 
     def test_resolve_amounts_accepts_client_rate_within_tolerance(self):
         """Клиентский курс принимается, если его отклонение от серверного не превышает tolerance."""
-        # rates: USD=1.0, RUB=96.0 -> server cross rate USD->RUB = 96.0
-        rates = {"USD": Decimal("1.0"), "RUB": Decimal("96.0")}
+        # rates: USD=1.0, KZT=96.0 -> server cross rate USD->KZT = 96.0
+        rates = {"USD": Decimal("1.0"), "KZT": Decimal("96.0")}
         # Клиент прислал 95.0. Отклонение: |95 - 96| / 96 = ~1.04% <= 15%
         rate, base_amount = CurrencyService.resolve_amounts(
             amount=Decimal("100.00"),
             currency="USD",
-            base_currency="RUB",
+            base_currency="KZT",
             client_rate=Decimal("95.000000"),
             rates=rates,
             max_tolerance_percent=15.0,
@@ -436,12 +435,12 @@ class TestMultiCurrencyBackend:
 
     def test_resolve_amounts_rejects_client_rate_exceeding_tolerance(self):
         """Клиентский курс отбрасывается в пользу серверного, если отклонение превышает tolerance."""
-        rates = {"USD": Decimal("1.0"), "RUB": Decimal("96.0")}
+        rates = {"USD": Decimal("1.0"), "KZT": Decimal("96.0")}
         # Клиент прислал нереалистичный курс 50.0 (отклонение ~48% > 15%)
         rate, base_amount = CurrencyService.resolve_amounts(
             amount=Decimal("100.00"),
             currency="USD",
-            base_currency="RUB",
+            base_currency="KZT",
             client_rate=Decimal("50.000000"),
             rates=rates,
             max_tolerance_percent=15.0,
@@ -459,7 +458,7 @@ class TestMultiCurrencyBackend:
         mock_rates_gateway,
     ):
         """Эндпоинты create и sync дают строго одинаковые rate и base_amount при одинаковых входных данных."""
-        test_user.base_currency = "RUB"
+        test_user.base_currency = "KZT"
         await db_session.flush()
 
         tx_payload_create = {
@@ -536,7 +535,6 @@ class TestMultiCurrencyBackend:
         custom_rates = {
             "USD": Decimal("1.0"),
             "EUR": Decimal("0.85"),
-            "RUB": Decimal("105.0"),
             "UZS": Decimal("13000.0"),
             "KZT": Decimal("510.0"),
         }
@@ -546,7 +544,7 @@ class TestMultiCurrencyBackend:
             mock_fetch.return_value = custom_rates
             res_success = await service.get_rates()
             assert res_success.is_fallback is False
-            assert res_success.rates["RUB"] == Decimal("105.0")
+            assert res_success.rates["KZT"] == Decimal("510.0")
 
         # 2. Истечение основного кэша (удаляем основной ключ, но постоянный last_successful остается)
         await currency_service.redis_client.delete(currency_service.REDIS_CACHE_KEY)
@@ -556,8 +554,8 @@ class TestMultiCurrencyBackend:
             mock_fetch.return_value = None
             res_fallback = await service.get_rates()
             assert res_fallback.is_fallback is True
-            # Должны вернуться сохраненные ранее успешные курсы (RUB=105.0), а не статическая таблица (RUB=96.0)
-            assert res_fallback.rates["RUB"] == Decimal("105.0")
+            # Должны вернуться сохраненные ранее успешные курсы (KZT=510.0), а не статическая таблица (KZT=495.0)
+            assert res_fallback.rates["KZT"] == Decimal("510.0")
 
     @pytest.mark.asyncio
     async def test_fetch_rates_from_gateway_sanitizes_invalid_rates(self):
@@ -571,9 +569,8 @@ class TestMultiCurrencyBackend:
             "rates": {
                 "USD": 1.0,
                 "EUR": 0.92,
-                "RUB": -50.0,  # Отрицательный курс
+                "KZT": -50.0,  # Отрицательный курс
                 "UZS": 0.0,  # Нулевой курс
-                "KZT": 490.0,
             }
         }
 
@@ -582,5 +579,5 @@ class TestMultiCurrencyBackend:
 
         with patch("app.services.currency_service.get_http_client", return_value=mock_http_client):
             rates = await service._fetch_rates_from_gateway()
-            # Должен вернуть None, так как не все валюты валидны (RUB < 0, UZS == 0)
+            # Должен вернуть None, так как не все валюты валидны (KZT < 0, UZS == 0)
             assert rates is None

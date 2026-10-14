@@ -105,7 +105,7 @@ class AuthService:
             user.avatar_url = payload.avatar_url.strip() if payload.avatar_url else None
         if payload.base_currency is not None:
             new_currency = payload.base_currency.strip().upper()
-            old_currency = user.base_currency or "RUB"
+            old_currency = user.base_currency or "USD"
             if new_currency != old_currency:
                 user.base_currency = new_currency
                 await self.db.flush()

@@ -69,7 +69,6 @@ EXPENSE_CATEGORIES: set[Category] = {
 class CurrencyCode(str, enum.Enum):
     """Поддерживаемые валюты системы."""
 
-    RUB = "RUB"
     USD = "USD"
     EUR = "EUR"
     KZT = "KZT"
@@ -90,7 +89,7 @@ class User(Base):
         hashed_password (str): Хеш пароля (bcrypt).
         name (str): Имя пользователя.
         avatar_url (str | None): URL аватара пользователя.
-        base_currency (str): Базовая валюта учета пользователя (RUB, USD, EUR, KZT, UZS).
+        base_currency (str): Базовая валюта учета пользователя (USD, EUR, KZT, UZS).
         created_at (datetime): Дата и время регистрации.
         transactions (list[Transaction]): Список связанных транзакций пользователя.
         budgets (list[Budget]): Список связанных бюджетов пользователя.
@@ -111,8 +110,8 @@ class User(Base):
     avatar_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     base_currency: Mapped[str] = mapped_column(
         String(10),
-        default=CurrencyCode.RUB.value,
-        server_default=CurrencyCode.RUB.value,
+        default=CurrencyCode.USD.value,
+        server_default=CurrencyCode.USD.value,
         nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -158,7 +157,7 @@ class Transaction(Base):
         id (uuid.UUID): Уникальный идентификатор транзакции (Primary Key).
         user_id (uuid.UUID): Внешний ключ на владельца операции (users.id).
         amount (Decimal): Сумма операции в валюте чека.
-        currency (str): Код валюты операции (RUB, USD, UZS и др.).
+        currency (str): Код валюты операции (USD, UZS, EUR и др.).
         exchange_rate (Decimal): Курс валюты операции к базовой валюте.
         base_amount (Decimal): Эквивалент суммы в базовой валюте пользователя.
         description (str): Описание / комментарий к операции.
@@ -183,7 +182,7 @@ class Transaction(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(precision=18, scale=2), nullable=False)
-    currency: Mapped[str] = mapped_column(String(10), default="RUB", server_default="RUB", nullable=False)
+    currency: Mapped[str] = mapped_column(String(10), default="USD", server_default="USD", nullable=False)
     exchange_rate: Mapped[Decimal] = mapped_column(
         Numeric(precision=18, scale=6), default=Decimal("1.0"), server_default="1.0", nullable=False
     )
