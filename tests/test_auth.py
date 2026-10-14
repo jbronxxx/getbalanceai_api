@@ -19,7 +19,7 @@ class TestUserProfileAndBaseCurrency:
     async def test_get_me_returns_default_base_currency(
         self, client: AsyncClient, auth_headers: dict[str, str], test_user: User
     ):
-        """Эндпоинт GET /api/v1/auth/me возвращает базовую валюту по умолчанию (RUB)."""
+        """Эндпоинт GET /api/v1/auth/me возвращает базовую валюту по умолчанию (USD)."""
         expected_email = test_user.email
         response = await client.get("/api/v1/auth/me", headers=auth_headers)
         assert response.status_code == 200
@@ -28,7 +28,7 @@ class TestUserProfileAndBaseCurrency:
         assert data["status"] == "success"
         user_data = data["data"]
         assert user_data["email"] == expected_email
-        assert user_data["base_currency"] == "RUB"
+        assert user_data["base_currency"] == "USD"
 
     @pytest.mark.asyncio
     async def test_patch_me_updates_base_currency_successfully(self, client: AsyncClient, auth_headers: dict[str, str]):
@@ -68,7 +68,7 @@ class TestUserProfileAndBaseCurrency:
         assert data["status"] == "success"
         assert data["data"]["name"] == "Новое Имя"
         assert data["data"]["avatar_url"] == "https://example.com/new-avatar.png"
-        assert data["data"]["base_currency"] == "RUB"
+        assert data["data"]["base_currency"] == "USD"
 
     @pytest.mark.asyncio
     async def test_patch_me_unauthorized_rejected(self, client: AsyncClient):
@@ -100,65 +100,64 @@ class TestUserProfileAndBaseCurrency:
     @pytest.mark.asyncio
     async def test_patch_me_recalculates_transactions_and_budgets(self, client: AsyncClient, auth_headers: dict[str, str]):
         """Смена base_currency пересчитывает exchange_rate и base_amount транзакций и limit_amount бюджетов."""
-        # 1. Создаем транзакцию в RUB
-        tx_payload = {
-            "amount": "960.00",
-            "currency": "RUB",
-            "description": "Продукты",
-            "category": "food",
-            "type": "expense",
-        }
-        tx_res = await client.post("/api/v1/transactions/", json=tx_payload, headers=auth_headers)
-        assert tx_res.status_code == 201
-        tx_data = tx_res.json()["data"]
-        assert float(tx_data["base_amount"]) == 960.00
-
-        # 2. Создаем бюджет в RUB
-        budget_payload = {
-            "category": "food",
-            "limit_amount": "9600.00",
-            "month": 10,
-            "year": 2026,
-        }
-        b_res = await client.post("/api/v1/budgets/", json=budget_payload, headers=auth_headers)
-        assert b_res.status_code == 201
-
-        # Фиксируем котировки через мок CurrencyService.get_rates
         mock_response = CurrencyRatesResponse(
             base="USD",
             rates={
                 "USD": Decimal("1.0"),
                 "EUR": Decimal("0.92"),
-                "RUB": Decimal("96.0"),
                 "UZS": Decimal("12800.0"),
                 "KZT": Decimal("495.0"),
             },
             updated_at=datetime.now(timezone.utc),
         )
         with patch.object(CurrencyService, "get_rates", new_callable=AsyncMock, return_value=mock_response):
+            # 1. Устанавливаем базовую валюту UZS до создания данных
+            to_uzs_res = await client.patch("/api/v1/auth/me", json={"base_currency": "UZS"}, headers=auth_headers)
+            assert to_uzs_res.status_code == 200
+
+            # 2. Создаем транзакцию и бюджет в UZS
+            tx_payload = {
+                "amount": "12800.00",
+                "currency": "UZS",
+                "description": "Продукты",
+                "category": "food",
+                "type": "expense",
+            }
+            tx_res = await client.post("/api/v1/transactions/", json=tx_payload, headers=auth_headers)
+            assert tx_res.status_code == 201
+            tx_data = tx_res.json()["data"]
+            assert float(tx_data["base_amount"]) == 12800.00
+
+            budget_payload = {
+                "category": "food",
+                "limit_amount": "128000.00",
+                "month": 10,
+                "year": 2026,
+            }
+            b_res = await client.post("/api/v1/budgets/", json=budget_payload, headers=auth_headers)
+            assert b_res.status_code == 201
+
             # 3. Меняем базовую валюту на USD через PATCH /api/v1/auth/me
             patch_res = await client.patch("/api/v1/auth/me", json={"base_currency": "USD"}, headers=auth_headers)
             assert patch_res.status_code == 200
             assert patch_res.json()["data"]["base_currency"] == "USD"
 
-            # 4. Проверяем, что транзакция пересчиталась в USD:
-            # 960 RUB по курсу к USD (1.0 / 96.0) = 10.00 USD
+            # 4. 12800 UZS по курсу к USD (1.0 / 12800.0) = 1.00 USD
             tx_list_res = await client.get("/api/v1/transactions/", headers=auth_headers)
             assert tx_list_res.status_code == 200
             items = tx_list_res.json()["data"]["items"]
             assert len(items) >= 1
             updated_tx = next(item for item in items if item["id"] == tx_data["id"])
-            assert float(updated_tx["base_amount"]) == 10.00
+            assert float(updated_tx["base_amount"]) == 1.00
 
-            # 5. Проверяем, что бюджет пересчитался в USD:
-            # 9600 RUB по курсу к USD (1.0 / 96.0) = 100.00 USD
+            # 5. 128000 UZS по курсу к USD = 10.00 USD
             b_list_res = await client.get("/api/v1/budgets/?month=10&year=2026", headers=auth_headers)
             assert b_list_res.status_code == 200
             budgets = b_list_res.json()["data"]
             assert len(budgets) >= 1
             updated_b = next(b for b in budgets if b["category"] == "food")
-            assert float(updated_b["limit_amount"]) == 100.00
-            assert float(updated_b["spent"]) == 10.00
+            assert float(updated_b["limit_amount"]) == 10.00
+            assert float(updated_b["spent"]) == 1.00
 
     @pytest.mark.asyncio
     async def test_patch_me_invalidates_ai_insights_cache(
@@ -167,18 +166,18 @@ class TestUserProfileAndBaseCurrency:
         """Смена базовой валюты пользователя инвалидирует все ключи кэша инсайтов в Redis."""
         from app.services.ai_service import redis_client
 
-        cache_key = f"insights_cache:{test_user.id}:RUB:ru"
+        cache_key = f"insights_cache:{test_user.id}:KZT:ru"
         count_key = f"insights_tx_count:{test_user.id}"
         await redis_client.set(cache_key, "cached_insights")
         await redis_client.set(count_key, "10")
 
         mock_response = CurrencyRatesResponse(
             base="USD",
-            rates={"USD": Decimal("1.0"), "RUB": Decimal("96.0")},
+            rates={"USD": Decimal("1.0"), "KZT": Decimal("96.0")},
             updated_at=datetime.now(timezone.utc),
         )
         with patch.object(CurrencyService, "get_rates", new_callable=AsyncMock, return_value=mock_response):
-            patch_res = await client.patch("/api/v1/auth/me", json={"base_currency": "USD"}, headers=auth_headers)
+            patch_res = await client.patch("/api/v1/auth/me", json={"base_currency": "KZT"}, headers=auth_headers)
             assert patch_res.status_code == 200
 
         # Ключи инсайтов должны быть удалены после смены валюты
@@ -186,45 +185,49 @@ class TestUserProfileAndBaseCurrency:
         assert await redis_client.get(count_key) is None
 
     @pytest.mark.asyncio
-    async def test_patch_me_currency_change_reversible_rub_usd_rub(self, client: AsyncClient, auth_headers: dict[str, str]):
-        """Цикл смены валюты RUB -> USD -> RUB полностью обратим для транзакций в RUB без потери точности."""
-        # Создаем транзакцию в RUB
-        tx_rub_res = await client.post(
-            "/api/v1/transactions/",
-            json={
-                "amount": "1000.00",
-                "currency": "RUB",
-                "description": "Транзакция в рублях",
-                "category": "food",
-                "type": "expense",
-            },
-            headers=auth_headers,
-        )
-        assert tx_rub_res.status_code == 201
-        tx_rub_id = tx_rub_res.json()["data"]["id"]
-
-        # Создаем транзакцию в USD
-        tx_usd_res = await client.post(
-            "/api/v1/transactions/",
-            json={
-                "amount": "50.00",
-                "currency": "USD",
-                "description": "Транзакция в долларах",
-                "category": "shopping",
-                "type": "expense",
-            },
-            headers=auth_headers,
-        )
-        assert tx_usd_res.status_code == 201
-        tx_usd_id = tx_usd_res.json()["data"]["id"]
-
+    async def test_patch_me_currency_change_reversible_kzt_usd_kzt(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Цикл смены валюты KZT -> USD -> KZT полностью обратим для транзакций в KZT без потери точности."""
         mock_response = CurrencyRatesResponse(
             base="USD",
-            rates={"USD": Decimal("1.0"), "RUB": Decimal("100.0")},
+            rates={"USD": Decimal("1.0"), "KZT": Decimal("100.0")},
             updated_at=datetime.now(timezone.utc),
         )
 
         with patch.object(CurrencyService, "get_rates", new_callable=AsyncMock, return_value=mock_response):
+            # 0. Базовая валюта по умолчанию USD: переводим пользователя на KZT до создания данных
+            to_kzt_init = await client.patch("/api/v1/auth/me", json={"base_currency": "KZT"}, headers=auth_headers)
+            assert to_kzt_init.status_code == 200
+
+            # Создаем транзакцию в KZT
+            tx_kzt_res = await client.post(
+                "/api/v1/transactions/",
+                json={
+                    "amount": "1000.00",
+                    "currency": "KZT",
+                    "description": "Транзакция в тенге",
+                    "category": "food",
+                    "type": "expense",
+                },
+                headers=auth_headers,
+            )
+            assert tx_kzt_res.status_code == 201
+            tx_kzt_id = tx_kzt_res.json()["data"]["id"]
+
+            # Создаем транзакцию в USD
+            tx_usd_res = await client.post(
+                "/api/v1/transactions/",
+                json={
+                    "amount": "50.00",
+                    "currency": "USD",
+                    "description": "Транзакция в долларах",
+                    "category": "shopping",
+                    "type": "expense",
+                },
+                headers=auth_headers,
+            )
+            assert tx_usd_res.status_code == 201
+            tx_usd_id = tx_usd_res.json()["data"]["id"]
+
             # 1. Смена базовой валюты на USD
             to_usd_res = await client.patch("/api/v1/auth/me", json={"base_currency": "USD"}, headers=auth_headers)
             assert to_usd_res.status_code == 200
@@ -235,22 +238,22 @@ class TestUserProfileAndBaseCurrency:
             # Транзакция в новой базе (USD) получает exchange_rate = 1.0 и base_amount = 50.00
             assert float(items_usd[tx_usd_id]["exchange_rate"]) == 1.0
             assert float(items_usd[tx_usd_id]["base_amount"]) == 50.00
-            # Транзакция в RUB сконвертирована: 1000 RUB / 100 = 10.00 USD
-            assert float(items_usd[tx_rub_id]["base_amount"]) == 10.00
+            # Транзакция в KZT сконвертирована: 1000 KZT / 100 = 10.00 USD
+            assert float(items_usd[tx_kzt_id]["base_amount"]) == 10.00
 
-            # 2. Смена базовой валюты обратно на RUB
-            to_rub_res = await client.patch("/api/v1/auth/me", json={"base_currency": "RUB"}, headers=auth_headers)
-            assert to_rub_res.status_code == 200
+            # 2. Смена базовой валюты обратно на KZT
+            to_kzt_res = await client.patch("/api/v1/auth/me", json={"base_currency": "KZT"}, headers=auth_headers)
+            assert to_kzt_res.status_code == 200
 
-            tx_list_rub = await client.get("/api/v1/transactions/", headers=auth_headers)
-            items_rub = {item["id"]: item for item in tx_list_rub.json()["data"]["items"]}
+            tx_list_kzt = await client.get("/api/v1/transactions/", headers=auth_headers)
+            items_kzt = {item["id"]: item for item in tx_list_kzt.json()["data"]["items"]}
 
-            # Транзакция в RUB вернулась строго к исходному состоянию без дрейфа:
-            assert float(items_rub[tx_rub_id]["exchange_rate"]) == 1.0
-            assert float(items_rub[tx_rub_id]["base_amount"]) == 1000.00
-            # Транзакция в USD сконвертирована по актуальному курсу (50 USD * 100 = 5000.00 RUB)
-            assert float(items_rub[tx_usd_id]["exchange_rate"]) == 100.0
-            assert float(items_rub[tx_usd_id]["base_amount"]) == 5000.00
+            # Транзакция в KZT вернулась строго к исходному состоянию без дрейфа:
+            assert float(items_kzt[tx_kzt_id]["exchange_rate"]) == 1.0
+            assert float(items_kzt[tx_kzt_id]["base_amount"]) == 1000.00
+            # Транзакция в USD сконвертирована по актуальному курсу (50 USD * 100 = 5000.00 KZT)
+            assert float(items_kzt[tx_usd_id]["exchange_rate"]) == 100.0
+            assert float(items_kzt[tx_usd_id]["base_amount"]) == 5000.00
 
 
 class TestGoogleAuthEndpoint:

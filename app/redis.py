@@ -30,7 +30,7 @@ def get_budgets_version_key(user_id: uuid.UUID | str) -> str:
 def get_insights_cache_key(
     user_id: uuid.UUID | str,
     locale: str = "ru",
-    currency: str = "RUB",
+    currency: str = "USD",
     month: int | None = None,
     year: int | None = None,
 ) -> str:
@@ -43,7 +43,7 @@ def get_insights_cache_key(
 def get_insights_count_key(
     user_id: uuid.UUID | str,
     locale: str = "ru",
-    currency: str = "RUB",
+    currency: str = "USD",
     month: int | None = None,
     year: int | None = None,
 ) -> str:

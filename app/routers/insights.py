@@ -42,7 +42,7 @@ async def get_insights(
     target_month = month or now.month
     target_year = year or now.year
 
-    effective_currency = (currency or getattr(current_user, "base_currency", None) or "RUB").strip().upper()
+    effective_currency = (currency or getattr(current_user, "base_currency", None) or "USD").strip().upper()
     service = AIService(db)
     insights = await service.get_insights(
         current_user.id,

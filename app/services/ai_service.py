@@ -130,7 +130,7 @@ class AIService:
     async def get_insights(
         self,
         user_id: uuid.UUID,
-        currency: str = "RUB",
+        currency: str = "USD",
         locale: str = "ru",
         month: int | None = None,
         year: int | None = None,
@@ -365,7 +365,7 @@ class AIService:
         self,
         transactions: list[Transaction],
         budgets: list[BudgetResponse] | str | None = None,
-        currency: str = "RUB",
+        currency: str = "USD",
     ) -> str:
         """Сформировать текстовую сводку транзакций и бюджетов для системного промпта LLM."""
         if isinstance(budgets, str):

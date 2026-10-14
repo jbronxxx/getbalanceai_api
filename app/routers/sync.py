@@ -60,7 +60,7 @@ async def sync_data(
     current_user: User = Depends(get_current_user),
 ):
     user_id = current_user.id
-    user_base_currency = (current_user.base_currency or "RUB").strip().upper()
+    user_base_currency = (current_user.base_currency or "USD").strip().upper()
     logger.info(
         "Начало синхронизации для пользователя %s (валюта %s): txs=%s, budgets=%s, del_txs=%s, del_ids=%s, del_budgets=%s",
         user_id,
