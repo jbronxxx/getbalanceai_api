@@ -50,6 +50,8 @@ class AuthService:
     bearer_scheme = HTTPBearer()
 
     _revoked_jtis: set[str] = set()
+    _google_jwks_client: PyJWKClient | None = None
+    _apple_jwks_client: PyJWKClient | None = None
 
     def __init__(self, db: AsyncSession):
         """Инициализация сервиса с сессией базы данных."""
@@ -248,8 +250,14 @@ class AuthService:
 
     async def google_login(self, payload: GoogleSignInRequest) -> TokenResponse:
         try:
-            jwks_client = PyJWKClient("https://www.googleapis.com/oauth2/v3/certs")
-            signing_key = jwks_client.get_signing_key_from_jwt(payload.id_token)
+            # Получаем кэшированный клиент JWKS для Google
+            if self._google_jwks_client is None:
+                self._google_jwks_client = PyJWKClient(
+                    "https://www.googleapis.com/oauth2/v3/certs",
+                    cache_jwk_set=True,
+                    lifespan=3600,
+                )
+            signing_key = await asyncio.to_thread(self._google_jwks_client.get_signing_key_from_jwt, payload.id_token)
 
             # Если в конфигурации задан client_id, проверяем audience
             audience = config.google_client_id if config.google_client_id else None
@@ -275,8 +283,14 @@ class AuthService:
 
     async def apple_login(self, payload: AppleSignInRequest) -> TokenResponse:
         try:
-            jwks_client = PyJWKClient("https://appleid.apple.com/auth/keys")
-            signing_key = jwks_client.get_signing_key_from_jwt(payload.identity_token)
+            # Получаем кэшированный клиент JWKS для Apple
+            if self._apple_jwks_client is None:
+                self._apple_jwks_client = PyJWKClient(
+                    "https://appleid.apple.com/auth/keys",
+                    cache_jwk_set=True,
+                    lifespan=3600,
+                )
+            signing_key = await asyncio.to_thread(self._apple_jwks_client.get_signing_key_from_jwt, payload.identity_token)
 
             audience = config.apple_client_id if config.apple_client_id else None
             data = jwt.decode(
@@ -299,8 +313,39 @@ class AuthService:
             raise UnauthorizedException(code=ErrorCode.INVALID_CREDENTIALS, message="Недействительный токен Apple")
 
     def logout(self, user_id: uuid.UUID, token_string: str) -> None:
-        """Выйти из системы, деактивируя токен в памяти."""
-        self._deactivate_token(user_id, token_string)
+        """Выйти из системы, деактивировать токен синхронно.
+
+        Декодирует токен, добавляет jti в in-memory набор и сохраняет в Redis с TTL.
+        При невозможности найти токен поднимает NotFoundException.
+        """
+        import asyncio
+
+        from app.redis import get_redis, get_revoked_jti_key
+
+        try:
+            payload = jwt.decode(token_string, config.secret_key, algorithms=[config.algorithm])
+            jti = payload.get("jti")
+            if jti:
+                # in-memory revocation
+                AuthService._revoked_jtis.add(jti)
+                # store in Redis with TTL
+                redis_client = get_redis()
+                ttl_seconds = config.access_token_expire_minutes * 60
+                # If event loop is running, schedule async set, else run directly
+                if asyncio.get_event_loop().is_running():
+                    asyncio.create_task(redis_client.set(get_revoked_jti_key(jti), "1", ex=ttl_seconds))
+                else:
+                    asyncio.run(redis_client.set(get_revoked_jti_key(jti), "1", ex=ttl_seconds))
+                logger.info(f"Токен успешно отозван при выходе пользователя {user_id}")
+                return
+        except JWTError:
+            pass
+        # If we reach here, token not found or invalid
+        logger.warning(f"Попытка отзыва несуществующего токена для пользователя {user_id}")
+        raise NotFoundException(
+            code=ErrorCode.TOKEN_NOT_FOUND,
+            message="Токен не найден для деактивации",
+        )
 
     async def delete_account(self, user_id: uuid.UUID) -> None:
         """Удалить аккаунт пользователя и все связанные с ним данные."""
@@ -318,6 +363,21 @@ class AuthService:
         await self.db.delete(user)
         # Каскадное удаление данных (transactions, budgets, tokens) отработает благодаря cascade="all, delete-orphan"
         logger.info(f"Аккаунт пользователя {user.email} (ID: {user.id}) успешно удален")
+
+        # Очистка связанных ключей Redis
+        from app.redis import (
+            get_budgets_version_key,
+            get_insights_user_patterns,
+            get_redis,
+        )
+
+        redis_client = get_redis()
+        # Удаляем версию бюджета
+        await redis_client.delete(get_budgets_version_key(user.id))
+        # Инвалидация всех инсайт‑ключей пользователя
+        for pattern in get_insights_user_patterns(user.id):
+            async for key in redis_client.scan_iter(match=pattern):
+                await redis_client.unlink(key)
 
     def create_access_token(self, user_id: Union[str, uuid.UUID]) -> str:
         """Сгенерировать access_token для пользователя."""
@@ -459,13 +519,20 @@ class AuthService:
         """Совместимый приватный метод для создания access токена."""
         return self.create_access_token(user_id)
 
-    def _deactivate_token(self, user_id: uuid.UUID, token_string: str) -> None:
-        """Деактивировать токен (при выходе пользователя)."""
+    async def _deactivate_token(self, user_id: uuid.UUID, token_string: str) -> None:
+        """Асинхронно деактивировать токен (при выходе пользователя)."""
         try:
             payload = jwt.decode(token_string, config.secret_key, algorithms=[config.algorithm])
             jti = payload.get("jti")
             if jti:
+                # Добавляем в in-memory набор
                 AuthService._revoked_jtis.add(jti)
+                # Сохраняем в Redis с TTL, соответствующим времени жизни access‑токена
+                from app.redis import get_redis, get_revoked_jti_key
+
+                redis_client = get_redis()
+                ttl_seconds = config.access_token_expire_minutes * 60
+                await redis_client.set(get_revoked_jti_key(jti), "1", ex=ttl_seconds)
                 logger.info(f"Токен успешно отозван при выходе пользователя {user_id}")
                 return
         except JWTError:
@@ -541,7 +608,15 @@ async def get_current_user(
             code=ErrorCode.TOKEN_REVOKED,
             message="Токен отозван или недействителен",
         )
+    # Проверяем отозван ли токен в Redis
+    from app.redis import get_redis, get_revoked_jti_key
 
+    redis_client = get_redis()
+    if await redis_client.exists(get_revoked_jti_key(jti)):
+        raise UnauthorizedException(
+            code=ErrorCode.TOKEN_REVOKED,
+            message="Токен отозван или недействителен",
+        )
     query = select(User).where(User.id == user_uuid)
     result = await db.execute(query)
     user = result.scalar_one_or_none()
