@@ -384,9 +384,11 @@ class AIService:
             return response
         except Exception as e:
             logger.error(f"Error requesting insights from Gemini API: {e}")
+            # Сообщение остаётся в insights для старых клиентов; новые по state показывают свою карточку
             return InsightResponse(
                 insights=fallback_messages.get(lang_prefix, fallback_messages["en"]),
                 generated_at=datetime.now(timezone.utc),
+                state=InsightState.busy,
             )
 
     def _build_summary(

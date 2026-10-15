@@ -576,6 +576,7 @@ class InsightState(str, enum.Enum):
     not_generated = "not_generated"  # Отчёта нет, генерация не запрашивалась (generate=false)
     no_data = "no_data"  # Анализировать нечего: будущий месяц или нет операций за период
     quota_exceeded = "quota_exceeded"  # Суточная квота генераций исчерпана, отчёта за период нет
+    busy = "busy"  # LLM временно недоступен; insights — вежливое сообщение, кэшировать нельзя
 
 
 class InsightResponse(BaseModel):
