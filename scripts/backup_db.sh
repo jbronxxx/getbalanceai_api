@@ -12,8 +12,9 @@ mkdir -p "$BACKUP_DIR"
 echo "Начинаем создание резервной копии базы данных..."
 cd "$PROJECT_DIR"
 
-# Мы используем 'docker compose exec -T' чтобы можно было запускать скрипт из cron (без TTY)
-docker compose exec -T db pg_dump -U finance_user finance_db > "$BACKUP_FILE"
+# Мы используем 'docker compose exec -T' чтобы можно было запускать скрипт из cron (без TTY).
+# Пользователь и имя БД берутся из окружения контейнера (POSTGRES_USER/POSTGRES_DB из .env), а не зашиты в скрипт
+docker compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' > "$BACKUP_FILE"
 
 if [ $? -eq 0 ]; then
     echo "Резервное копирование успешно завершено: $BACKUP_FILE"

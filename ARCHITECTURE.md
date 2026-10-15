@@ -157,6 +157,7 @@ erDiagram
 ```
 finance_app/
 ├── app/                        # Основной пакет приложения
+│   ├── legal/                  # Тексты публичных страниц (ru/en/uz/kk): privacy.py, terms.py, delete_account.py, ui.py
 │   ├── models/                 # ORM-модели SQLAlchemy 2.0
 │   │   └── models.py           # Модели User, Token, Transaction, Budget и Enum-типы
 │   ├── routers/                # Эндпоинты FastAPI (Контроллеры)
@@ -164,6 +165,7 @@ finance_app/
 │   │   ├── budgets.py          # CRUD бюджетов и расчет ETag
 │   │   ├── currencies.py       # Котировки валют (/api/v1/currencies/rates)
 │   │   ├── insights.py         # AI-аналитика расходов (/api/v1/insights)
+│   │   ├── public.py           # Публичные HTML-страницы (/privacy, /terms, /delete-account)
 │   │   ├── sync.py             # Пакетная офлайн-синхронизация
 │   │   └── transactions.py     # CRUD транзакций и расчет ETag
 │   ├── schemas/                # Pydantic v2 DTO
@@ -173,6 +175,7 @@ finance_app/
 │   │   ├── auth_service.py     # Пароли, JWT, ротация и очистка токенов
 │   │   ├── budget_service.py   # Лимиты бюджетов и подсчет расходов
 │   │   ├── currency_service.py # Получение и кэширование котировок валют (Redis, fallback)
+│   │   ├── legal_pages.py      # Выбор языка и HTML-рендеринг публичных страниц
 │   │   └── transaction_service.py # Операции с транзакциями и генерация ETag
 │   ├── tasks/                  # Фоновые и регламентные процессы
 │   │   └── token_cleanup.py    # Регламентная очистка устаревших токенов
@@ -189,12 +192,14 @@ finance_app/
 │   ├── env.py
 │   └── script.py.mako
 ├── scripts/                    # CLI-скрипты и утилиты
-│   └── cleanup_tokens.py       # Запуск регламентной очистки токенов через cron/CLI
+│   ├── cleanup_tokens.py       # Запуск регламентной очистки токенов через cron/CLI
+│   └── delete_user_by_email.py # Административное удаление аккаунта по email (запросы без входа в приложение)
 ├── tests/                      # Набор тестов Pytest
 │   ├── conftest.py             # Фикстуры тестов
 │   ├── test_ai_service.py      # Модульные тесты AIService
 │   ├── test_auth.py            # Интеграционные тесты профиля пользователя и базовой валюты
 │   ├── test_auth_service.py    # Модульные и интеграционные тесты аутентификации
+│   ├── test_delete_user_by_email.py # Тесты CLI-скрипта удаления пользователя по email
 │   ├── test_budget_service.py  # Модульные тесты сервиса бюджетов
 │   ├── test_budgets.py         # Интеграционные тесты эндпоинтов бюджетов
 │   ├── test_errors.py          # Тесты контрактов ошибок
@@ -202,6 +207,7 @@ finance_app/
 │   ├── test_income_categories.py # Тесты категорий доходов и валидации типов
 │   ├── test_multi_currency.py  # Тесты мультивалютности и пересчета бюджетов
 │   ├── test_observability.py   # Тесты healthcheck и сквозного Correlation ID
+│   ├── test_public_pages.py    # Тесты публичных страниц (/privacy, /terms, /delete-account)
 │   ├── test_redis_module.py    # Модульные тесты централизованного клиента и ключей Redis
 │   ├── test_security.py        # Тесты CORS, Rate Limiting и сложности паролей
 │   ├── test_sync.py            # Интеграционные тесты офлайн-синхронизации
@@ -277,6 +283,14 @@ finance_app/
 6. **Фоновые и регламентные процессы (Token Cleanup)**:
    * **Периодическая очистка токенов**: Асинхронная корутина `periodic_token_cleanup` запускается в жизненном цикле приложения (`lifespan`) и ежедневно удаляет истекшие или отозванные токены старше 30 дней (`expires_at < now() - interval '30 days'`).
    * **Автономный CLI-скрипт**: Для запуска регламентной очистки через системный планировщик (cron, Kubernetes CronJob) реализован скрипт `scripts/cleanup_tokens.py` с поддержкой параметра `--days`.
+7. **Публичные юридические страницы (Google Play / App Store)**:
+   * `GET /privacy`, `GET /terms`, `GET /delete-account` (`app/routers/public.py`, без авторизации, вне `/api/v1`, не входят в OpenAPI) возвращают адаптивный `HTMLResponse` в цветах бренда `#0D9488` (светлая и тёмная тема).
+   * Язык — `?lang=ru|en|uz|kk`, иначе по `Accept-Language`, иначе `en` (`resolve_language`). Неподдерживаемое значение `lang` игнорируется и в разметку не попадает. Ответ кэшируется (`Cache-Control: public, max-age=3600`, `Vary: Accept-Language`).
+   * Тексты хранятся в пакете `app/legal/` (данные), рендеринг и выбор языка — `app/services/legal_pages.py`; весь пользовательский контент экранируется через `html.escape`. Контактный email — `SUPPORT_EMAIL` в `app/legal/ui.py`.
+   * Страница удаления описывает удаление в приложении (*Профиль → Удалить аккаунт*), перечень безвозвратно удаляемых данных и удаление по email без входа в приложение (срок — 30 дней). URL указываются в Play Console (Data Safety, Privacy Policy) и открываются из мобильного приложения.
+   * Nginx проксирует все пути на API. Для `/privacy`, `/terms`, `/delete-account` в `nginx/conf.d/default.conf` действует лимит `5r/s` на IP (`limit_req_zone` по ключу из `map $uri`, `burst=20 nodelay`, при превышении — `429`); остальные пути лимитом Nginx не затрагиваются.
+   * Сроки хранения, указанные в текстах, должны совпадать с настройками: резервные копии БД — 7 последних файлов `scripts/backup_db.sh` при ежедневном cron (≈7 суток), логи Loki — 30 дней. При изменении настроек обновляйте `app/legal/`.
+   * Запросы на удаление по email выполняются администратором скриптом `scripts/delete_user_by_email.py`: он вызывает `AuthService.delete_account` (те же шаги, что у `DELETE /auth/me`: каскадное удаление в БД и очистка ключей Redis).
 
 
 ---
@@ -304,7 +318,7 @@ finance_app/
 
 * **Логирование (Loki + Promtail)**:
   * Сервис `promtail` автоматически монтирует `/var/run/docker.sock` и собирает логи со всех запущенных Docker-контейнеров.
-  * Логи пересылаются в `loki` (хранилище логов, оптимизированное для работы с тегами).
+  * Логи пересылаются в `loki` (хранилище логов, оптимизированное для работы с тегами). Срок хранения — 30 дней (`limits_config.retention_period: 720h` и компактор `retention_enabled` в `loki/local-config.yaml`); значение указано в Политике конфиденциальности.
 * **Сбор метрик (Prometheus + cAdvisor)**:
   * `cadvisor` (Container Advisor) экспонирует системные метрики (потребление CPU, RAM, Network, Disk) по каждому контейнеру.
   * Приложение FastAPI инструментировано библиотекой `prometheus-fastapi-instrumentator`, которая отдает метрики приложения (RPS, latency, status codes) по эндпоинту `/metrics`.
