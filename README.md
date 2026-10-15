@@ -77,7 +77,7 @@ docker compose up --build -d
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
 ```
 
-Автодеплой (`.github/workflows/deploy.yml`) запускается после успешного завершения workflow `CI` на ветке `main` (или вручную через `workflow_dispatch`): подтягивает код, применяет миграции, пересобирает контейнеры и перезагружает конфигурацию Nginx (`nginx -t` + `nginx -s reload`).
+Автодеплой (`.github/workflows/deploy.yml`) запускается после успешного завершения workflow `CI` на ветке `main` (или вручную через `workflow_dispatch`): подтягивает код, применяет миграции, принудительно пересоздаёт контейнер `api`, поднимает остальные сервисы и перезагружает конфигурацию Nginx (`nginx -t` + `nginx -s reload`).
 
 ### 3.1. Настройка автоматического резервного копирования БД
 Для регулярного бекапа базы данных добавлен скрипт `scripts/backup_db.sh`.
