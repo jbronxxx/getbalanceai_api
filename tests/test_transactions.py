@@ -9,10 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.sql.elements import TextClause
 
 from app.database import get_db
 from app.models.models import User
-from app.services.ai_service import AIService
+from app.schemas.schemas import InsightState
+from app.services.ai_service import AIService, MonthFingerprint
 from app.services.auth_service import get_current_user
 from main import app
 
@@ -81,6 +83,15 @@ class TestBudgets:
         assert response.status_code == 403
 
 
+def _patch_fingerprint(tx_count: int):
+    """Подменить отпечаток месяца: сессия БД в этих тестах — MagicMock без агрегатов."""
+    return patch.object(
+        AIService,
+        "_month_fingerprint",
+        AsyncMock(return_value=MonthFingerprint(tx_count=tx_count, signature=f"sig-{tx_count}")),
+    )
+
+
 class TestInsights:
     """Набор тестов для роутера AI-инсайтов (/api/v1/insights)."""
 
@@ -96,21 +107,21 @@ class TestInsights:
         test_user = MagicMock(spec=User)
         test_user.id = uuid.uuid4()
         mock_db = MagicMock()
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = []
-        mock_db.execute = AsyncMock(return_value=mock_result)
+        mock_db.execute = AsyncMock()
 
         app.dependency_overrides[get_current_user] = lambda: test_user
         app.dependency_overrides[get_db] = lambda: mock_db
 
         try:
-            response = await client.get("/api/v1/insights/", headers=get_auth_headers())
+            with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint(0):
+                response = await client.get("/api/v1/insights/", headers=get_auth_headers())
             assert response.status_code == 200
             data = response.json()
             assert data["status"] == "success"
-            assert "insights" in data["data"]
             assert "generated_at" in data["data"]
-            assert isinstance(data["data"]["insights"], list)
+            assert data["data"]["insights"] == []
+            assert data["data"]["state"] == InsightState.no_data.value
+            mock_db.execute.assert_not_called()
         finally:
             app.dependency_overrides.clear()
 
@@ -130,7 +141,7 @@ class TestInsights:
                 "_call_gemini",
                 new_callable=AsyncMock,
                 return_value=["Совет 1", "Совет 2"],
-            ) as mock_claude:
+            ) as mock_claude, _patch_fingerprint(10):
                 tx = MagicMock()
                 tx.date = MagicMock()
                 tx.date.strftime.return_value = "2026-10-01"
@@ -139,13 +150,12 @@ class TestInsights:
                 tx.amount = 500.0
                 tx.description = "Обед"
 
-                mock_count = MagicMock()
-                mock_count.scalar_one.return_value = 10
                 mock_txs = MagicMock()
                 mock_txs.scalars.return_value.all.return_value = [tx]
                 mock_budgets = MagicMock()
                 mock_budgets.scalars.return_value.all.return_value = []
-                mock_db.execute = AsyncMock(side_effect=[mock_count, mock_txs, mock_budgets, mock_count, mock_txs])
+                # Второй запрос — кэш-хит по отпечатку месяца, к БД за операциями не обращается
+                mock_db.execute = AsyncMock(side_effect=[mock_txs, mock_budgets])
 
                 try:
                     # Первый HTTP-запрос (вызывает Claude API)
@@ -178,7 +188,7 @@ class TestInsights:
             return ["Медленный совет"]
 
         with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
-            with patch.object(AIService, "_call_gemini", side_effect=slow_claude_call):
+            with patch.object(AIService, "_call_gemini", side_effect=slow_claude_call), _patch_fingerprint(10):
                 tx = MagicMock()
                 tx.date = MagicMock()
                 tx.date.strftime.return_value = "2026-10-01"
@@ -187,13 +197,20 @@ class TestInsights:
                 tx.amount = 300.0
                 tx.description = "Кофе"
 
-                mock_count = MagicMock()
-                mock_count.scalar_one.return_value = 10
                 mock_txs = MagicMock()
                 mock_txs.scalars.return_value.all.return_value = [tx]
                 mock_budgets = MagicMock()
                 mock_budgets.scalars.return_value.all.return_value = []
-                mock_db.execute = AsyncMock(side_effect=[mock_count, mock_txs, mock_budgets, mock_count, mock_txs])
+                # /health использует ту же подменённую сессию: его SELECT 1 получает отдельный ответ,
+                # иначе параллельные запросы делили бы одну очередь ответов и порядок решал бы исход теста
+                query_results = iter([mock_txs, mock_budgets])
+
+                async def execute(statement, *args, **kwargs):
+                    if isinstance(statement, TextClause):
+                        return MagicMock()
+                    return next(query_results)
+
+                mock_db.execute = AsyncMock(side_effect=execute)
 
                 try:
                     transport = ASGITransport(app=app)

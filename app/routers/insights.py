@@ -34,10 +34,17 @@ async def get_insights(
     year: int | None = Query(None, ge=2000, le=2100, description="Год анализа (по умолчанию текущий)"),
     currency: str | None = Query(None, description="Валюта пользователя (по умолчанию базовая валюта профиля)"),
     locale: str = Query("ru", description="Локаль пользователя (ru, uz, en, kk)"),
+    generate: bool = Query(
+        True,
+        description="Разрешить генерацию через LLM; при false — только сохранённый отчёт или state=not_generated",
+    ),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Сформировать персонализированные финансовые советы на основе истории транзакций и бюджетов пользователя."""
+    """Вернуть AI-отчёт за месяц: сохранённый, если данные периода не менялись, иначе сгенерировать.
+
+    Для будущего месяца и месяца без операций LLM не вызывается (`state=no_data`).
+    """
     now = datetime.now(timezone.utc)
     target_month = month or now.month
     target_year = year or now.year
@@ -50,5 +57,6 @@ async def get_insights(
         locale=locale,
         month=target_month,
         year=target_year,
+        generate=generate,
     )
     return {"status": "success", "data": insights}
