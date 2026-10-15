@@ -3,6 +3,7 @@
 import json
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from google import genai
@@ -10,15 +11,14 @@ from google.genai import types
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.models import Transaction
+from app.models.models import Budget, Transaction
 from app.redis import (
     get_insights_cache_key,
-    get_insights_count_key,
     get_insights_daily_quota_key,
     get_insights_user_patterns,
     get_redis,
 )
-from app.schemas.schemas import BudgetResponse, InsightResponse
+from app.schemas.schemas import BudgetResponse, InsightResponse, InsightState
 from app.services.budget_service import BudgetService
 from config_reader.config_reader import config
 from logger.logger import get_logger
@@ -27,6 +27,21 @@ logger = get_logger(__name__)
 
 # Единый клиент Redis приложения
 redis_client = get_redis()
+
+# Отчёт за месяц хранится долго: прошлые месяцы не должны генерироваться повторно.
+# Redis запущен с AOF (appendonly), поэтому записи переживают перезапуск.
+INSIGHTS_CACHE_TTL_SECONDS = 400 * 86400
+
+# Сколько новых операций текущего месяца допускается до повторной генерации отчёта.
+REGENERATION_THRESHOLD = 5
+
+
+@dataclass(frozen=True)
+class MonthFingerprint:
+    """Отпечаток данных месяца для проверки актуальности сохранённого отчёта."""
+
+    tx_count: int
+    signature: str
 
 
 class AIService:
@@ -108,24 +123,74 @@ class AIService:
         return json.loads(cleaned)
 
     @staticmethod
-    async def _find_latest_cached_insights(user_id: uuid.UUID) -> InsightResponse | None:
-        """Найти последнюю доступную сохраненную рекомендацию пользователя в Redis."""
-        try:
-            async for key in redis_client.scan_iter(match=f"insights_cache:{user_id}*", count=10):
-                val = await redis_client.get(key)
-                if val:
-                    try:
-                        cached_data = json.loads(val)
-                        if "insights" in cached_data and "generated_at" in cached_data:
-                            return InsightResponse(
-                                insights=cached_data["insights"],
-                                generated_at=datetime.fromisoformat(cached_data["generated_at"]),
-                            )
-                    except Exception:
-                        pass
-        except Exception as err:
-            logger.warning(f"Ошибка при поиске последнего кэша пользователя {user_id}: {err}")
-        return None
+    def _month_bounds(month: int, year: int) -> tuple[datetime, datetime]:
+        """Границы календарного месяца в UTC: [начало, начало следующего)."""
+        start = datetime(year, month, 1, tzinfo=timezone.utc)
+        if month == 12:
+            return start, datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+        return start, datetime(year, month + 1, 1, tzinfo=timezone.utc)
+
+    async def _month_fingerprint(self, user_id: uuid.UUID, month: int, year: int) -> MonthFingerprint:
+        """Отпечаток данных месяца: операции (число, сумма, последнее добавление) и лимиты.
+
+        Совпадение отпечатка с сохранённым в кэше означает, что данные периода не менялись
+        и повторная генерация не нужна.
+        """
+        start, end = self._month_bounds(month, year)
+        tx_row = (
+            await self.db.execute(
+                select(
+                    func.count(Transaction.id),
+                    func.coalesce(func.sum(Transaction.base_amount), 0),
+                    func.max(Transaction.created_at),
+                ).where(
+                    Transaction.user_id == user_id,
+                    Transaction.date >= start,
+                    Transaction.date < end,
+                )
+            )
+        ).one()
+        budget_row = (
+            await self.db.execute(
+                select(func.count(Budget.id), func.coalesce(func.sum(Budget.limit_amount), 0)).where(
+                    Budget.user_id == user_id,
+                    Budget.month == month,
+                    Budget.year == year,
+                )
+            )
+        ).one()
+        tx_count, tx_sum, last_created = tx_row
+        budget_count, budget_sum = budget_row
+        # str(): драйверы возвращают max(created_at) по-разному (datetime или строка), сравнение — в рамках одной БД
+        last_created_str = str(last_created) if last_created is not None else "-"
+        signature = f"{tx_count}:{tx_sum}:{last_created_str}:{budget_count}:{budget_sum}"
+        return MonthFingerprint(tx_count=int(tx_count), signature=signature)
+
+    @staticmethod
+    def _is_cache_fresh(cached: dict, fingerprint: MonthFingerprint, is_current_month: bool) -> bool:
+        """Можно ли отдать сохранённый отчёт без новой генерации.
+
+        Прошлый месяц — только если его данные не менялись (отпечаток совпадает).
+        Текущий месяц — также пока новых операций меньше порога: иначе каждая трата
+        запускала бы новую генерацию.
+        """
+        if cached.get("signature") == fingerprint.signature:
+            return True
+        cached_count = cached.get("tx_count")
+        return (
+            is_current_month
+            and isinstance(cached_count, int)
+            and abs(fingerprint.tx_count - cached_count) < REGENERATION_THRESHOLD
+        )
+
+    @staticmethod
+    def _response_from_cache(cached: dict) -> InsightResponse:
+        """Собрать ответ из записи кэша."""
+        return InsightResponse(
+            insights=cached["insights"],
+            generated_at=datetime.fromisoformat(cached["generated_at"]),
+            state=InsightState.ready,
+        )
 
     async def get_insights(
         self,
@@ -134,11 +199,21 @@ class AIService:
         locale: str = "ru",
         month: int | None = None,
         year: int | None = None,
+        generate: bool = True,
     ) -> InsightResponse:
-        """Сформировать персональные рекомендации по расходам и бюджетам пользователя."""
+        """Вернуть AI-отчёт за месяц, по возможности без вызова LLM.
+
+        LLM не вызывается для будущего месяца и месяца без операций (`no_data`), при совпадении
+        данных периода с сохранённым отчётом и при `generate=False` (`not_generated`, если
+        отчёта нет). Отчёты хранятся в Redis вместе с отпечатком данных месяца.
+        """
         now = datetime.now(timezone.utc)
         target_month = month or now.month
         target_year = year or now.year
+        lang_prefix = locale[:2].lower()
+
+        if (target_year, target_month) > (now.year, now.month):
+            return InsightResponse(insights=[], generated_at=now, state=InsightState.no_data)
 
         is_placeholder = (
             not config.gemini_api_key
@@ -147,8 +222,6 @@ class AIService:
             or config.gemini_api_key == "valid-real-api-key"
         )
         # Для тестов пропускаем проверку плейсхолдера, если ключ явно valid-real-key или test-api-key
-        lang_prefix = locale[:2].lower()
-
         if is_placeholder and config.gemini_api_key != "valid-real-key" and config.gemini_api_key != "test-api-key":
             logger.warning("GEMINI_API_KEY is not set or is a placeholder, returning stub insights")
             stub_msg = {
@@ -162,50 +235,32 @@ class AIService:
                 generated_at=now,
             )
 
-        # Получаем общее количество транзакций пользователя
-        total_query = select(func.count(Transaction.id)).where(Transaction.user_id == user_id)
-        total_result = await self.db.execute(total_query)
-        total_tx_count = total_result.scalar_one()
+        fingerprint = await self._month_fingerprint(user_id, target_month, target_year)
+        if fingerprint.tx_count == 0:
+            return InsightResponse(insights=[], generated_at=now, state=InsightState.no_data)
 
-        if total_tx_count == 0:
-            empty_msg = {
-                "ru": "Добавьте первые транзакции, чтобы получить анализ.",
-                "uz": "Tahlil olish uchun birinchi tranzaksiyalarni qo'shing.",
-                "en": "Add your first transactions to get an analysis.",
-                "kk": "Талдау алу үшін алғашқы транзакцияларды қосыңыз.",
-            }
-            return InsightResponse(
-                insights=[empty_msg.get(lang_prefix, empty_msg["en"])],
-                generated_at=now,
-            )
-
+        is_current_month = (target_year, target_month) == (now.year, now.month)
         cache_key = get_insights_cache_key(user_id, locale, currency, month=target_month, year=target_year)
-        count_key = get_insights_count_key(user_id, locale, currency, month=target_month, year=target_year)
 
-        cached_data_str = None
-        last_tx_count_str = None
+        cached: dict | None = None
         try:
-            cached_data_str = await redis_client.get(cache_key)
-            last_tx_count_str = await redis_client.get(count_key)
+            cached_str = await redis_client.get(cache_key)
+            if cached_str:
+                parsed = json.loads(cached_str)
+                if "insights" in parsed and "generated_at" in parsed:
+                    cached = parsed
         except Exception as err:
             logger.warning(f"Не удалось прочитать кэш инсайтов из Redis для пользователя {user_id}: {err}")
 
-        # Порог накопления транзакций для обновления рекомендаций
-        THRESHOLD = 5
+        if cached and self._is_cache_fresh(cached, fingerprint, is_current_month):
+            logger.info(f"Returning cached AI insights for user {user_id}")
+            return self._response_from_cache(cached)
 
-        if cached_data_str and last_tx_count_str:
-            last_tx_count = int(last_tx_count_str)
-            # Если количество новых транзакций меньше порога, возвращаем кэш
-            if abs(total_tx_count - last_tx_count) < THRESHOLD:
-                try:
-                    cached_data = json.loads(cached_data_str)
-                    logger.info(f"Returning cached AI insights for user {user_id}")
-                    return InsightResponse(
-                        insights=cached_data["insights"],
-                        generated_at=datetime.fromisoformat(cached_data["generated_at"]),
-                    )
-                except Exception as e:
-                    logger.error(f"Error reading cache for user {user_id}: {e}")
+        if not generate:
+            # Устаревший отчёт лучше пустого экрана; обновление — по явному запросу.
+            if cached:
+                return self._response_from_cache(cached)
+            return InsightResponse(insights=[], generated_at=now, state=InsightState.not_generated)
 
         # Проверка суточного лимита обращений к LLM
         date_str = now.strftime("%Y-%m-%d")
@@ -225,23 +280,9 @@ class AIService:
                 daily_calls,
                 config.ai_daily_limit_per_user,
             )
-            # 1. Возвращаем кэш текущего периода, если есть
-            if cached_data_str:
-                try:
-                    cached_data = json.loads(cached_data_str)
-                    return InsightResponse(
-                        insights=cached_data["insights"],
-                        generated_at=datetime.fromisoformat(cached_data["generated_at"]),
-                    )
-                except Exception:
-                    pass
+            if cached:
+                return self._response_from_cache(cached)
 
-            # 2. Поиск последнего доступного кэша пользователя
-            fallback_cached = await self._find_latest_cached_insights(user_id)
-            if fallback_cached:
-                return fallback_cached
-
-            # 3. Локализованное вежливое сообщение о достижении суточного лимита
             quota_messages = {
                 "ru": [
                     "Вы достигли дневного лимита запросов к финансовому помощнику (максимум 5 обновлений в день).",
@@ -263,16 +304,10 @@ class AIService:
             return InsightResponse(
                 insights=quota_messages.get(lang_prefix, quota_messages["en"]),
                 generated_at=now,
+                state=InsightState.quota_exceeded,
             )
 
-        # Запрашиваем транзакции пользователя за выбранный период
-        start_date = datetime(target_year, target_month, 1, tzinfo=timezone.utc)
-        end_date = (
-            datetime(target_year + 1, 1, 1, tzinfo=timezone.utc)
-            if target_month == 12
-            else datetime(target_year, target_month + 1, 1, tzinfo=timezone.utc)
-        )
-
+        start_date, end_date = self._month_bounds(target_month, target_year)
         query = (
             select(Transaction)
             .where(
@@ -285,14 +320,6 @@ class AIService:
         )
         result = await self.db.execute(query)
         transactions = list(result.scalars().all())
-
-        # Если в выбранном периоде транзакций нет, загружаем последние 50 транзакций
-        if not transactions:
-            fallback_query = (
-                select(Transaction).where(Transaction.user_id == user_id).order_by(Transaction.date.desc()).limit(50)
-            )
-            fallback_res = await self.db.execute(fallback_query)
-            transactions = list(fallback_res.scalars().all())
 
         # Загружаем активные лимиты бюджетов за выбранный период
         budgets: list[BudgetResponse] = []
@@ -337,11 +364,12 @@ class AIService:
                     {
                         "insights": insights,
                         "generated_at": response.generated_at.isoformat(),
+                        "signature": fingerprint.signature,
+                        "tx_count": fingerprint.tx_count,
                     },
                     ensure_ascii=False,
                 )
-                await redis_client.setex(cache_key, 7 * 86400, cache_val)
-                await redis_client.setex(count_key, 7 * 86400, str(total_tx_count))
+                await redis_client.setex(cache_key, INSIGHTS_CACHE_TTL_SECONDS, cache_val)
             except Exception as err:
                 logger.warning(f"Не удалось записать кэш инсайтов в Redis для пользователя {user_id}: {err}")
 

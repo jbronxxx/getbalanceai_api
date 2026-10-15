@@ -40,19 +40,6 @@ def get_insights_cache_key(
     return f"insights_cache:{user_id}:{locale}:{currency}"
 
 
-def get_insights_count_key(
-    user_id: uuid.UUID | str,
-    locale: str = "ru",
-    currency: str = "USD",
-    month: int | None = None,
-    year: int | None = None,
-) -> str:
-    """Сформировать ключ счетчика транзакций пользователя для валидации кэша инсайтов."""
-    if month is not None and year is not None:
-        return f"insights_tx_count:{user_id}:{locale}:{currency}:{month}:{year}"
-    return f"insights_tx_count:{user_id}:{locale}:{currency}"
-
-
 def get_insights_daily_quota_key(user_id: uuid.UUID | str, date_str: str) -> str:
     """Сформировать ключ суточного счетчика вызовов LLM для пользователя."""
     return f"insights_daily_calls:{user_id}:{date_str}"
@@ -62,6 +49,7 @@ def get_insights_user_patterns(user_id: uuid.UUID | str) -> tuple[str, ...]:
     """Сформировать кортеж масок для неблокирующей инвалидации всех ключей инсайтов пользователя."""
     return (
         f"insights_cache:{user_id}*",
+        # Счётчики прежней схемы кэша (до отпечатка месяца) — до истечения их TTL.
         f"insights_tx_count:{user_id}*",
         f"insights_*:{user_id}*",
     )

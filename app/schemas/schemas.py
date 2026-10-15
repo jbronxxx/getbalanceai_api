@@ -1,5 +1,6 @@
 """Модуль Pydantic-схем для валидации входящих запросов и сериализации ответов (DTO)."""
 
+import enum
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -568,16 +569,27 @@ class SyncResponse(BaseModel):
 # ============================================================================
 
 
+class InsightState(str, enum.Enum):
+    """Состояние AI-отчёта за период."""
+
+    ready = "ready"  # Отчёт есть (сгенерирован сейчас или взят из кэша)
+    not_generated = "not_generated"  # Отчёта нет, генерация не запрашивалась (generate=false)
+    no_data = "no_data"  # Анализировать нечего: будущий месяц или нет операций за период
+    quota_exceeded = "quota_exceeded"  # Суточная квота генераций исчерпана, отчёта за период нет
+
+
 class InsightResponse(BaseModel):
     """Схема ответа с персональными рекомендациями AI.
 
     Атрибуты:
-        insights (list[str]): Список текстовых рекомендаций по оптимизации финансов.
+        insights (list[str]): Список текстовых рекомендаций (при quota_exceeded — сообщение о лимите).
         generated_at (datetime): Временная метка генерации ответа.
+        state (InsightState): Состояние отчёта за период.
     """
 
     insights: list[str] = Field(..., description="Список аналитических советов и выводов")
     generated_at: datetime = Field(..., description="Дата и время формирования аналитики")
+    state: InsightState = Field(InsightState.ready, description="Состояние отчёта за период")
 
 
 # ============================================================================

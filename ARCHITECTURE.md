@@ -128,9 +128,9 @@ erDiagram
      - `REDIS_KEY_CURRENCY_RATES = "currency_rates:USD"` — основной кэш котировок (TTL из конфигурации).
      - `REDIS_KEY_CURRENCY_RATES_LAST_SUCCESSFUL = "currency_rates:last_successful:USD"` — постоянный источник резервных котировок без TTL.
      - `get_budgets_version_key(user_id)` -> `budgets_version:{user_id}` — версия ETag для бюджетов.
-     - `get_insights_cache_key(user_id, locale, currency)` -> `insights_cache:{user_id}:{locale}:{currency}` — кэш инсайтов.
-     - `get_insights_count_key(user_id, locale, currency)` -> `insights_tx_count:{user_id}:{locale}:{currency}` — счетчик транзакций для валидации кэша.
-     - `get_insights_user_patterns(user_id)` — маски для неблокирующей инвалидации через `scan_iter`.
+     - `get_insights_cache_key(user_id, locale, currency, month, year)` -> `insights_cache:{user_id}:{locale}:{currency}:{month}:{year}` — сохранённый AI-отчёт за месяц вместе с отпечатком данных периода (TTL 400 дней).
+     - `get_insights_daily_quota_key(user_id, date_str)` -> `insights_daily_calls:{user_id}:{date_str}` — суточный счётчик вызовов LLM.
+     - `get_insights_user_patterns(user_id)` — маски для неблокирующей инвалидации через `scan_iter` (включая счётчики `insights_tx_count:*` прежней схемы до истечения их TTL).
 5. Справочник котировок обслуживается сервисом `CurrencyService` с многоуровневым кэшированием в Redis (основной кэш, постоянный ключ успешных котировок, и негативный кэш с TTL 180 с при падении внешнего шлюза для предотвращения блокировок очереди запросов, пул соединений через переиспользуемый `httpx.AsyncClient`). При сбое шлюза и отсутствии кэша возвращается базовая таблица с фиксированной датой ее актуализации (`FALLBACK_RATES_UPDATED_AT`), исключая фиктивные отметки «свежести». При пакетной синхронизации котировки запрашиваются лениво — только при наличии мультивалютных транзакций.
 6. **Политика и механика пересчета финансов при смене базовой валюты**:
    - При обновлении `base_currency` через `PATCH /api/v1/auth/me` (защищенном rate limiter 10/мин) сервис атомарно пересчитывает курсы и `base_amount` всех транзакций единым пакетным SQL `UPDATE ... values(exchange_rate=case(...), base_amount=case(...))` без загрузки объектов в память Python.
@@ -302,10 +302,11 @@ finance_app/
 * **Асинхронность и неблокирующие вызовы**: Использует официальный SDK `google-genai` с асинхронным вызовом `await self.client.aio.models.generate_content(...)` на базе легковесной модели `gemini-3.5-flash-lite`. Поддерживает внедрение зависимостей (`Dependency Injection`) при инициализации в тестах.
 * **Нативный Structured Outputs и надежный fallback**: Запросы отправляются с конфигурацией `types.GenerateContentConfig(response_mime_type="application/json", system_instruction=...)`. Вспомогательный метод `_extract_json()` гарантирует надежное извлечение валидного JSON-объекта даже при наличии markdown-оберток или поясняющего текста модели.
 * **Учет бюджетов и защита от Prompt Injection**: В системную сводку `_build_summary` включаются два блока: 1) Сводка по лимитам категорий на месяц (`category | limit_amount | spent | remaining | статус превышения`); 2) Список транзакций. Описания транзакций `description` предварительно очищаются от управляющих символов, переводов строк (`\n`, `\r`) и символа пайпа (`|`).
-* **Многоуровневое кэширование и суточная квота (Redis)**:
-  - Кэш рекомендаций партиционируется по пользователю, локали, валюте, месяцу и году: `insights_cache:{user_id}:{locale}:{currency}:{month}:{year}`.
-  - Порог 5 транзакций (`insights_tx_count`): если количество новых операций меньше 5, отдается кэш без повторного вызова LLM.
-  - Суточная квота (`insights_daily_calls:{user_id}:{date_str}`): защита от обхода порога 5 транзакций через изменение параметров запроса; при исчерпании лимита (`ai_daily_limit_per_user`) возвращается последний доступный кэш или локализованное сообщение о достижении суточной квоты.
+* **Хранение отчётов и экономия вызовов LLM (Redis)**:
+  - Отчёт за месяц хранится в `insights_cache:{user_id}:{locale}:{currency}:{month}:{year}` 400 дней (Redis с AOF) вместе с **отпечатком данных месяца** (`_month_fingerprint`: число, сумма `base_amount` и последнее `created_at` операций периода + число и сумма лимитов) и числом операций.
+  - **Прошлый месяц** генерируется повторно, только если отпечаток изменился. **Текущий месяц** — ещё и при 5+ новых операциях месяца (`REGENERATION_THRESHOLD`), иначе отдаётся сохранённый отчёт.
+  - **Без вызова LLM** (`InsightResponse.state`): будущий месяц и месяц без операций — `no_data` (операции других месяцев в сводку не подмешиваются); `generate=false` — сохранённый отчёт (даже устаревший) или `not_generated`.
+  - Суточная квота (`insights_daily_calls:{user_id}:{date_str}`, `ai_daily_limit_per_user`): при исчерпании отдаётся сохранённый отчёт **этого же** периода или локализованное сообщение (`state=quota_exceeded`); отчёт другого месяца не подставляется.
 * **Интернационализация (i18n)**: Полная поддержка локалей `ru`, `uz`, `en`, `kk` (казахский язык) во всех заглушках, сервисных и фолбэк-сообщениях.
 * **Временные метки в UTC**: Все генерируемые ответы содержат timezone-aware временные метки `datetime.now(timezone.utc)`.
 * **Заглушки при отсутствии ключа**: При пустом или тестовом ключе `GEMINI_API_KEY` (например, `sk-...`, `your-...`) возвращается информационная заглушка `InsightResponse(insights=["В разработке..."])`.
