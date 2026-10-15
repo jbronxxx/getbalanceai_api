@@ -347,6 +347,12 @@ class AuthService:
             message="Токен не найден для деактивации",
         )
 
+    async def find_users_by_email(self, email: str) -> list[User]:
+        """Найти пользователей по email без учёта регистра (для административных операций)."""
+        query = select(User).where(func.lower(User.email) == email.strip().lower())
+        result = await self.db.execute(query)
+        return list(result.scalars().all())
+
     async def delete_account(self, user_id: uuid.UUID) -> None:
         """Удалить аккаунт пользователя и все связанные с ним данные."""
         query = select(User).where(User.id == user_id)

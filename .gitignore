@@ -74,3 +74,6 @@ postgres_data/
 
 # Scripts
 refactor_tests.py
+
+# Резервные копии БД (scripts/backup_db.sh)
+backups/

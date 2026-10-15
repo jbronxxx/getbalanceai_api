@@ -21,7 +21,7 @@ from starlette.exceptions import HTTPException
 from app.database import engine, get_db
 from app.exceptions import AppException, ErrorCode
 from app.limiter import limiter
-from app.routers import auth, budgets, currencies, insights, sync, transactions
+from app.routers import auth, budgets, currencies, insights, public, sync, transactions
 from app.schemas.schemas import ErrorResponse
 from app.tasks.token_cleanup import periodic_token_cleanup
 from config_reader.config_reader import config
@@ -208,6 +208,7 @@ app.include_router(budgets.router, prefix="/api/v1/budgets", tags=["budgets"])
 app.include_router(insights.router, prefix="/api/v1/insights", tags=["insights"])
 app.include_router(sync.router, prefix="/api/v1/sync", tags=["sync"])
 app.include_router(currencies.router, prefix="/api/v1/currencies", tags=["currencies"])
+app.include_router(public.router)
 
 
 @app.get("/health", summary="Проверка работоспособности сервиса")
