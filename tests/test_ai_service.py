@@ -217,9 +217,14 @@ class TestAIService:
 
         with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
             with patch("app.services.ai_service.redis_client.get", AsyncMock(return_value=None)):
-                result = await service.get_insights(uuid.uuid4())
+                with patch("app.services.ai_service.redis_client.setex", AsyncMock()) as mock_setex:
+                    result = await service.get_insights(uuid.uuid4())
+
+        # Сообщение об ошибке не сохраняется как отчёт
+        mock_setex.assert_not_awaited()
 
         assert isinstance(result, InsightResponse)
+        assert result.state == InsightState.busy
         assert "К сожалению, наши умные помощники" in result.insights[0]
         assert result.generated_at.tzinfo == timezone.utc
 
@@ -492,6 +497,7 @@ class TestAIService:
             with patch("app.services.ai_service.redis_client.get", AsyncMock(return_value=None)):
                 res_err = await service_error.get_insights(uuid.uuid4(), locale="kk")
                 assert "Өкінішке қарай" in res_err.insights[0]
+                assert res_err.state == InsightState.busy
 
     # =========================================================================
     # TASK-AI-PERIOD: Тестирование фильтрации по месяцу и году
