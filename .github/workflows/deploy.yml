@@ -55,8 +55,12 @@ jobs:
             # Применяем миграции базы данных перед запуском сервисов
             docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api alembic upgrade head
 
-            # Пересобираем и запускаем контейнеры в фоне
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
+            # Пересобираем образ api и всегда пересоздаём его контейнер: код читается gunicorn только при старте,
+            # поэтому без пересоздания процесс продолжает работать на старой версии
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d --no-deps --force-recreate api
+
+            # Поднимаем остальные сервисы (пересоздаются только те, у кого изменился образ или конфигурация)
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
             # Применяем конфигурацию Nginx без простоя (при ошибке синтаксиса деплой завершится с ошибкой, старый конфиг продолжит работать)
             docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T nginx nginx -t
