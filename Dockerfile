@@ -19,4 +19,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 COPY . .
 
 EXPOSE 8000
-CMD ["gunicorn", "main:app", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]
+# Keep-alive дольше, чем клиент держит простаивающее соединение (Dart HttpClient — 15 с):
+# иначе по умолчанию через 2 с сервер закрывает соединение в момент, когда клиент
+# отправляет по нему запрос, и тот обрывается без ответа.
+CMD ["gunicorn", "main:app", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--keep-alive", "75"]
