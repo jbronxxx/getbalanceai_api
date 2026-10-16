@@ -180,7 +180,7 @@ Write-Host "3. Все зависимости и git hooks установлены
 Write-Host "4. Миграции БД применены."
 Write-Host ""
 Write-Host "Для запуска сервера разработки выполните:" -ForegroundColor Yellow
-Write-Host "  uvicorn main:app --reload --host 0.0.0.0 --port 8000" -ForegroundColor White
+Write-Host "  uvicorn main:app --reload --host 0.0.0.0 --port 8000 --timeout-keep-alive 75" -ForegroundColor White
 Write-Host ""
 Write-Host "Для запуска тестов:" -ForegroundColor Yellow
 Write-Host "  pytest" -ForegroundColor White

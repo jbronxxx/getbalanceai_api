@@ -144,7 +144,7 @@ docker compose down -v
 
 После завершения работы скрипта запустите сервер разработки:
 ```bash
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+uvicorn main:app --reload --host 0.0.0.0 --port 8000 --timeout-keep-alive 75
 ```
 
 ---
@@ -184,8 +184,12 @@ DATABASE_URL="postgresql://${POSTGRES_USER:-db_user}:${POSTGRES_PASSWORD:-db_pas
 
 #### 5. Запуск сервера разработки
 ```bash
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+uvicorn main:app --reload --host 0.0.0.0 --port 8000 --timeout-keep-alive 75
 ```
+
+`--timeout-keep-alive 75` обязателен при работе с мобильным клиентом: по умолчанию uvicorn закрывает простаивающее
+соединение через 5 с, а клиент переиспользует его до 15 с — запрос по закрытому соединению обрывается с ошибкой
+«Connection closed before full header was received». В Docker то же задаёт `--keep-alive 75` у gunicorn (`Dockerfile`).
 
 ---
 
