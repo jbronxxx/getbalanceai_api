@@ -265,6 +265,9 @@ async def sync_data(
                     target_budget = existing_by_key[item_key]
                     logger.debug("Обновление лимита бюджета по составному ключу: %s", target_budget.id)
                     target_budget.limit_amount = item.limit_amount
+                    # Старые клиенты валюту не передают — валюта лимита сохраняется
+                    if item.currency:
+                        target_budget.currency = item.currency
                 # 2. Если по составному ключу не найден, но передан ID — ищем по ID
                 elif item.id and item.id in existing_by_id:
                     target_budget = existing_by_id[item.id]
@@ -275,6 +278,8 @@ async def sync_data(
                     target_budget.month = item.month
                     target_budget.year = item.year
                     target_budget.limit_amount = item.limit_amount
+                    if item.currency:
+                        target_budget.currency = item.currency
                     existing_by_key[item_key] = target_budget
                 # 3. Иначе создаем новый бюджет, сохраняя клиентский ID при наличии
                 else:
@@ -285,6 +290,7 @@ async def sync_data(
                         user_id=user_id,
                         category=item.category,
                         limit_amount=item.limit_amount,
+                        currency=item.currency or user_base_currency,
                         month=item.month,
                         year=item.year,
                     )

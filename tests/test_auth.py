@@ -98,8 +98,10 @@ class TestUserProfileAndBaseCurrency:
         assert "insights" in data["data"]
 
     @pytest.mark.asyncio
-    async def test_patch_me_recalculates_transactions_and_budgets(self, client: AsyncClient, auth_headers: dict[str, str]):
-        """Смена base_currency пересчитывает exchange_rate и base_amount транзакций и limit_amount бюджетов."""
+    async def test_patch_me_recalculates_transactions_and_keeps_budget_currency(
+        self, client: AsyncClient, auth_headers: dict[str, str]
+    ):
+        """Смена base_currency пересчитывает base_amount транзакций, а лимиты остаются в своей валюте."""
         mock_response = CurrencyRatesResponse(
             base="USD",
             rates={
@@ -150,14 +152,16 @@ class TestUserProfileAndBaseCurrency:
             updated_tx = next(item for item in items if item["id"] == tx_data["id"])
             assert float(updated_tx["base_amount"]) == 1.00
 
-            # 5. 128000 UZS по курсу к USD = 10.00 USD
+            # 5. Лимит создан без валюты — в тогдашней базовой UZS — и не пересчитывается
             b_list_res = await client.get("/api/v1/budgets/?month=10&year=2026", headers=auth_headers)
             assert b_list_res.status_code == 200
             budgets = b_list_res.json()["data"]
             assert len(budgets) >= 1
             updated_b = next(b for b in budgets if b["category"] == "food")
-            assert float(updated_b["limit_amount"]) == 10.00
-            assert float(updated_b["spent"]) == 1.00
+            assert updated_b["currency"] == "UZS"
+            assert Decimal(str(updated_b["limit_amount"])) == Decimal("128000.00")
+            # Трата в валюте лимита считается по сумме чека
+            assert Decimal(str(updated_b["spent"])) == Decimal("12800.00")
 
     @pytest.mark.asyncio
     async def test_patch_me_invalidates_ai_insights_cache(

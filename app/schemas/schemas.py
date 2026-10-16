@@ -355,20 +355,47 @@ class TransactionResponse(BaseModel):
 # ============================================================================
 
 
+def _normalize_budget_currency(v: Any) -> Optional[str]:
+    """Код валюты лимита в верхнем регистре; None — валюта не передана (старый клиент)."""
+    if v is None:
+        return None
+    if isinstance(v, CurrencyCode):
+        return v.value
+    if isinstance(v, str):
+        code = v.strip().upper()
+        if not code:
+            return None
+        if code not in SUPPORTED_CURRENCIES:
+            raise ValueError(f"Валюта '{code}' не поддерживается. Разрешены: {sorted(SUPPORTED_CURRENCIES)}")
+        return code
+    raise ValueError(f"Некорректный формат кода валюты: {v}")
+
+
 class BudgetCreate(BaseModel):
     """Схема запроса на установку лимита бюджета по категории.
 
     Атрибуты:
         category (Category): Категория расходов.
-        limit_amount (Decimal): Устанавливаемый лимит суммы.
+        limit_amount (Decimal): Устанавливаемый лимит суммы в валюте лимита.
+        currency (str | None): Валюта лимита; по умолчанию базовая валюта пользователя.
         month (int): Месяц (1-12).
         year (int): Год.
     """
 
     category: Category = Field(..., description="Категория расходов")
     limit_amount: Decimal = Field(..., gt=Decimal("0"), description="Лимит суммы на указанный месяц")
+    currency: Optional[str] = Field(
+        default=None,
+        description="Валюта лимита (USD, EUR, KZT, UZS). По умолчанию базовая валюта пользователя",
+    )
     month: int = Field(..., ge=1, le=12, description="Номер месяца (от 1 до 12)")
     year: int = Field(..., ge=2000, le=2100, description="Год")
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency(cls, v: Any) -> Optional[str]:
+        """Нормализовать код валюты лимита к верхнему регистру и валидировать по списку поддерживаемых."""
+        return _normalize_budget_currency(v)
 
     @model_validator(mode="after")
     def validate_expense_category(self) -> "BudgetCreate":
@@ -388,7 +415,8 @@ class BudgetResponse(BaseModel):
     Атрибуты:
         id (uuid.UUID): Идентификатор записи бюджета.
         category (Category): Категория расходов.
-        limit_amount (Decimal): Установленный лимит бюджета.
+        limit_amount (Decimal): Установленный лимит бюджета в валюте лимита.
+        currency (str): Валюта лимита; spent и remaining — в ней же.
         month (int): Месяц действия.
         year (int): Год действия.
         spent (Decimal): Фактически потраченная сумма за указанный период.
@@ -399,16 +427,20 @@ class BudgetResponse(BaseModel):
 
     id: uuid.UUID = Field(..., description="ID бюджета")
     category: Category = Field(..., description="Категория расходов")
-    limit_amount: Decimal = Field(..., description="Установленный лимит бюджета в базовой валюте пользователя")
+    limit_amount: Decimal = Field(..., description="Установленный лимит бюджета в валюте лимита")
+    currency: str = Field(..., description="Валюта лимита (USD, EUR, KZT, UZS)")
     month: int = Field(..., description="Месяц действия бюджета (1-12)")
     year: int = Field(..., description="Год действия бюджета")
     spent: Decimal = Field(
         default=Decimal("0.00"),
-        description="Фактически израсходованная сумма в базовой валюте пользователя (с учетом курсов транзакций)",
+        description=(
+            "Фактически израсходованная сумма в валюте лимита: операции в этой же валюте — по сумме чека, "
+            "в базовой — по base_amount, в остальных — по текущему кросс-курсу"
+        ),
     )
     remaining: Decimal = Field(
         default=Decimal("0.00"),
-        description="Остаток лимита в базовой валюте пользователя",
+        description="Остаток лимита в валюте лимита",
     )
 
 
@@ -490,12 +522,25 @@ class BudgetSyncItem(BaseModel):
     limit_amount: Decimal = Field(
         default=Decimal("0.00"),
         ge=Decimal("0"),
-        description="Лимит бюджета в базовой валюте пользователя",
+        description="Лимит бюджета в валюте лимита",
+    )
+    currency: Optional[str] = Field(
+        default=None,
+        description=(
+            "Валюта лимита (USD, EUR, KZT, UZS). Если не передана: у существующего лимита сохраняется, "
+            "новый создаётся в базовой валюте пользователя"
+        ),
     )
     month: int = Field(..., ge=1, le=12, description="Месяц действия бюджета (1-12)")
     year: int = Field(..., ge=2000, le=2100, description="Год действия бюджета")
     is_deleted: bool = Field(default=False, description="Флаг удаления бюджета на клиенте")
     deleted: Optional[bool] = Field(default=None, description="Альтернативный флаг удаления бюджета")
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency(cls, v: Any) -> Optional[str]:
+        """Нормализовать код валюты лимита к верхнему регистру и валидировать по списку поддерживаемых."""
+        return _normalize_budget_currency(v)
 
     @model_validator(mode="after")
     def validate_expense_category(self) -> "BudgetSyncItem":
