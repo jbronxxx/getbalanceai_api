@@ -262,8 +262,10 @@ class TestMultiCurrencyBackend:
         )
 
         summary = ai_service._build_summary([tx], currency="KZT")
-        assert "500000.00 UZS" in summary
-        assert "3750.00 KZT" in summary
+        # Суммы — как в приложении: обозначения валют вместо кодов, разряды через пробел
+        assert "500 000 сум (эквивалент: 3 750 ₸)" in summary
+        assert "UZS" not in summary
+        assert "KZT" not in summary
 
     @pytest.mark.asyncio
     async def test_large_nominal_currency_does_not_overflow_numeric_precision(
