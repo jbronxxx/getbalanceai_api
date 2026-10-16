@@ -208,7 +208,8 @@ class Budget(Base):
         id (uuid.UUID): Уникальный идентификатор бюджета (Primary Key).
         user_id (uuid.UUID): Внешний ключ на владельца бюджета (users.id).
         category (Category): Категория расходов, для которой установлен лимит.
-        limit_amount (Decimal): Установленный лимит суммы на месяц.
+        limit_amount (Decimal): Установленный лимит суммы на месяц в валюте лимита.
+        currency (str): Валюта лимита (USD, EUR, KZT, UZS); не зависит от базовой валюты пользователя.
         month (int): Месяц действия бюджета (1-12).
         year (int): Год действия бюджета.
         created_at (datetime): Дата создания бюджета.
@@ -216,12 +217,19 @@ class Budget(Base):
     """
 
     __tablename__ = "budgets"
-    __table_args__ = (UniqueConstraint("user_id", "category", "month", "year", name="uq_budget_user_cat_period"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "category", "month", "year", name="uq_budget_user_cat_period"),
+        CheckConstraint(
+            f"currency IN {SUPPORTED_CURRENCIES}",
+            name="ck_budgets_currency",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     category: Mapped[Category] = mapped_column(SAEnum(Category), nullable=False)
     limit_amount: Mapped[Decimal] = mapped_column(Numeric(precision=18, scale=2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(10), default="USD", server_default="USD", nullable=False)
     month: Mapped[int] = mapped_column(nullable=False)
     year: Mapped[int] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

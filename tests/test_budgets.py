@@ -34,10 +34,10 @@ class TestBudgets:
         assert response.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_budget_limits_recalculated_and_etag_invalidated_on_base_currency_change(
+    async def test_budget_limits_kept_and_etag_invalidated_on_base_currency_change(
         self, client: AsyncClient, auth_headers: dict[str, str]
     ):
-        """При смене base_currency пользователя лимиты бюджетов пересчитываются, а ETag инвалидируется."""
+        """При смене base_currency лимиты остаются в своей валюте, а ETag инвалидируется (траты зависят от базовой)."""
         from datetime import datetime, timezone
         from decimal import Decimal
         from unittest.mock import AsyncMock, patch
@@ -84,13 +84,13 @@ class TestBudgets:
             )
             assert cached_res.status_code == 304
 
-            # 5. Меняем базовую валюту на UZS: 100 USD должно стать 1 280 000 UZS
+            # 5. Меняем базовую валюту на UZS: лимит остаётся 100 USD
             patch_to_uzs = await client.patch("/api/v1/auth/me", json={"base_currency": "UZS"}, headers=auth_headers)
             assert patch_to_uzs.status_code == 200
             assert patch_to_uzs.json()["data"]["base_currency"] == "UZS"
 
             # 6. Запрос с СТАРЫМ If-None-Match (initial_etag) НЕ должен вернуть 304!
-            # ETag инвалидирован, поэтому сервер обязан вернуть 200 OK с пересчитанным лимитом и новым ETag
+            # ETag инвалидирован, поэтому сервер обязан вернуть 200 OK с новым ETag
             recalc_res = await client.get(
                 "/api/v1/budgets/?month=10&year=2026",
                 headers={**auth_headers, "If-None-Match": initial_etag},
@@ -102,8 +102,8 @@ class TestBudgets:
 
             budgets_data = recalc_res.json()["data"]
             assert len(budgets_data) == 1
-            # 100.00 USD * 12800.0 = 1280000.00 UZS
-            assert Decimal(str(budgets_data[0]["limit_amount"])) == Decimal("1280000.00")
+            assert budgets_data[0]["currency"] == "USD"
+            assert Decimal(str(budgets_data[0]["limit_amount"])) == Decimal("100.00")
 
             # 7. Новый ETag успешно кэшируется (304)
             cached_new_res = await client.get(
@@ -387,3 +387,179 @@ class TestBudgets:
                 assert float(health_budgets[0]["limit_amount"]) in (400.00, 600.00)
         finally:
             app.dependency_overrides.pop(get_db, None)
+
+
+def _mock_rates():
+    """Фиксированные курсы к USD для тестов валюты лимита."""
+    from datetime import datetime, timezone
+
+    from app.schemas.schemas import CurrencyRatesResponse
+
+    return CurrencyRatesResponse(
+        base="USD",
+        rates={
+            "USD": Decimal("1.0"),
+            "EUR": Decimal("0.92"),
+            "UZS": Decimal("12800.0"),
+            "KZT": Decimal("495.0"),
+        },
+        updated_at=datetime.now(timezone.utc),
+    )
+
+
+class TestBudgetCurrency:
+    """Лимит в собственной валюте, независимой от базовой валюты пользователя."""
+
+    @pytest.mark.asyncio
+    async def test_budget_in_foreign_currency_counts_spent_in_its_currency(
+        self, client: AsyncClient, auth_headers: dict[str, str]
+    ):
+        """Лимит 500 USD при базовой UZS: траты переводятся в USD (чек в USD — как есть, остальное — по курсу)."""
+        from unittest.mock import AsyncMock, patch
+
+        from app.services.currency_service import CurrencyService
+
+        with patch.object(CurrencyService, "get_rates", new_callable=AsyncMock, return_value=_mock_rates()):
+            await client.patch("/api/v1/auth/me", json={"base_currency": "UZS"}, headers=auth_headers)
+
+            create_res = await client.post(
+                "/api/v1/budgets/",
+                json={"category": "food", "limit_amount": 500.00, "currency": "usd", "month": 10, "year": 2026},
+                headers=auth_headers,
+            )
+            assert create_res.status_code == 201
+            assert create_res.json()["data"]["currency"] == "USD"
+
+            for amount, currency in (("50.00", "USD"), ("1280000.00", "UZS"), ("92.00", "EUR")):
+                tx_res = await client.post(
+                    "/api/v1/transactions/",
+                    json={
+                        "amount": amount,
+                        "currency": currency,
+                        "category": "food",
+                        "type": "expense",
+                        "date": "2026-10-05T12:00:00Z",
+                        "description": "Еда",
+                    },
+                    headers=auth_headers,
+                )
+                assert tx_res.status_code == 201
+
+            res = await client.get("/api/v1/budgets/?month=10&year=2026", headers=auth_headers)
+            assert res.status_code == 200
+            food = res.json()["data"][0]
+            assert food["currency"] == "USD"
+            assert Decimal(str(food["limit_amount"])) == Decimal("500.00")
+            # 50 USD + 1 280 000 UZS (100 USD) + 92 EUR (100 USD)
+            assert Decimal(str(food["spent"])) == Decimal("250.00")
+            assert Decimal(str(food["remaining"])) == Decimal("250.00")
+
+    @pytest.mark.asyncio
+    async def test_budget_without_currency_uses_base_currency(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Старый клиент без поля currency: лимит создаётся в базовой валюте пользователя."""
+        from unittest.mock import AsyncMock, patch
+
+        from app.services.currency_service import CurrencyService
+
+        with patch.object(CurrencyService, "get_rates", new_callable=AsyncMock, return_value=_mock_rates()):
+            await client.patch("/api/v1/auth/me", json={"base_currency": "KZT"}, headers=auth_headers)
+
+        res = await client.post(
+            "/api/v1/budgets/",
+            json={"category": "transport", "limit_amount": 20000.00, "month": 10, "year": 2026},
+            headers=auth_headers,
+        )
+        assert res.status_code == 201
+        assert res.json()["data"]["currency"] == "KZT"
+
+    @pytest.mark.asyncio
+    async def test_budget_upsert_changes_currency(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Повторный POST на ту же категорию и период обновляет и сумму, и валюту лимита."""
+        first = await client.post(
+            "/api/v1/budgets/",
+            json={"category": "health", "limit_amount": 100.00, "currency": "USD", "month": 11, "year": 2026},
+            headers=auth_headers,
+        )
+        assert first.status_code == 201
+
+        second = await client.post(
+            "/api/v1/budgets/",
+            json={"category": "health", "limit_amount": 90.00, "currency": "EUR", "month": 11, "year": 2026},
+            headers=auth_headers,
+        )
+        assert second.status_code == 201
+        data = second.json()["data"]
+        assert data["id"] == first.json()["data"]["id"]
+        assert data["currency"] == "EUR"
+        assert Decimal(str(data["limit_amount"])) == Decimal("90.00")
+
+    @pytest.mark.asyncio
+    async def test_budget_unsupported_currency_rejected(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Неподдерживаемая валюта лимита отклоняется с 422."""
+        res = await client.post(
+            "/api/v1/budgets/",
+            json={"category": "food", "limit_amount": 100.00, "currency": "RUB", "month": 10, "year": 2026},
+            headers=auth_headers,
+        )
+        assert res.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_base_currency_budget_does_not_request_rates(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Лимит в базовой валюте считается по base_amount: чтение не обращается к курсам."""
+        from unittest.mock import AsyncMock, patch
+
+        from app.services.currency_service import CurrencyService
+
+        with patch.object(CurrencyService, "get_rates", new_callable=AsyncMock, return_value=_mock_rates()):
+            await client.patch("/api/v1/auth/me", json={"base_currency": "USD"}, headers=auth_headers)
+            await client.post(
+                "/api/v1/budgets/",
+                json={"category": "food", "limit_amount": 500.00, "month": 10, "year": 2026},
+                headers=auth_headers,
+            )
+            await client.post(
+                "/api/v1/transactions/",
+                json={
+                    "amount": "1280000.00",
+                    "currency": "UZS",
+                    "category": "food",
+                    "type": "expense",
+                    "date": "2026-10-05T12:00:00Z",
+                    "description": "Ужин",
+                },
+                headers=auth_headers,
+            )
+
+        with patch.object(CurrencyService, "get_rates", new_callable=AsyncMock) as mock_get_rates:
+            res = await client.get("/api/v1/budgets/?month=10&year=2026", headers=auth_headers)
+            assert res.status_code == 200
+            assert Decimal(str(res.json()["data"][0]["spent"])) == Decimal("100.00")
+            mock_get_rates.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sync_budget_currency_saved_and_kept_without_field(
+        self, client: AsyncClient, auth_headers: dict[str, str]
+    ):
+        """Синхронизация сохраняет валюту лимита; элемент без currency (старый клиент) её не сбрасывает."""
+        base_payload = {"transactions": [], "deleted_budget_ids": [], "deleted_budgets": []}
+
+        res = await client.post(
+            "/api/v1/sync/",
+            json={
+                **base_payload,
+                "budgets": [{"category": "food", "limit_amount": 300.0, "currency": "EUR", "month": 10, "year": 2026}],
+            },
+            headers=auth_headers,
+        )
+        assert res.status_code == 200
+        assert res.json()["data"]["synced_budgets"][0]["currency"] == "EUR"
+
+        res = await client.post(
+            "/api/v1/sync/",
+            json={**base_payload, "budgets": [{"category": "food", "limit_amount": 350.0, "month": 10, "year": 2026}]},
+            headers=auth_headers,
+        )
+        assert res.status_code == 200
+        synced = res.json()["data"]["synced_budgets"][0]
+        assert synced["currency"] == "EUR"
+        assert Decimal(str(synced["limit_amount"])) == Decimal("350.00")

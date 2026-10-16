@@ -408,7 +408,7 @@ class TestAIService:
     # =========================================================================
 
     def test_build_summary_two_blocks_and_prompt_injection_cleaning(self):
-        """Проверка формирования двух блоков сводки и очистки описаний от Prompt Injection."""
+        """Проверка двух блоков сводки (лимиты в своей валюте) и очистки описаний от Prompt Injection."""
         mock_db = MagicMock()
         service = AIService(db=mock_db)
 
@@ -417,6 +417,7 @@ class TestAIService:
             id=uuid.uuid4(),
             category=Category.food,
             limit_amount=Decimal("1000.00"),
+            currency="KZT",
             month=10,
             year=2026,
             spent=Decimal("450.00"),
@@ -426,6 +427,7 @@ class TestAIService:
             id=uuid.uuid4(),
             category=Category.entertainment,
             limit_amount=Decimal("500.00"),
+            currency="USD",
             month=10,
             year=2026,
             spent=Decimal("650.00"),
@@ -450,7 +452,8 @@ class TestAIService:
 
         # Проверка лимитов и статусов превышения
         assert "food | Лимит: 1000.00 KZT | Потрачено: 450.00 KZT | Остаток: 550.00 KZT | В пределах лимита" in summary
-        assert "entertainment | Лимит: 500.00 KZT | Потрачено: 650.00 KZT | Остаток: 0.00 KZT | Превышен" in summary
+        # Лимит в собственной валюте, отличной от базовой
+        assert "entertainment | Лимит: 500.00 USD | Потрачено: 650.00 USD | Остаток: 0.00 USD | Превышен" in summary
 
         # Проверка нейтрализации управляющих символов и переносов строк в описании
         assert "\n\r" not in summary.split("Блок 2: Список транзакций:")[1]
@@ -525,6 +528,7 @@ class TestAIService:
             id=uuid.uuid4(),
             category=Category.food,
             limit_amount=Decimal("1500.00"),
+            currency="USD",
             month=11,
             year=2025,
             spent=Decimal("300.00"),

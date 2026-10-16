@@ -23,7 +23,7 @@ from app.exceptions import (
     NotFoundException,
     UnauthorizedException,
 )
-from app.models.models import SUPPORTED_CURRENCIES, Budget, Token, Transaction, User
+from app.models.models import SUPPORTED_CURRENCIES, Token, Transaction, User
 from app.schemas.schemas import (
     AppleSignInRequest,
     GoogleSignInRequest,
@@ -126,10 +126,12 @@ class AuthService:
         old_currency: str,
         new_currency: str,
     ) -> None:
-        """Пересчитать базовые суммы транзакций и лимиты бюджетов при смене базовой валюты пользователя.
+        """Пересчитать базовые суммы транзакций при смене базовой валюты пользователя.
 
-        Выполняется едиными пакетными SQL UPDATE запросами без загрузки тысяч ORM-объектов в память.
+        Выполняется единым пакетным SQL UPDATE без загрузки тысяч ORM-объектов в память.
         Для транзакций в новой базовой валюте exchange_rate устанавливается в 1.0, а base_amount = amount.
+        Лимиты бюджетов не пересчитываются: у каждого своя валюта (budgets.currency). Траты по
+        лимитам зависят от base_amount, поэтому ETag бюджетов инвалидируется.
         """
         logger.info(
             f"Запущен пересчет финансов пользователя {user_id} в связи со сменой базовой валюты: "
@@ -167,27 +169,12 @@ class AuthService:
         )
         await self.db.execute(tx_stmt)
 
-        # 2. Пакетный пересчет лимитов бюджетов пользователя (бюджеты ведутся в базовой валюте)
-        budget_rate = (
-            Decimal("1.0")
-            if old_currency == new_currency
-            else CurrencyService.calculate_cross_rate(old_currency, new_currency, rates)
-        )
-        budget_stmt = (
-            update(Budget)
-            .where(Budget.user_id == user_id)
-            .values(
-                limit_amount=func.round(Budget.limit_amount * budget_rate, 2),
-            )
-        )
-        await self.db.execute(budget_stmt)
+        logger.info(f"Успешно пересчитаны транзакции в БД для пользователя {user_id}")
 
-        logger.info(f"Успешно пересчитаны транзакции и бюджеты в БД для пользователя {user_id}")
-
-        # 3. Инвалидация ETag кэша бюджетов пользователя
+        # 2. Инвалидация ETag кэша бюджетов пользователя
         await BudgetService.invalidate_etag(user_id)
 
-        # 4. Инвалидация кэша инсайтов AI в Redis без блокировки ключей
+        # 3. Инвалидация кэша инсайтов AI в Redis без блокировки ключей
         try:
             from app.services.ai_service import AIService
 

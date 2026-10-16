@@ -412,9 +412,10 @@ class AIService:
             for b in budgets_list:
                 cat = b.category.value if hasattr(b.category, "value") else str(b.category)
                 status = "Превышен" if b.spent > b.limit_amount else "В пределах лимита"
+                # Суммы лимита — в его собственной валюте, не обязательно базовой
                 blocks.append(
-                    f"{cat} | Лимит: {b.limit_amount} {currency} | Потрачено: {b.spent} {currency} | "
-                    f"Остаток: {b.remaining} {currency} | {status}"
+                    f"{cat} | Лимит: {b.limit_amount} {b.currency} | Потрачено: {b.spent} {b.currency} | "
+                    f"Остаток: {b.remaining} {b.currency} | {status}"
                 )
         else:
             blocks.append("Лимиты бюджетов на данный период не установлены.")
