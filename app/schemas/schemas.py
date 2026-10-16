@@ -620,7 +620,9 @@ class InsightState(str, enum.Enum):
     ready = "ready"  # Отчёт есть (сгенерирован сейчас или взят из кэша)
     not_generated = "not_generated"  # Отчёта нет, генерация не запрашивалась (generate=false)
     no_data = "no_data"  # Анализировать нечего: будущий месяц или нет операций за период
-    quota_exceeded = "quota_exceeded"  # Суточная квота генераций исчерпана, отчёта за период нет
+    # Суточная квота генераций исчерпана: отчёта за период нет (insights — сообщение о лимите)
+    # или он устарел (insights — сохранённый отчёт, is_outdated=true)
+    quota_exceeded = "quota_exceeded"
     busy = "busy"  # LLM временно недоступен; insights — вежливое сообщение, кэшировать нельзя
 
 
@@ -628,14 +630,23 @@ class InsightResponse(BaseModel):
     """Схема ответа с персональными рекомендациями AI.
 
     Атрибуты:
-        insights (list[str]): Список текстовых рекомендаций (при quota_exceeded — сообщение о лимите).
+        insights (list[str]): Список текстовых рекомендаций (при quota_exceeded — сообщение о лимите
+            или устаревший сохранённый отчёт).
         generated_at (datetime): Временная метка генерации ответа.
         state (InsightState): Состояние отчёта за период.
+        is_outdated (bool): Отчёт сохранённый, а данные месяца изменились после его генерации.
     """
 
     insights: list[str] = Field(..., description="Список аналитических советов и выводов")
     generated_at: datetime = Field(..., description="Дата и время формирования аналитики")
     state: InsightState = Field(InsightState.ready, description="Состояние отчёта за период")
+    is_outdated: bool = Field(
+        False,
+        description=(
+            "Сохранённый отчёт, а операции или лимиты месяца изменились после генерации: суммы в тексте "
+            "могут не совпадать с текущими (generate=false или исчерпана суточная квота)"
+        ),
+    )
 
 
 # ============================================================================
