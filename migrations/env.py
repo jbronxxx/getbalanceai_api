@@ -21,7 +21,10 @@ target_metadata = Base.metadata
 
 # Динамическая подстановка URL базы данных из конфигурации приложения.
 # Alembic работает через синхронный Engine, поэтому async-драйвер (+asyncpg) заменяется на дефолтный синхронный.
-config.set_main_option("sqlalchemy.url", app_config.db_url.replace("postgresql+asyncpg://", "postgresql://"))
+# Значение проходит через configparser с интерполяцией: «%» из URL-кодированного пароля экранируется как «%%».
+config.set_main_option(
+    "sqlalchemy.url", app_config.db_url.replace("postgresql+asyncpg://", "postgresql://").replace("%", "%%")
+)
 
 
 def run_migrations_offline() -> None:

@@ -77,7 +77,7 @@ docker compose up --build -d
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
 ```
 
-Автодеплой (`.github/workflows/deploy.yml`) запускается после успешного завершения workflow `CI` на ветке `main` (или вручную через `workflow_dispatch`): подтягивает код, применяет миграции, принудительно пересоздаёт контейнер `api`, поднимает остальные сервисы и перезагружает конфигурацию Nginx (`nginx -t` + `nginx -s reload`).
+Автодеплой (`.github/workflows/deploy.yml`) запускается после успешного завершения workflow `CI` на ветке `main` (или вручную через `workflow_dispatch`): подтягивает код, снимает бэкап БД (`scripts/backup_db.sh predeploy`; при ошибке деплой останавливается), применяет миграции, принудительно пересоздаёт контейнер `api`, поднимает остальные сервисы и перезагружает конфигурацию Nginx (`nginx -t` + `nginx -s reload`).
 
 ### 3.1. Настройка автоматического резервного копирования БД
 Для регулярного бекапа базы данных добавлен скрипт `scripts/backup_db.sh`.
@@ -88,7 +88,58 @@ crontab -e
 0 3 * * * /absolute/path/to/finance_app/scripts/backup_db.sh
 ```
 
-Хранение: скрипт оставляет 7 последних копий (при ежедневном cron — около 7 суток); это значение указано в Политике конфиденциальности. Логи Loki хранятся 30 дней (`loki/local-config.yaml`). После изменения конфига Loki на сервере выполните `docker compose restart loki`: `up -d` не перечитывает смонтированный файл.
+Хранение: в режиме по умолчанию (`daily`) скрипт оставляет 7 последних копий `db_backup_*.sql` (при ежедневном cron — около 7 суток). Деплой вызывает скрипт в режиме `predeploy`: копии `predeploy_backup_*.sql` хранятся отдельно, не более 3 штук и не дольше 7 суток, и не вытесняют ежедневные. Срок 7 суток указан в Политике конфиденциальности. Файлы создаются с правами только для владельца (`umask 077`). Логи Loki хранятся 30 дней (`loki/local-config.yaml`). После изменения конфига Loki на сервере выполните `docker compose restart loki`: `up -d` не перечитывает смонтированный файл.
+
+Откат неудачного деплоя с миграциями выполняется восстановлением `predeploy`-копии, а не `alembic downgrade`: часть миграций при откате необратимо теряет данные (например, `h00700700700`, `i00800800800`).
+
+### 3.2. Копия бэкапов вне сервера (Cloudflare R2)
+Локальные копии пропадут вместе с сервером, поэтому ночной cron дополнительно выгружает свежие дампы в бакет Cloudflare R2 через `rclone`. Файлы шифруются на сервере (`rclone crypt`): дампы содержат персональные данные.
+
+1. Cloudflare → R2: бакет `getbalanceai-backups`; в **Settings → Object lifecycle rules** — удаление объектов старше 7 дней (срок из Политики конфиденциальности).
+2. R2 → Manage R2 API Tokens → **Account API token**: Object Read & Write, только бакет `getbalanceai-backups`, TTL Forever.
+3. На сервере — rclone с официального сайта (версия из apt старая и отвечает R2 ошибкой `501 NotImplemented`):
+   ```bash
+   curl -fsSLO https://downloads.rclone.org/rclone-current-linux-amd64.deb && dpkg -i rclone-current-linux-amd64.deb && rm rclone-current-linux-amd64.deb
+   ```
+4. Remote-ы `r2` (доступ к бакету) и `r2crypt` (шифрование поверх него). Пробел в начале строки исключает команду из истории bash, `> /dev/null` — вывод конфига с ключами на экран:
+   ```bash
+    rclone config create r2 s3 provider=Cloudflare access_key_id=<KEY_ID> secret_access_key=<SECRET> endpoint=https://<ACCOUNT_ID>.r2.cloudflarestorage.com region=auto acl=private no_check_bucket=true > /dev/null
+    rclone config create r2crypt crypt remote=r2:getbalanceai-backups filename_encryption=off directory_name_encryption=false password=<ПАРОЛЬ_ШИФРОВАНИЯ> --obscure > /dev/null
+   chmod 600 /root/.config/rclone/rclone.conf
+   ```
+   Пароль шифрования (`openssl rand -base64 32`) хранится вне сервера, в менеджере паролей: без него копии в R2 не расшифровать. Команды `rclone config show/create/update` печатают секреты — их вывод не публикуется.
+5. Строка cron (заменяет строку из п. 3.1). `copy`, а не `sync`: старые объекты удаляет lifecycle-правило бакета; `--max-age 1d` не даёт повторно выгрузить локальные копии, уже удалённые из R2:
+   ```
+   0 3 * * * /opt/getbalanceai_api/scripts/backup_db.sh >> /var/log/getbalanceai_backup.log 2>&1 && rclone copy /opt/getbalanceai_api/backups r2crypt: --max-age 1d >> /var/log/getbalanceai_backup.log 2>&1
+   ```
+6. Проверка: `rclone ls r2crypt:` (имена файлов), `rclone cryptcheck backups/ r2crypt: --max-age 1d` (`0 differences found`).
+
+### 3.3. Восстановление из бэкапа
+Дамп — plain SQL без `--clean`, поэтому накатывается только в пустую БД. Регулярная проверка выполняется в отдельную БД `restore_test` рядом с боевой:
+```bash
+cd /opt/getbalanceai_api
+alias dc='docker compose -f docker-compose.yml -f docker-compose.prod.yml'
+
+# Локальная копия или скачанная из R2
+LAST=$(ls -t backups/db_backup_*.sql | head -1)
+# F=$(rclone lsf r2crypt: | sort | tail -1); mkdir -p /root/r2_restore && rclone copy "r2crypt:$F" /root/r2_restore/ && LAST="/root/r2_restore/$F"
+
+dc exec -T db sh -c 'createdb -U "$POSTGRES_USER" restore_test'
+dc exec -T db sh -c 'psql -U "$POSTGRES_USER" -d restore_test -v ON_ERROR_STOP=1 -q' < "$LAST" && echo RESTORE_OK
+
+# Сравнение с боевой БД: количество строк и версия миграций
+for DB in '$POSTGRES_DB' restore_test; do
+  echo "== $DB"
+  dc exec -T db sh -c "psql -U \"\$POSTGRES_USER\" -d $DB -tAc \"
+    SELECT 'users', count(*)::text FROM users UNION ALL
+    SELECT 'transactions', count(*)::text FROM transactions UNION ALL
+    SELECT 'alembic', version_num FROM alembic_version;\""
+done
+
+dc exec -T db sh -c 'dropdb -U "$POSTGRES_USER" restore_test'
+```
+
+Восстановление боевой БД (только при аварии): `dc stop api` → `./scripts/backup_db.sh predeploy` (копия текущего состояния) → `dropdb` и `createdb` для `$POSTGRES_DB` → накат дампа командой выше в `$POSTGRES_DB` → `dc start api`.
 
 ### 4. Просмотр логов
 ```bash
