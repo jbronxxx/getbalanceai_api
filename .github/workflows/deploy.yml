@@ -52,6 +52,10 @@ jobs:
             # Обновляем код
             git pull origin main
 
+            # Снимаем бэкап БД перед миграциями: downgrade части миграций необратимо теряет данные,
+            # поэтому откат выполняется восстановлением этой копии. При ошибке бэкапа деплой останавливается (set -e)
+            ./scripts/backup_db.sh predeploy
+
             # Применяем миграции базы данных перед запуском сервисов
             docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api alembic upgrade head
 
