@@ -278,7 +278,9 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000 --timeout-keep-alive 75
 ## 📊 Мониторинг и Логирование (Observability)
 
 В проект встроена инфраструктура для сбора логов и метрик:
-* **Grafana** (Дашборды и визуализация) — доступна по адресу `http://localhost:3000` (логин/пароль настраиваются через `GRAFANA_ADMIN_USER` и `GRAFANA_ADMIN_PASSWORD` в `.env`).
+* **Grafana** (Дашборды и визуализация) — локально `http://localhost:3000`, на проде `https://grafana.getbalanceai.app` (порт 3000 опубликован только на `127.0.0.1`, снаружи доступ лишь через nginx). Анонимный доступ и саморегистрация отключены. Логин/пароль администратора — `GRAFANA_ADMIN_USER` и `GRAFANA_ADMIN_PASSWORD` в `.env` (пароль обязателен); они применяются только при первом создании тома `grafana_data`, позже пароль меняется командой `docker compose exec grafana grafana-cli admin reset-admin-password <пароль>`.
+  * Учётки для команды создаёт администратор: **Administration → Users → New user** (роль по умолчанию — Viewer). Viewer видит дашборды и Explore, может менять панели в браузере, но не сохранять их (`GF_USERS_VIEWERS_CAN_EDIT=true`).
+  * Первичный выпуск сертификата для поддомена: `docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm --entrypoint certbot certbot certonly --webroot -w /var/www/certbot -d grafana.getbalanceai.app`.
 * **Loki + Promtail** — автоматический сбор всех логов контейнеров.
 * **Prometheus + cAdvisor** — сбор системных метрик контейнеров (CPU, RAM) и метрик самого приложения FastAPI (`/metrics`).
 

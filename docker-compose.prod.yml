@@ -17,6 +17,10 @@ services:
       - api
     restart: unless-stopped
 
+  grafana:
+    environment:
+      - GF_SERVER_ROOT_URL=https://grafana.getbalanceai.app
+
   certbot:
     image: certbot/certbot:latest
     volumes:
