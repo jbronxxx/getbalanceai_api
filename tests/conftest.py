@@ -40,6 +40,13 @@ async def setup_test_db():
 
 
 @pytest.fixture(autouse=True)
+def reset_jwks_clients(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Клиенты JWKS кэшируются на уровне класса; сбрасываем, чтобы мок из одного теста не попал в другой."""
+    monkeypatch.setattr(AuthService, "_google_jwks_client", None)
+    monkeypatch.setattr(AuthService, "_apple_jwks_client", None)
+
+
+@pytest.fixture(autouse=True)
 def oauth_client_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     """Client ID Google/Apple, под которые выпускаются тестовые ID-токены провайдеров."""
     monkeypatch.setattr(config, "google_client_ids", ["test-google-android", "test-google-ios"])

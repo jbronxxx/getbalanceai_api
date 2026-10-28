@@ -311,6 +311,27 @@ class TestAuthServiceUnit:
     @pytest.mark.asyncio
     @patch("app.services.auth_service.PyJWKClient")
     @patch("app.services.auth_service.jwt.decode")
+    async def test_jwks_client_reused_across_requests(self, mock_jwt_decode, mock_jwk_client, db_session: AsyncSession):
+        """Клиент JWKS создаётся один раз на воркер: новый AuthService на каждый запрос не сбрасывает кэш ключей."""
+        mock_jwt_decode.side_effect = [
+            {"email": "jwks_google@example.com", "iss": "https://accounts.google.com", "email_verified": True},
+            {"email": "jwks_google@example.com", "iss": "https://accounts.google.com", "email_verified": True},
+            {"email": "jwks_apple@example.com", "iss": "https://appleid.apple.com"},
+            {"email": "jwks_apple@example.com", "iss": "https://appleid.apple.com"},
+        ]
+
+        for _ in range(2):
+            await AuthService(db_session).google_login(GoogleSignInRequest(id_token="mock_id_token"))
+        for _ in range(2):
+            await AuthService(db_session).apple_login(AppleSignInRequest(identity_token="mock_id_token"))
+
+        created_urls = [call.args[0] for call in mock_jwk_client.call_args_list]
+        assert created_urls == ["https://www.googleapis.com/oauth2/v3/certs", "https://appleid.apple.com/auth/keys"]
+        assert mock_jwk_client.return_value.get_signing_key_from_jwt.call_count == 4
+
+    @pytest.mark.asyncio
+    @patch("app.services.auth_service.PyJWKClient")
+    @patch("app.services.auth_service.jwt.decode")
     async def test_apple_login_success(self, mock_jwt_decode, mock_jwk_client, db_session: AsyncSession):
         mock_jwt_decode.return_value = {"email": "appleuser@example.com", "iss": "https://appleid.apple.com"}
 
