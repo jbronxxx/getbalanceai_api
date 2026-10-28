@@ -260,7 +260,7 @@ class AIService:
             logger.warning(f"Не удалось прочитать кэш инсайтов из Redis для пользователя {user_id}: {err}")
 
         if cached and self._is_cache_fresh(cached, fingerprint):
-            logger.info(f"Returning cached AI insights for user {user_id}")
+            logger.debug(f"Инсайты для пользователя {user_id} отданы из кэша")
             return self._response_from_cache(cached)
 
         if not generate:
@@ -388,11 +388,15 @@ class AIService:
                 pipe.expire(daily_quota_key, 86400)
                 await pipe.execute()
             except Exception as err:
-                logger.warning(f"Не удалось обновить счетчик суточной квоты в Redis: {err}")
+                logger.warning(f"Не удалось обновить счетчик суточной квоты в Redis для пользователя {user_id}: {err}")
 
+            logger.info(
+                f"Сгенерированы AI-инсайты для пользователя {user_id} за {target_month}/{target_year}: "
+                f"{len(insights)} советов, вызовов за сутки {daily_calls + 1}/{config.ai_daily_limit_per_user}"
+            )
             return response
         except Exception as e:
-            logger.error(f"Error requesting insights from Gemini API: {e}")
+            logger.error(f"Ошибка запроса инсайтов к Gemini для пользователя {user_id}: {e}")
             # Сообщение остаётся в insights для старых клиентов; новые по state показывают свою карточку
             return InsightResponse(
                 insights=fallback_messages.get(lang_prefix, fallback_messages["en"]),
@@ -517,5 +521,6 @@ class AIService:
             data = self._extract_json(text)
             return data.get("insights", [])
         except (json.JSONDecodeError, ValueError) as err:
-            logger.error(f"Failed to parse JSON from LLM response: {err}. Raw text: {text}")
-            raise
+            # Сырой ответ модели не логируется: в нём пересказ финансовых данных пользователя.
+            # Ошибку логирует вызывающий get_insights, здесь только добавляется длина ответа
+            raise ValueError(f"Невалидный JSON в ответе LLM: {err}. Длина ответа: {len(text or '')}") from err

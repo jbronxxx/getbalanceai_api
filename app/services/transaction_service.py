@@ -76,7 +76,7 @@ class TransactionService:
         await self.db.flush()
         await self.db.refresh(tx)
         await BudgetService.invalidate_etag(user_id)
-        logger.info(f"Создана новая транзакция: {tx}")
+        logger.info(f"Создана транзакция {tx.id} для пользователя {user_id}")
         return tx
 
     async def get_all(
@@ -107,7 +107,7 @@ class TransactionService:
                     )
                 )
             except Exception as e:
-                logger.warning(f"Некорректный курсор {cursor}: {e}")
+                logger.warning(f"Некорректный курсор пагинации от пользователя {user_id}: {type(e).__name__}")
 
         query = query.order_by(Transaction.date.desc(), Transaction.id.desc())
 
@@ -144,7 +144,7 @@ class TransactionService:
         await self.db.delete(tx)
         await self.db.flush()
         await BudgetService.invalidate_etag(user_id)
-        logger.info(f"Транзакция удалена: {tx.id}")
+        logger.info(f"Транзакция {tx.id} удалена пользователем {user_id}")
 
     async def get_etag(
         self,

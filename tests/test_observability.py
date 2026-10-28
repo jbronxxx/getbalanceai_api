@@ -15,6 +15,8 @@ from logger.logger import (
     _get_log_level,
     get_logger,
     get_request_id,
+    mask_email,
+    normalize_request_id,
     reset_request_id,
     set_request_id,
 )
@@ -113,6 +115,46 @@ class TestCorrelationId:
         assert res_val.headers.get("X-Request-ID") == custom_id
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bad_id",
+        [
+            "a" * 65,
+            "id with spaces",
+            "id;drop",
+            "id|INFO|forged",
+        ],
+    )
+    async def test_invalid_x_request_id_is_replaced(self, client: AsyncClient, bad_id: str):
+        """Невалидный X-Request-ID (длина > 64 или символы вне [A-Za-z0-9-]) заменяется сгенерированным UUID."""
+        response = await client.get("/health", headers={"X-Request-ID": bad_id})
+        assert response.status_code == 200
+        req_id = response.headers.get("X-Request-ID")
+        assert req_id != bad_id
+        assert str(uuid.UUID(req_id)) == req_id
+
+    @pytest.mark.asyncio
+    async def test_invalid_x_correlation_id_is_replaced(self, client: AsyncClient):
+        """Невалидный X-Correlation-ID тоже заменяется сгенерированным UUID."""
+        response = await client.get("/health", headers={"X-Correlation-ID": "bad id"})
+        assert response.status_code == 200
+        req_id = response.headers.get("X-Request-ID")
+        assert str(uuid.UUID(req_id)) == req_id
+
+    @pytest.mark.asyncio
+    async def test_max_length_x_request_id_is_kept(self, client: AsyncClient):
+        """X-Request-ID длиной ровно 64 символа из допустимого алфавита сохраняется."""
+        custom_id = "A1-" + "b" * 61
+        response = await client.get("/health", headers={"X-Request-ID": custom_id})
+        assert response.headers.get("X-Request-ID") == custom_id
+
+    def test_normalize_request_id_unit(self):
+        """normalize_request_id пропускает валидные значения и генерирует UUID для пустых и невалидных."""
+        assert normalize_request_id("abc-123-XYZ") == "abc-123-XYZ"
+        for raw in (None, "", "a\nb", "a_b", "a" * 65):
+            result = normalize_request_id(raw)
+            assert str(uuid.UUID(result)) == result
+
+    @pytest.mark.asyncio
     async def test_request_id_in_logs(self, client: AsyncClient, caplog: pytest.LogCaptureFixture):
         """Логи во время обработки запроса обогащаются текущим request_id."""
         custom_id = "log-trace-abc-123"
@@ -158,6 +200,26 @@ class TestCorrelationId:
             assert getattr(record, "request_id") == "ctx-id-555"
         finally:
             reset_request_id(token)
+
+
+class TestMaskEmail:
+    """Маскирование email для логов."""
+
+    @pytest.mark.parametrize(
+        ("email", "expected"),
+        [
+            ("john.doe@gmail.com", "j***@gmail.com"),
+            ("a@example.com", "a***@example.com"),
+            ("weird@name@example.com", "w***@example.com"),
+            ("no-at-sign", "***"),
+            ("@example.com", "***"),
+            ("user@", "***"),
+            ("", "***"),
+        ],
+    )
+    def test_mask_email(self, email: str, expected: str):
+        """Остаются первая буква локальной части и домен; некорректный адрес скрывается целиком."""
+        assert mask_email(email) == expected
 
 
 class TestLogLevelConfiguration:

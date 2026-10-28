@@ -13,9 +13,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.tasks.token_cleanup import run_token_cleanup  # noqa: E402
-from logger.logger import get_logger  # noqa: E402
-
-logger = get_logger("scripts.cleanup_tokens")
 
 
 def main() -> None:
@@ -31,7 +28,6 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    logger.info(f"Запуск скрипта очистки токенов с параметром retention_days={args.days}")
     count = asyncio.run(run_token_cleanup(retention_days=args.days))
     print(f"Очистка токенов завершена. Удалено записей: {count}")
 

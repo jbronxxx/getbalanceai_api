@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
+import jwt
 import pytest
 from fastapi.security import HTTPAuthorizationCredentials
 from httpx import AsyncClient
@@ -20,6 +21,7 @@ from app.schemas.schemas import (
     UserRegister,
 )
 from app.services.auth_service import AuthService, get_current_user
+from config_reader.config_reader import config
 
 
 class TestAuthServiceUnit:
@@ -505,3 +507,167 @@ class TestAuthEndpointsIntegration:
         # После удаления старый access token недействителен
         me_after_del = await client.get("/api/v1/auth/me", headers=headers)
         assert me_after_del.status_code == 401
+
+
+class TestAuthLogsWithoutPii:
+    """Логи AuthService содержат user_id вместо email; при неудачном входе — только маскированный email."""
+
+    @pytest.mark.asyncio
+    async def test_register_and_login_log_user_id_not_email(
+        self, db_session: AsyncSession, caplog: pytest.LogCaptureFixture
+    ):
+        """Регистрация и успешный вход пишут в лог ID пользователя, а не email."""
+        service = AuthService(db_session)
+        email = f"piilog_{uuid.uuid4().hex[:6]}@example.com"
+        password = "ValidPassword123!"
+
+        with caplog.at_level(logging.INFO):
+            user = await service.register(UserRegister(email=email, password=password, name="Pii User"))
+            await service.login(UserLogin(email=email, password=password))
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert not any(email in message for message in messages)
+        assert any(str(user.id) in message and "Зарегистрирован" in message for message in messages)
+        assert any(str(user.id) in message and "авторизован" in message for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_duplicate_registration_logs_user_id_not_email(
+        self, db_session: AsyncSession, test_user: User, caplog: pytest.LogCaptureFixture
+    ):
+        """Повторная регистрация логирует ID существующего пользователя без email."""
+        service = AuthService(db_session)
+        payload = UserRegister(email=test_user.email, password="AnotherPassword123!", name="Duplicate")
+
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(BadRequestException):
+                await service.register(payload)
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert not any(test_user.email in message for message in messages)
+        assert any(str(test_user.id) in message for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_failed_login_logs_masked_email(
+        self, db_session: AsyncSession, test_user: User, caplog: pytest.LogCaptureFixture
+    ):
+        """Неудачный вход логирует маскированный email вида u***@example.com."""
+        service = AuthService(db_session)
+
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(UnauthorizedException):
+                await service.login(UserLogin(email=test_user.email, password="WrongPassword!"))
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert not any(test_user.email in message for message in messages)
+        assert any("u***@example.com" in message for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_refresh_tokens_logs_user_id_not_email(
+        self, db_session: AsyncSession, test_user: User, caplog: pytest.LogCaptureFixture
+    ):
+        """Ротация токенов логирует ID пользователя без email."""
+        service = AuthService(db_session)
+        refresh_token = await service.create_refresh_token(test_user.id)
+
+        with caplog.at_level(logging.INFO):
+            await service.refresh_tokens(refresh_token)
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert not any(test_user.email in message for message in messages)
+        assert any(str(test_user.id) in message and "ротация" in message for message in messages)
+
+    @pytest.mark.asyncio
+    @patch("app.services.auth_service.PyJWKClient")
+    @patch("app.services.auth_service.jwt.decode")
+    async def test_google_login_logs_registration_and_repeat_login(
+        self, mock_jwt_decode, mock_jwk_client, db_session: AsyncSession, caplog: pytest.LogCaptureFixture
+    ):
+        """Вход через Google логирует регистрацию нового пользователя и повторный вход по user_id без email."""
+        email = f"googlelog_{uuid.uuid4().hex[:6]}@example.com"
+        mock_jwt_decode.return_value = {
+            "email": email,
+            "iss": "https://accounts.google.com",
+            "email_verified": True,
+            "name": "Google Log",
+        }
+        service = AuthService(db_session)
+
+        with caplog.at_level(logging.INFO):
+            first = await service.google_login(GoogleSignInRequest(id_token="mock_id_token"))
+            await service.google_login(GoogleSignInRequest(id_token="mock_id_token"))
+
+        user_id = str(first.user.id)
+        messages = [record.getMessage() for record in caplog.records]
+        assert not any(email in message for message in messages)
+        assert any(f"Зарегистрирован новый пользователь {user_id} через google" in message for message in messages)
+        assert any(f"Пользователь {user_id} успешно авторизован через google" in message for message in messages)
+
+    @pytest.mark.asyncio
+    @patch("app.services.auth_service.PyJWKClient")
+    @patch("app.services.auth_service.jwt.decode")
+    async def test_google_login_rejected_logs_warning_without_email(
+        self, mock_jwt_decode, mock_jwk_client, db_session: AsyncSession, caplog: pytest.LogCaptureFixture
+    ):
+        """Отклонённый вход через Google — WARNING (ошибка клиента, не сервера) без email."""
+        email = f"unverified_{uuid.uuid4().hex[:6]}@example.com"
+        mock_jwt_decode.return_value = {
+            "email": email,
+            "iss": "https://accounts.google.com",
+            "email_verified": False,
+        }
+        service = AuthService(db_session)
+
+        with caplog.at_level(logging.INFO):
+            with pytest.raises(UnauthorizedException):
+                await service.google_login(GoogleSignInRequest(id_token="mock_id_token"))
+
+        records = [record for record in caplog.records if "Отклонён вход через google" in record.getMessage()]
+        assert len(records) == 1
+        assert records[0].levelno == logging.WARNING
+        assert email not in records[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_expired_access_token_is_not_logged_as_warning(
+        self, db_session: AsyncSession, test_user: User, caplog: pytest.LogCaptureFixture
+    ):
+        """Истёкший access-токен — штатный 401 без WARNING; поддельная подпись по-прежнему WARNING."""
+        expired = jwt.encode(
+            {
+                "sub": str(test_user.id),
+                "type": "access",
+                "exp": datetime.now(timezone.utc) - timedelta(minutes=1),
+                "jti": uuid.uuid4().hex,
+            },
+            config.secret_key,
+            algorithm=config.algorithm,
+        )
+
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(UnauthorizedException):
+                await get_current_user(
+                    credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=expired), db=db_session
+                )
+        assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(UnauthorizedException):
+                await get_current_user(
+                    credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials="bad.token.value"),
+                    db=db_session,
+                )
+        assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_delete_account_logs_user_id_not_email(
+        self, db_session: AsyncSession, test_user: User, caplog: pytest.LogCaptureFixture
+    ):
+        """Удаление аккаунта логирует ID пользователя без email."""
+        service = AuthService(db_session)
+
+        with caplog.at_level(logging.INFO):
+            await service.delete_account(test_user.id)
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert not any(test_user.email in message for message in messages)
+        assert any(str(test_user.id) in message and "удален" in message for message in messages)

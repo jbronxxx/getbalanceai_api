@@ -66,7 +66,7 @@ class BudgetService:
         await self.db.flush()
         await self.db.refresh(budget)
         await self.invalidate_etag(user_id)
-        logger.info(f"Успешно сохранен бюджет: {budget.id} для пользователя {user_id}")
+        logger.info(f"Сохранён бюджет {budget.id} для пользователя {user_id}")
         return await self._enrich(budget, user_id, user_base_currency=user_base_currency)
 
     async def get_by_id(
@@ -104,7 +104,7 @@ class BudgetService:
 
         result = await self.db.execute(query)
         budgets = list(result.scalars().all())
-        logger.info(f"Получено {len(budgets)} бюджетов для пользователя {user_id} с фильтром месяц={month}, год={year}")
+        logger.debug(f"Получено {len(budgets)} бюджетов для пользователя {user_id} с фильтром месяц={month}, год={year}")
         return await self.enrich_multiple(budgets, user_id, user_base_currency=user_base_currency)
 
     async def delete(self, user_id: uuid.UUID, budget_id: uuid.UUID) -> None:
@@ -123,7 +123,7 @@ class BudgetService:
         await self.db.delete(budget)
         await self.db.flush()
         await self.invalidate_etag(user_id)
-        logger.info(f"Бюджет удален: {budget_id}")
+        logger.info(f"Бюджет {budget_id} удалён пользователем {user_id}")
 
     async def delete_by_category_period(self, user_id: uuid.UUID, category: Category, month: int, year: int) -> bool:
         """Удалить бюджет по категории, месяцу и году."""
@@ -141,7 +141,7 @@ class BudgetService:
         await self.db.delete(budget)
         await self.db.flush()
         await self.invalidate_etag(user_id)
-        logger.info(f"Бюджет удален по категории и периоду: {category} ({month}/{year})")
+        logger.info(f"Бюджет {budget.id} ({category} {month}/{year}) удалён пользователем {user_id}")
         return True
 
     @staticmethod
@@ -150,7 +150,7 @@ class BudgetService:
         try:
             client = get_redis()
             await client.set(get_budgets_version_key(user_id), str(uuid.uuid4()))
-            logger.info(f"Инвалидирован ETag кэш бюджетов для пользователя {user_id}")
+            logger.debug(f"Инвалидирован ETag кэш бюджетов для пользователя {user_id}")
         except Exception as err:
             logger.warning(f"Не удалось обновить ключ budgets_version в Redis для {user_id}: {err}")
 

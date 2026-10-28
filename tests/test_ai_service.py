@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from datetime import datetime, timezone
@@ -115,6 +116,24 @@ class TestAIService:
         assert "лимитов бюджетов" in create_kwargs["config"].system_instruction
 
     @pytest.mark.asyncio
+    async def test_call_gemini_invalid_json_does_not_log_raw_response(self, caplog: pytest.LogCaptureFixture):
+        """При невалидном JSON от LLM ошибка содержит только длину ответа, сырой текст не логируется."""
+        mock_client = MagicMock(spec=genai.Client)
+        mock_response = MagicMock()
+        raw_text = "not a json: Обед в кафе 500 руб."
+        mock_response.text = raw_text
+        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+        service = AIService(db=MagicMock(), client=mock_client)
+
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(ValueError) as exc_info:
+                await service._call_gemini("summary", locale="ru", currency="KZT")
+
+        assert f"Длина ответа: {len(raw_text)}" in str(exc_info.value)
+        assert "Обед в кафе" not in str(exc_info.value)
+        assert not any("Обед в кафе" in record.getMessage() for record in caplog.records)
+
+    @pytest.mark.asyncio
     async def test_get_insights_placeholder_api_key_returns_utc_datetime(self):
         """Если API ключ - плейсхолдер, возвращается заглушка с timezone-aware UTC datetime."""
         mock_db = MagicMock()
@@ -157,7 +176,7 @@ class TestAIService:
         mock_client.aio.models.generate_content.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_get_insights_success_with_transactions(self):
+    async def test_get_insights_success_with_transactions(self, caplog: pytest.LogCaptureFixture):
         """Успешное получение инсайтов при наличии транзакций."""
         tx1 = MagicMock(spec=Transaction)
         tx1.date = datetime(2026, 10, 1, 12, 0)
@@ -181,10 +200,17 @@ class TestAIService:
 
         service = AIService(db=mock_db, client=mock_client)
 
+        user_id = uuid.uuid4()
         with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
             with patch("app.services.ai_service.redis_client.get", AsyncMock(return_value=None)):
-                result = await service.get_insights(uuid.uuid4())
+                with caplog.at_level(logging.INFO):
+                    result = await service.get_insights(user_id)
 
+        # Платный вызов LLM фиксируется в логе с user_id
+        assert any(
+            "Сгенерированы AI-инсайты" in record.getMessage() and str(user_id) in record.getMessage()
+            for record in caplog.records
+        )
         assert isinstance(result, InsightResponse)
         assert result.insights == [
             "Траты на еду в норме",

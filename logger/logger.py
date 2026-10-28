@@ -3,10 +3,15 @@
 import contextvars
 import logging
 import os
+import re
 import sys
+import uuid
 
 # Контекстная переменная для хранения сквозного ID запроса (Correlation ID / Request ID)
 request_id_ctx_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
+
+# Допустимый формат входящего ID запроса: значение попадает в каждую строку лога и в заголовок ответа
+REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9-]{1,64}")
 
 
 class RequestIdFilter(logging.Filter):
@@ -36,6 +41,38 @@ def set_request_id(req_id: str) -> contextvars.Token:
         contextvars.Token: Токен для последующего сброса контекста.
     """
     return request_id_ctx_var.set(req_id)
+
+
+def normalize_request_id(raw: str | None) -> str:
+    """Вернуть входящий ID запроса, если он безопасен для логов, иначе сгенерировать новый UUID.
+
+    Ограничение длины и алфавита защищает логи от подделки строк (переводы строк, разделители
+    формата) и от раздувания записей произвольными данными клиента.
+
+    Аргументы:
+        raw (str | None): Значение заголовка X-Request-ID / X-Correlation-ID.
+
+    Возвращает:
+        str: Исходное значение или новый UUID4.
+    """
+    if raw and REQUEST_ID_PATTERN.fullmatch(raw):
+        return raw
+    return str(uuid.uuid4())
+
+
+def mask_email(email: str) -> str:
+    """Замаскировать email для логов: первая буква локальной части и домен (j***@gmail.com).
+
+    Аргументы:
+        email (str): Адрес электронной почты.
+
+    Возвращает:
+        str: Маскированный адрес; при отсутствии домена — только '***'.
+    """
+    local, sep, domain = email.rpartition("@")
+    if not sep or not local or not domain:
+        return "***"
+    return f"{local[0]}***@{domain}"
 
 
 def reset_request_id(token: contextvars.Token) -> None:
