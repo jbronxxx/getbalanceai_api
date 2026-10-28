@@ -338,7 +338,8 @@ finance_app/
 * **Визуализация (Grafana)**:
   * В Grafana настроен автоматический провижининг (provisioning) источников данных (Loki и Prometheus).
   * Предустановлены готовые дашборды для метрик API (FastAPI), утилизации ресурсов контейнеров (cAdvisor) и просмотра логов приложения (Loki).
-  * Версия Grafana 9.x используется для обеспечения стабильной поддержки Angular-плагинов, используемых в классических комьюнити-дашбордах мониторинга.
+  * Версия Grafana 11.x; поддержка Angular выключена (`GF_SECURITY_ANGULAR_SUPPORT_ENABLED=false`), дашборды используют только React-панели (`timeseries`, `stat`, `table`, `bargauge`, `logs`). Панели `graph`/`singlestat`/`table-old` из импортированных комьюнити-дашбордов в `grafana/dashboards` не добавлять — их нужно конвертировать.
+  * Обновление Grafana необратимо мигрирует схему её базы в томе `grafana_data`: перед сменой версии снимается копия тома (`scripts/backup_grafana.sh`), откат на старый образ — только с восстановлением этой копии.
   * Доступ: порт 3000 опубликован только на `127.0.0.1`; на проде Grafana открыта через nginx по HTTPS на поддомене `grafana.getbalanceai.app` (`GF_SERVER_ROOT_URL` в `docker-compose.prod.yml`). Перед Grafana nginx требует basic auth (`nginx/htpasswd`, только на сервере), заголовок `Authorization` в Grafana не передаётся. Анонимный доступ и саморегистрация отключены, учётки выдаёт администратор; роль Viewer видит только дашборды, без Explore (`GF_USERS_VIEWERS_CAN_EDIT=false`). Права на источники данных по ролям в Grafana OSS нет: Viewer может выполнить произвольный запрос к Loki/Prometheus через `/api/ds/query`.
   * Состояние Grafana (пользователи, роли) хранится в томе `grafana_data`; дашборды провижинятся из `grafana/dashboards` (монтируются в `/etc/grafana/dashboards`).
 * **Сетевой периметр (прод)**:
