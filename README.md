@@ -251,6 +251,8 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000 --timeout-keep-alive 75
 * **ReDoc документация:** [http://localhost:8000/redoc](http://localhost:8000/redoc)
 * **Проверка статуса сервиса:** [http://localhost:8000/health](http://localhost:8000/health)
 
+На проде `/docs`, `/redoc` и `/openapi.json` открываются только по учётке basic auth (см. «Доступ к служебным ресурсам»), `/metrics` снаружи закрыт; сам API (`/api/v1/...`) работает без изменений.
+
 ### Основные API-эндпоинты:
 - **Аутентификация (`/api/v1/auth`):**
   - `POST /api/v1/auth/register` — регистрация пользователя
@@ -279,12 +281,28 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000 --timeout-keep-alive 75
 
 В проект встроена инфраструктура для сбора логов и метрик:
 * **Grafana** (Дашборды и визуализация) — локально `http://localhost:3000`, на проде `https://grafana.getbalanceai.app` (порт 3000 опубликован только на `127.0.0.1`, снаружи доступ лишь через nginx). Анонимный доступ и саморегистрация отключены. Логин/пароль администратора — `GRAFANA_ADMIN_USER` и `GRAFANA_ADMIN_PASSWORD` в `.env` (пароль обязателен); они применяются только при первом создании тома `grafana_data`, позже пароль меняется командой `docker compose exec grafana grafana-cli admin reset-admin-password <пароль>`.
-  * Учётки для команды создаёт администратор: **Administration → Users → New user** (роль по умолчанию — Viewer). Viewer видит дашборды и Explore, может менять панели в браузере, но не сохранять их (`GF_USERS_VIEWERS_CAN_EDIT=true`).
+  * Учётки для команды создаёт администратор: **Administration → Users → New user** (роль по умолчанию — Viewer). Viewer видит только дашборды, без Explore (`GF_USERS_VIEWERS_CAN_EDIT=false`); для свободных запросов к логам нужна роль Editor. Это ограничение интерфейса: в Grafana OSS любой вошедший пользователь может выполнить запрос к источникам данных через HTTP API (`/api/ds/query`), поэтому учётку Grafana выдают только тем, кому допустимо видеть логи целиком.
   * Первичный выпуск сертификата для поддомена: `docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm --entrypoint certbot certbot certonly --webroot -w /var/www/certbot -d grafana.getbalanceai.app`.
 * **Loki + Promtail** — автоматический сбор всех логов контейнеров.
 * **Prometheus + cAdvisor** — сбор системных метрик контейнеров (CPU, RAM) и метрик самого приложения FastAPI (`/metrics`).
 
 Базовые дашборды для метрик и логов уже преднастроены и доступны в Grafana сразу после запуска контейнеров!
+
+### Доступ к служебным ресурсам на проде (basic auth)
+Grafana и документация API (`/docs`, `/redoc`, `/openapi.json`) закрыты в nginx логином и паролем basic auth — это отдельный вход перед логином Grafana. Учётки хранятся в `nginx/htpasswd` на сервере (в git не попадает); без этого файла деплой останавливается.
+
+```bash
+cd /opt/getbalanceai_api
+# Добавить учётку (по одной на человека; пароль сохраняется bcrypt-хешем)
+docker run --rm httpd:2.4-alpine htpasswd -nbB <логин> '<пароль>' >> nginx/htpasswd
+chmod 644 nginx/htpasswd
+# Отозвать доступ — удалить строку пользователя
+sed -i '/^<логин>:/d' nginx/htpasswd
+```
+
+Изменения файла применяются сразу, перезапуск nginx не нужен. В Postman схема импортируется по ссылке `https://api.getbalanceai.app/openapi.json` с авторизацией Basic Auth.
+
+Снаружи сервер отвечает только на `api.getbalanceai.app` и `grafana.getbalanceai.app` (порты 80/443); запросы по IP отклоняются. Остальные порты контейнеров опубликованы лишь на `127.0.0.1`. Порт API задаётся `APP_BIND` (по умолчанию `127.0.0.1`); `0.0.0.0` допустим только локально, например для теста с телефона. Монтирование кода в контейнер (`docker-compose.override.yml`) подключается только при локальном `docker compose` без `-f`, поэтому на сервере все команды выполняются с `-f docker-compose.yml -f docker-compose.prod.yml`.
 
 ---
 

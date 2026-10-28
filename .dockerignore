@@ -1,0 +1,23 @@
+# Секреты и персональные данные не должны попадать в образ
+.env
+.env.*
+backups/
+nginx/htpasswd
+
+# Служебное, не нужное в образе
+.git/
+.github/
+.claude/
+.agents/
+.agent/
+.venv/
+venv/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.log
+.idea/
+.vscode/
+.DS_Store

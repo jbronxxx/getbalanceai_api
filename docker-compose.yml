@@ -6,10 +6,9 @@ services:
         max-size: "10m"
         max-file: "3"
     build: .
+    # По умолчанию API доступен только с хоста; снаружи — через nginx. Для теста с телефона в LAN: APP_BIND=0.0.0.0
     ports:
-      - "0.0.0.0:${APP_PORT:-8000}:8000"
-    volumes:
-      - .:/app
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8000}:8000"
     env_file:
       - .env
     environment:
@@ -90,7 +89,7 @@ services:
     volumes:
       - /var/log:/var/log
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./promtail:/etc/promtail
     command: -config.file=/etc/promtail/config.yml
     restart: unless-stopped
@@ -111,7 +110,7 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
       - GF_AUTH_ANONYMOUS_ENABLED=false
       - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_USERS_VIEWERS_CAN_EDIT=true
+      - GF_USERS_VIEWERS_CAN_EDIT=false
       - GF_PANELS_DISABLE_ANGULAR_PANELS=false
       - GF_SECURITY_ANGULAR_SUPPORT_ENABLED=true
     volumes:

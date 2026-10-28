@@ -8,6 +8,7 @@
 *.crt
 credentials.json
 secrets/
+nginx/htpasswd
 
 # Architecture & sensitive documentation
 ARCHITECTURE.md
