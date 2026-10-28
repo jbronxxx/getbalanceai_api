@@ -212,7 +212,8 @@ finance_app/
 │   ├── test_observability.py   # Тесты healthcheck и сквозного Correlation ID
 │   ├── test_public_pages.py    # Тесты публичных страниц (/privacy, /terms, /delete-account)
 │   ├── test_redis_module.py    # Модульные тесты централизованного клиента и ключей Redis
-│   ├── test_security.py        # Тесты CORS, Rate Limiting и сложности паролей
+│   ├── test_oauth_verification.py # Проверка ID-токенов Google/Apple на реальной RSA-подписи (aud, iss, email_verified)
+│   ├── test_security.py        # Тесты CORS, Rate Limiting, ключа лимитера, сложности паролей и prod-настроек
 │   ├── test_sync.py            # Интеграционные тесты офлайн-синхронизации
 │   ├── test_transaction_service.py # Тесты сервиса транзакций
 │   ├── test_transactions.py    # Тесты транзакций и кэширования инсайтов
@@ -266,16 +267,19 @@ finance_app/
    * **Stateless JWT**: `access_token` не сохраняется в базу данных и валидируется криптографически без обращения к СУБД. При логауте токен добавляется в in-memory Denylist.
    * Реализован паттерн **Refresh Token Rotation**: при обновлении токена старый refresh-токен помечается в БД как `revoked`, а клиенту выдается новая пара токенов.
    * **OAuth и синхронизация профиля**:
-     * При входе через Google (`POST /api/v1/auth/google`) и Apple (`POST /api/v1/auth/apple`) проверяются криптографические подписи токенов провайдеров.
+     * При входе через Google (`POST /api/v1/auth/google`) и Apple (`POST /api/v1/auth/apple`) проверяются подпись (JWKS провайдера), срок, `aud` и `iss` ID-токена (`AuthService._decode_oauth_token`). `aud` должен совпасть с одним из client ID из `GOOGLE_CLIENT_ID` / `APPLE_CLIENT_ID` (список через запятую — Android, iOS, Web); без настроенных client ID вход через провайдера отклоняется. `iss`: Google — `accounts.google.com` или `https://accounts.google.com`, Apple — `https://appleid.apple.com`. Для Google дополнительно требуется `email_verified=true`.
      * Эндпоинт Google поддерживает опциональные поля `avatar_url` и `name` в теле запроса в качестве fallback при кешировании ID-токена Google Play Services / GIS на мобильном клиенте.
      * При наличии нового аватара `user.avatar_url` автоматически обновляется в БД. Если имя пользователя оставалось дефолтным (префикс email), оно актуализируется на реальное имя из Google.
      * `TokenResponse` возвращает профиль `user` (`UserResponse`), что позволяет клиенту мгновенно получить актуальное состояние аккаунта без дополнительного запроса к `/me`.
 
 4. **Безопасность и ограничение частоты запросов (Security & Rate Limiting)**:
-   * **CORS Middleware**: Подключен `CORSMiddleware` с параметризацией разрешенных ориджинов, методов и заголовков через `app_config.yaml` и переменные окружения (`CORS_ORIGINS`, `CORS_ALLOW_METHODS`, `CORS_ALLOW_HEADERS`).
+   * **CORS Middleware**: Подключен `CORSMiddleware` с параметризацией разрешенных ориджинов, методов и заголовков через `app_config.yaml` и переменные окружения (`CORS_ORIGINS`, `CORS_ALLOW_METHODS`, `CORS_ALLOW_HEADERS`). `CORS_ALLOW_CREDENTIALS` по умолчанию `false`: клиенты авторизуются Bearer-токеном, cookie не используются.
    * **Rate Limiting**: Используется `slowapi` для защиты критичных эндпоинтов авторизации (`/register`, `/login` — 5 запросов/мин) и ресурсоемких AI-инсайтов (`/insights` — 10 запросов/мин). При превышении возвращается стандартизированный `ErrorResponse` с HTTP 429 и кодом `RATE_LIMIT_EXCEEDED`.
+     * Ключ лимита — `user:<sub>` только из access-токена с проверенной подписью и сроком (`app/limiter.py`), иначе IP клиента: поддельный `sub` не даёт отдельного счётчика.
+     * IP клиента за nginx: nginx перезаписывает `X-Forwarded-For` значением `$remote_addr`, gunicorn запущен с `--forwarded-allow-ips "*"` (gunicorn 23 не принимает подсеть CIDR; порт 8000 доступен только из сети Docker и с хоста).
+     * Счётчики хранятся в `RATE_LIMIT_STORAGE_URI` (в docker-compose — Redis, общий для 4 воркеров gunicorn; по умолчанию `memory://`, например в тестах). При недоступности Redis лимиты временно считаются в памяти воркера (`in_memory_fallback_enabled`), запросы не падают.
    * **Валидация сложности паролей**: Пароли при регистрации ограничены 72 байтами (жесткий лимит алгоритма bcrypt) и валидируются на наличие хотя бы одной буквы и одной цифры.
-   * **Защита продакшн-конфигурации**: При старте приложения в режиме `debug=False` блокируется запуск с дефолтным секретным ключом `SECRET_KEY`.
+   * **Защита продакшн-конфигурации**: `APP_DEBUG` по умолчанию `false`. При старте в режиме `debug=False` блокируется запуск с дефолтным или пустым `SECRET_KEY`, без `GOOGLE_CLIENT_ID` (`APPLE_CLIENT_ID` необязателен — без него вход через Apple отклоняется) и с `CORS_ORIGINS=*` вместе с `CORS_ALLOW_CREDENTIALS=true`.
 
 5. **Управление транзакциями и пулом соединений (Unit of Work, get_db & Pool Resilience)**:
    * **Чистый слой сервисов**: Сервисы (`TransactionService`, `BudgetService`, `AuthService`) не управляют состоянием транзакции напрямую (`commit`/`rollback`), а только оперируют объектами (`db.add()`, `db.delete()`, `db.flush()`).

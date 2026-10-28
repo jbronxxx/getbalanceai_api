@@ -14,6 +14,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base, get_db
 from app.models.models import User
 from app.services.auth_service import AuthService
+from config_reader.config_reader import config
 from main import app
 
 # Создаем in-memory базу SQLite с пулом StaticPool
@@ -36,6 +37,13 @@ async def setup_test_db():
     yield
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+
+
+@pytest.fixture(autouse=True)
+def oauth_client_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Client ID Google/Apple, под которые выпускаются тестовые ID-токены провайдеров."""
+    monkeypatch.setattr(config, "google_client_ids", ["test-google-android", "test-google-ios"])
+    monkeypatch.setattr(config, "apple_client_ids", ["test.apple.bundle"])
 
 
 @pytest_asyncio.fixture

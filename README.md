@@ -67,8 +67,10 @@ docker compose up --build -d
 
 ### 3. Запуск в Production (на боевом сервере с Nginx и SSL)
 Перед запуском в production убедитесь, что вы подготовили `.env` файл:
-1. Обязательно установите `APP_DEBUG=false` и `LOG_LEVEL=INFO`.
+1. Установите `APP_DEBUG=false` (значение по умолчанию) и `LOG_LEVEL=INFO`. Для локальной разработки в `.env` нужен `APP_DEBUG=true`.
 2. Сгенерируйте криптографически стойкий секретный ключ командой `openssl rand -hex 32` и вставьте его в `SECRET_KEY`.
+3. Задайте `GOOGLE_CLIENT_ID` — client ID через запятую, который приходит в `aud` токена (обычно Web client ID). Без него приложение в production не стартует. `APPLE_CLIENT_ID` (Bundle ID, Services ID) необязателен: пока он пуст, вход через Apple отклоняется.
+4. Если нужен CORS с `CORS_ALLOW_CREDENTIALS=true`, перечислите домены в `CORS_ORIGINS`: сочетание с `*` в production запрещено.
 
 Для запуска на боевом сервере с Reverse Proxy (Nginx) и сертификатами (Certbot):
 1. Отредактируйте файл `nginx/conf.d/default.conf` и убедитесь, что там указан ваш домен (например, `api.getbalanceai.app`).
@@ -333,7 +335,7 @@ pytest --cov=app --cov-report=term-missing tests/
 
 Проект защищен от попадания нерабочего кода:
 1. **Git pre-push hook:** Автоматически запускает тесты локально при `git push`.
-2. **Docker Multi-stage build:** В `Dockerfile` есть этап тестирования. Контейнер не соберется, если тесты упадут.
+2. **CI (`.github/workflows/main.yml`):** линтеры и тесты на каждый PR и push в `main`; автодеплой запускается только после успешного CI. В `Dockerfile` тесты не выполняются.
 3. Полный список тестовых проверок, как ручных, так и автоматизированных, находится в документе [**TEST_CHECKLIST.md**](TEST_CHECKLIST.md).
 
 ---

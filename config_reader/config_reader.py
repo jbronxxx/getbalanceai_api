@@ -1,16 +1,18 @@
 """Модуль чтения и валидации конфигурации приложения."""
 
 import os
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+DEFAULT_SECRET_KEY = "change-me-in-production-use-long-random-string"
 
 
 class Settings(BaseSettings):
     """Класс-контейнер для хранения всех настроек приложения."""
 
-    debug: bool = Field(True, alias="APP_DEBUG")
+    debug: bool = Field(False, alias="APP_DEBUG")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     host: str = Field("0.0.0.0", alias="APP_HOST")
     port: int = Field(8000, alias="APP_PORT")
@@ -25,13 +27,14 @@ class Settings(BaseSettings):
     db_pool_recycle: int = Field(1800, alias="DB_POOL_RECYCLE")
     db_pool_pre_ping: bool = Field(True, alias="DB_POOL_PRE_PING")
 
-    secret_key: str = Field("change-me-in-production-use-long-random-string", alias="SECRET_KEY")
+    secret_key: str = Field(DEFAULT_SECRET_KEY, alias="SECRET_KEY")
     algorithm: str = Field("HS256", alias="AUTH_ALGORITHM")
     access_token_expire_minutes: int = Field(60, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
     refresh_token_expire_days: int = Field(7, alias="REFRESH_TOKEN_EXPIRE_DAYS")
 
     cors_origins: list[str] = Field(["*"], alias="CORS_ORIGINS")
-    cors_allow_credentials: bool = Field(True, alias="CORS_ALLOW_CREDENTIALS")
+    # Клиенты авторизуются Bearer-токеном, cookie не используются, поэтому credentials по умолчанию выключены
+    cors_allow_credentials: bool = Field(False, alias="CORS_ALLOW_CREDENTIALS")
     cors_allow_methods: list[str] = Field(["*"], alias="CORS_ALLOW_METHODS")
     cors_allow_headers: list[str] = Field(["*"], alias="CORS_ALLOW_HEADERS")
 
@@ -40,9 +43,12 @@ class Settings(BaseSettings):
     ai_daily_limit_per_user: int = Field(5, alias="AI_DAILY_LIMIT_PER_USER")
 
     redis_url: str = Field("redis://localhost:6379/0", alias="REDIS_URL")
+    # Хранилище счётчиков rate limiting; в Docker — Redis, чтобы лимит был общим для всех воркеров gunicorn
+    rate_limit_storage_uri: str = Field("memory://", alias="RATE_LIMIT_STORAGE_URI")
 
-    google_client_id: str | None = Field(None, alias="GOOGLE_CLIENT_ID")
-    apple_client_id: str | None = Field(None, alias="APPLE_CLIENT_ID")
+    # Client ID приложений (Android/iOS/Web) через запятую; токен принимается, если его aud совпадает с любым из них
+    google_client_ids: Annotated[list[str], NoDecode] = Field([], alias="GOOGLE_CLIENT_ID")
+    apple_client_ids: Annotated[list[str], NoDecode] = Field([], alias="APPLE_CLIENT_ID")
 
     currency_rates_url: str = Field("https://open.er-api.com/v6/latest/USD", alias="CURRENCY_RATES_URL")
     currency_rates_cache_ttl: int = Field(86400, alias="CURRENCY_RATES_CACHE_TTL")
@@ -112,12 +118,34 @@ class Settings(BaseSettings):
             return [i.strip() for i in v.split(",") if i.strip()]
         return v
 
+    @field_validator("google_client_ids", "apple_client_ids", mode="before")
+    @classmethod
+    def assemble_client_ids(cls, v: Any) -> list[str]:
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [i.strip() for i in v.split(",") if i.strip()]
+        return v
+
     @model_validator(mode="after")
     def validate_security(self) -> "Settings":
-        if not self.debug and (not self.secret_key or self.secret_key == "change-me-in-production-use-long-random-string"):
+        if self.debug:
+            return self
+        if not self.secret_key or self.secret_key == DEFAULT_SECRET_KEY:
             raise ValueError(
                 "Недопустимо использовать значение по умолчанию для SECRET_KEY в production режиме (debug=False). "
                 "Задайте криптографически стойкий SECRET_KEY через переменные окружения."
+            )
+        # APPLE_CLIENT_ID необязателен: без него вход через Apple отклоняется (iOS-клиента пока нет)
+        if not self.google_client_ids:
+            raise ValueError(
+                "В production режиме (debug=False) обязателен GOOGLE_CLIENT_ID: "
+                "без него нельзя проверить, что токен Google выпущен для нашего приложения."
+            )
+        if "*" in self.cors_origins and self.cors_allow_credentials:
+            raise ValueError(
+                "В production режиме (debug=False) нельзя сочетать CORS_ORIGINS=* с CORS_ALLOW_CREDENTIALS=true: "
+                "браузер отправит учётные данные на запросы с любого сайта. Перечислите домены в CORS_ORIGINS."
             )
         return self
 
