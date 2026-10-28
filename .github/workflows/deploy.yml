@@ -44,7 +44,9 @@ jobs:
             printf '%s\n' "$PROD_ENV_FILE" | $SSH_CMD "$SSH_USER@$SSH_HOST" "cat > /opt/getbalanceai_api/.env"
           fi
 
-          # Выполняем деплой на сервере
+          # Выполняем деплой на сервере. Скрипт приходит через stdin (heredoc), а docker compose run/exec по умолчанию
+          # читают stdin и забирают остаток скрипта себе: деплой молча завершается с кодом 0. Поэтому всем командам,
+          # которые запускают docker compose run/exec (в том числе через scripts/), передаётся </dev/null
           $SSH_CMD "$SSH_USER@$SSH_HOST" << 'EOF'
             set -e
             cd /opt/getbalanceai_api
@@ -61,21 +63,24 @@ jobs:
 
             # Снимаем бэкап БД перед миграциями: downgrade части миграций необратимо теряет данные,
             # поэтому откат выполняется восстановлением этой копии. При ошибке бэкапа деплой останавливается (set -e)
-            ./scripts/backup_db.sh predeploy
+            ./scripts/backup_db.sh predeploy </dev/null
 
-            # Применяем миграции базы данных перед запуском сервисов
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api alembic upgrade head
+            # Сначала собираем образ api: run не пересобирает образ, и миграции выполнились бы старым кодом
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml build api
 
-            # Пересобираем образ api и всегда пересоздаём его контейнер: код читается gunicorn только при старте,
+            # Применяем миграции базы данных новым образом до перезапуска сервисов
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm -T api alembic upgrade head </dev/null
+
+            # Всегда пересоздаём контейнер api: код читается gunicorn только при старте,
             # поэтому без пересоздания процесс продолжает работать на старой версии
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d --no-deps --force-recreate api
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --no-deps --force-recreate api
 
             # Поднимаем остальные сервисы (пересоздаются только те, у кого изменился образ или конфигурация)
             docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
             # Применяем конфигурацию Nginx без простоя (при ошибке синтаксиса деплой завершится с ошибкой, старый конфиг продолжит работать)
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T nginx nginx -t
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T nginx nginx -s reload
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T nginx nginx -t </dev/null
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T nginx nginx -s reload </dev/null
 
             # Очищаем старые неиспользуемые образы Docker для экономии места
             docker image prune -f
