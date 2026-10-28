@@ -28,8 +28,9 @@ echo "Начинаем создание резервной копии базы �
 cd "$PROJECT_DIR"
 
 # Мы используем 'docker compose exec -T' чтобы можно было запускать скрипт из cron (без TTY).
-# Пользователь и имя БД берутся из окружения контейнера (POSTGRES_USER/POSTGRES_DB из .env), а не зашиты в скрипт
-docker compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' > "$BACKUP_FILE"
+# Пользователь и имя БД берутся из окружения контейнера (POSTGRES_USER/POSTGRES_DB из .env), а не зашиты в скрипт.
+# stdin закрыт: exec иначе забирает его себе, а при вызове из деплоя это остаток скрипта деплоя
+docker compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' </dev/null > "$BACKUP_FILE"
 
 if [ $? -eq 0 ]; then
     echo "Резервное копирование успешно завершено: $BACKUP_FILE"
