@@ -54,6 +54,8 @@ class AuthService:
     bearer_scheme = HTTPBearer()
 
     _revoked_jtis: set[str] = set()
+    # Клиенты JWKS живут на уровне класса: сервис создаётся на каждый запрос, и в атрибуте экземпляра
+    # кэш ключей провайдера терялся бы, заставляя скачивать их при каждом входе
     _google_jwks_client: PyJWKClient | None = None
     _apple_jwks_client: PyJWKClient | None = None
 
@@ -242,14 +244,14 @@ class AuthService:
     async def google_login(self, payload: GoogleSignInRequest) -> TokenResponse:
         try:
             # Получаем кэшированный клиент JWKS для Google
-            if self._google_jwks_client is None:
-                self._google_jwks_client = PyJWKClient(
+            if AuthService._google_jwks_client is None:
+                AuthService._google_jwks_client = PyJWKClient(
                     "https://www.googleapis.com/oauth2/v3/certs",
                     cache_jwk_set=True,
                     lifespan=3600,
                 )
             data = await self._decode_oauth_token(
-                payload.id_token, self._google_jwks_client, config.google_client_ids, GOOGLE_ISSUERS
+                payload.id_token, AuthService._google_jwks_client, config.google_client_ids, GOOGLE_ISSUERS
             )
 
             email = data.get("email")
@@ -270,14 +272,14 @@ class AuthService:
     async def apple_login(self, payload: AppleSignInRequest) -> TokenResponse:
         try:
             # Получаем кэшированный клиент JWKS для Apple
-            if self._apple_jwks_client is None:
-                self._apple_jwks_client = PyJWKClient(
+            if AuthService._apple_jwks_client is None:
+                AuthService._apple_jwks_client = PyJWKClient(
                     "https://appleid.apple.com/auth/keys",
                     cache_jwk_set=True,
                     lifespan=3600,
                 )
             data = await self._decode_oauth_token(
-                payload.identity_token, self._apple_jwks_client, config.apple_client_ids, APPLE_ISSUERS
+                payload.identity_token, AuthService._apple_jwks_client, config.apple_client_ids, APPLE_ISSUERS
             )
 
             email = data.get("email")
