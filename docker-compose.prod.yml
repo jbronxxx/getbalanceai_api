@@ -13,6 +13,8 @@ services:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - certbot_www:/var/www/certbot
       - certbot_certs:/etc/letsencrypt
+      # Учётки basic auth для Grafana и Swagger; файл создаётся на сервере вручную и не хранится в git
+      - ./nginx/htpasswd:/etc/nginx/htpasswd:ro
     depends_on:
       - api
     restart: unless-stopped
