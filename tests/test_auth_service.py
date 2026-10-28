@@ -177,6 +177,8 @@ class TestAuthServiceUnit:
     async def test_google_login_success(self, mock_jwt_decode, mock_jwk_client, db_session: AsyncSession):
         mock_jwt_decode.return_value = {
             "email": "googleuser@example.com",
+            "iss": "https://accounts.google.com",
+            "email_verified": True,
             "name": "Google User",
             "picture": "https://example.com/avatar.png",
         }
@@ -207,6 +209,8 @@ class TestAuthServiceUnit:
         """Проверка fallback на avatar_url и name из payload при их отсутствии в Google JWT."""
         mock_jwt_decode.return_value = {
             "email": "fallbackuser@example.com",
+            "iss": "https://accounts.google.com",
+            "email_verified": True,
             "name": None,
             "picture": None,
         }
@@ -238,6 +242,8 @@ class TestAuthServiceUnit:
         """Повторный вход через Google обновляет аватар и имя существующего пользователя."""
         mock_jwt_decode.return_value = {
             "email": "repeatuser@example.com",
+            "iss": "https://accounts.google.com",
+            "email_verified": True,
             "name": None,
             "picture": None,
         }
@@ -252,6 +258,8 @@ class TestAuthServiceUnit:
         # 2. Повторный вход с установленным аватаром и именем
         mock_jwt_decode.return_value = {
             "email": "repeatuser@example.com",
+            "iss": "https://accounts.google.com",
+            "email_verified": True,
             "name": "Updated Repeat User",
             "picture": "https://example.com/updated_avatar.png",
         }
@@ -276,6 +284,8 @@ class TestAuthServiceUnit:
         """Проверка того, что переданный клиентом avatar_url имеет приоритет над старым picture в JWT."""
         mock_jwt_decode.return_value = {
             "email": "stale_jwt_user@example.com",
+            "iss": "https://accounts.google.com",
+            "email_verified": True,
             "name": "Old JWT Name",
             "picture": "https://example.com/old_stale_avatar.png",
         }
@@ -302,7 +312,7 @@ class TestAuthServiceUnit:
     @patch("app.services.auth_service.PyJWKClient")
     @patch("app.services.auth_service.jwt.decode")
     async def test_apple_login_success(self, mock_jwt_decode, mock_jwk_client, db_session: AsyncSession):
-        mock_jwt_decode.return_value = {"email": "appleuser@example.com"}
+        mock_jwt_decode.return_value = {"email": "appleuser@example.com", "iss": "https://appleid.apple.com"}
 
         service = AuthService(db_session)
         payload = AppleSignInRequest(identity_token="mock_id_token")

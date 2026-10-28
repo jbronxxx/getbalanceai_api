@@ -43,6 +43,10 @@ logger = get_logger(__name__)
 # Схема Bearer токена для извлечения заголовка Authorization
 bearer_scheme = HTTPBearer()
 
+# Допустимые значения claim iss в ID-токенах провайдеров
+GOOGLE_ISSUERS = ("accounts.google.com", "https://accounts.google.com")
+APPLE_ISSUERS = ("https://appleid.apple.com",)
+
 
 class AuthService:
     """Класс бизнес-логики для регистрации, входа и управления токенами пользователей."""
@@ -244,21 +248,16 @@ class AuthService:
                     cache_jwk_set=True,
                     lifespan=3600,
                 )
-            signing_key = await asyncio.to_thread(self._google_jwks_client.get_signing_key_from_jwt, payload.id_token)
-
-            # Если в конфигурации задан client_id, проверяем audience
-            audience = config.google_client_id if config.google_client_id else None
-            data = jwt.decode(
-                payload.id_token,
-                signing_key.key,
-                algorithms=["RS256"],
-                audience=audience,
-                options={"verify_aud": bool(audience)},
+            data = await self._decode_oauth_token(
+                payload.id_token, self._google_jwks_client, config.google_client_ids, GOOGLE_ISSUERS
             )
 
             email = data.get("email")
             if not email:
                 raise ValueError("Email not provided by Google")
+            # Google отдаёт email_verified булевым значением, в старых токенах — строкой
+            if data.get("email_verified") not in (True, "true"):
+                raise ValueError("Google email is not verified")
 
             name = payload.name or data.get("name") or email.split("@")[0]
             picture = payload.avatar_url or data.get("picture")
@@ -277,15 +276,8 @@ class AuthService:
                     cache_jwk_set=True,
                     lifespan=3600,
                 )
-            signing_key = await asyncio.to_thread(self._apple_jwks_client.get_signing_key_from_jwt, payload.identity_token)
-
-            audience = config.apple_client_id if config.apple_client_id else None
-            data = jwt.decode(
-                payload.identity_token,
-                signing_key.key,
-                algorithms=["RS256"],
-                audience=audience,
-                options={"verify_aud": bool(audience)},
+            data = await self._decode_oauth_token(
+                payload.identity_token, self._apple_jwks_client, config.apple_client_ids, APPLE_ISSUERS
             )
 
             email = data.get("email")
@@ -298,6 +290,32 @@ class AuthService:
         except Exception as e:
             logger.error(f"Apple login failed: {str(e)}")
             raise UnauthorizedException(code=ErrorCode.INVALID_CREDENTIALS, message="Недействительный токен Apple")
+
+    @staticmethod
+    async def _decode_oauth_token(
+        token: str, jwks_client: PyJWKClient, audiences: list[str], issuers: tuple[str, ...]
+    ) -> dict:
+        """Проверить подпись, срок, audience и issuer ID-токена внешнего провайдера.
+
+        Токен принимается, только если выпущен ожидаемым провайдером (iss) для одного из
+        наших приложений (aud). Без настроенных client ID вход отклоняется: иначе подошёл бы
+        токен, выпущенный провайдером для любого стороннего приложения.
+        """
+        if not audiences:
+            raise ValueError("OAuth client ID is not configured")
+
+        signing_key = await asyncio.to_thread(jwks_client.get_signing_key_from_jwt, token)
+        data = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=audiences,
+            options={"require": ["exp", "iat", "iss", "aud"]},
+        )
+        # PyJWT 2.8 сверяет iss только с одной строкой, а у Google два допустимых значения
+        if data.get("iss") not in issuers:
+            raise ValueError("Invalid token issuer")
+        return data
 
     def logout(self, user_id: uuid.UUID, token_string: str) -> None:
         """Выйти из системы, деактивировать токен синхронно.

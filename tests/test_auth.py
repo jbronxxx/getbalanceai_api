@@ -270,6 +270,8 @@ class TestGoogleAuthEndpoint:
         """Успешная авторизация через Google возвращает токены и объект профиля пользователя."""
         mock_jwt_decode.return_value = {
             "email": "api_google_user@example.com",
+            "iss": "https://accounts.google.com",
+            "email_verified": True,
             "name": "API Google User",
             "picture": "https://lh3.googleusercontent.com/avatar.png",
         }
@@ -296,6 +298,8 @@ class TestGoogleAuthEndpoint:
         """Передача avatar_url и name в теле запроса работает как fallback, если в Google JWT они отсутствуют."""
         mock_jwt_decode.return_value = {
             "email": "fallback_api_user@example.com",
+            "iss": "https://accounts.google.com",
+            "email_verified": True,
             "name": None,
             "picture": None,
         }
