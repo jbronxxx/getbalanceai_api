@@ -318,6 +318,11 @@ class CurrencyService:
                 if len(extracted) == len(SUPPORTED_CURRENCIES):
                     logger.info("Котировки валют успешно загружены из внешнего шлюза")
                     return extracted
+                logger.warning(
+                    "Шлюз котировок вернул неполный набор валют: %s из %s", len(extracted), len(SUPPORTED_CURRENCIES)
+                )
+            else:
+                logger.warning("Шлюз котировок ответил статусом %s", res.status_code)
         except Exception as e:
             logger.warning("Не удалось получить курсы валют из внешнего шлюза %s: %s", self.gateway_url, e)
         return None
@@ -362,6 +367,6 @@ class CurrencyService:
                 await client.setex(key, ttl, dumped)
             else:
                 await client.set(key, dumped)
-            logger.info("Кэш котировок валют успешно сохранен в Redis (%s, ttl=%s)", key, ttl)
+            logger.debug("Кэш котировок валют сохранен в Redis (%s, ttl=%s)", key, ttl)
         except Exception as err:
             logger.warning("Не удалось сохранить кэш котировок в Redis (%s): %s", key, err)

@@ -5,7 +5,6 @@
 """
 
 import asyncio
-import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request, Response
@@ -25,7 +24,12 @@ from app.routers import auth, budgets, currencies, insights, public, sync, trans
 from app.schemas.schemas import ErrorResponse
 from app.tasks.token_cleanup import periodic_token_cleanup
 from config_reader.config_reader import config
-from logger.logger import get_logger, reset_request_id, set_request_id
+from logger.logger import (
+    get_logger,
+    normalize_request_id,
+    reset_request_id,
+    set_request_id,
+)
 
 logger = get_logger(__name__)
 
@@ -99,7 +103,7 @@ app.add_middleware(
 @app.middleware("http")
 async def correlation_id_middleware(request: Request, call_next):
     """Middleware для сквозной трассировки запросов через X-Request-ID."""
-    request_id = request.headers.get("X-Request-ID") or request.headers.get("X-Correlation-ID") or str(uuid.uuid4())
+    request_id = normalize_request_id(request.headers.get("X-Request-ID") or request.headers.get("X-Correlation-ID"))
     token = set_request_id(request_id)
     try:
         response: Response = await call_next(request)
@@ -188,7 +192,7 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     """Обработчик неожиданных серверных исключений (500)."""
-    logger.error(f"Неожиданная ошибка: {str(exc)}", exc_info=True)
+    logger.error(f"Неожиданная ошибка при обработке {request.method} {request.url.path}: {exc}", exc_info=True)
     error_response = ErrorResponse(
         status="error",
         code=ErrorCode.INTERNAL_SERVER_ERROR,

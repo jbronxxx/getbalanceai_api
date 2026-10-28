@@ -36,7 +36,7 @@ from app.schemas.schemas import (
 from app.services.budget_service import BudgetService
 from app.services.currency_service import CurrencyService
 from config_reader.config_reader import config
-from logger.logger import get_logger
+from logger.logger import get_logger, mask_email
 
 logger = get_logger(__name__)
 
@@ -70,7 +70,7 @@ class AuthService:
         existing = result.scalar_one_or_none()
 
         if existing:
-            logger.warning(f"Попытка регистрации с уже зарегистрированным email: {payload.email}")
+            logger.warning(f"Попытка повторной регистрации существующего пользователя {existing.id}")
             raise BadRequestException(
                 code=ErrorCode.USER_ALREADY_EXISTS,
                 message="Пользователь с таким email уже зарегистрирован",
@@ -82,7 +82,7 @@ class AuthService:
         self.db.add(user)
         await self.db.flush()
         await self.db.refresh(user)
-        logger.info(f"Зарегистрирован новый пользователь: {user.email} (ID: {user.id})")
+        logger.info(f"Зарегистрирован новый пользователь {user.id}")
         return user
 
     async def update_profile(self, user_id: uuid.UUID, payload: UserUpdateRequest) -> User:
@@ -200,7 +200,7 @@ class AuthService:
             is_valid = await asyncio.to_thread(bcrypt.checkpw, payload.password.encode(), user.hashed_password.encode())
 
         if not user or not is_valid:
-            logger.warning(f"Неуспешная попытка входа для email: {payload.email}")
+            logger.warning(f"Неуспешная попытка входа для email: {mask_email(payload.email)}")
             raise UnauthorizedException(
                 code=ErrorCode.INVALID_CREDENTIALS,
                 message="Неверный email или пароль",
@@ -208,7 +208,7 @@ class AuthService:
 
         access_token = self.create_access_token(user.id)
         refresh_token = await self.create_refresh_token(user.id)
-        logger.info(f"Пользователь успешно авторизован: {user.email}")
+        logger.info(f"Пользователь {user.id} успешно авторизован по email")
         return TokenResponse(
             access_token=access_token,
             refresh_token=refresh_token,
@@ -216,10 +216,12 @@ class AuthService:
             user=UserResponse.model_validate(user),
         )
 
-    async def _handle_oauth_user(self, email: str, name: str, avatar_url: str | None = None) -> TokenResponse:
+    async def _handle_oauth_user(self, provider: str, email: str, name: str, avatar_url: str | None = None) -> TokenResponse:
+        """Найти или создать пользователя по email из ID-токена провайдера и выдать пару токенов."""
         query = select(User).where(User.email == email)
         result = await self.db.execute(query)
         user = result.scalar_one_or_none()
+        is_new = user is None
 
         if not user:
             user = User(email=email, name=name, avatar_url=avatar_url, hashed_password=None)
@@ -234,6 +236,10 @@ class AuthService:
 
         access_token = self.create_access_token(user.id)
         refresh_token = await self.create_refresh_token(user.id)
+        if is_new:
+            logger.info(f"Зарегистрирован новый пользователь {user.id} через {provider}")
+        else:
+            logger.info(f"Пользователь {user.id} успешно авторизован через {provider}")
         return TokenResponse(
             access_token=access_token,
             refresh_token=refresh_token,
@@ -264,9 +270,9 @@ class AuthService:
             name = payload.name or data.get("name") or email.split("@")[0]
             picture = payload.avatar_url or data.get("picture")
 
-            return await self._handle_oauth_user(email, name, picture)
+            return await self._handle_oauth_user("google", email, name, picture)
         except Exception as e:
-            logger.error(f"Google login failed: {str(e)}")
+            logger.warning(f"Отклонён вход через google: {e}")
             raise UnauthorizedException(code=ErrorCode.INVALID_CREDENTIALS, message="Недействительный токен Google")
 
     async def apple_login(self, payload: AppleSignInRequest) -> TokenResponse:
@@ -288,9 +294,9 @@ class AuthService:
 
             name = email.split("@")[0]  # В реальном приложении можно парсить доп. данные
 
-            return await self._handle_oauth_user(email, name, None)
+            return await self._handle_oauth_user("apple", email, name, None)
         except Exception as e:
-            logger.error(f"Apple login failed: {str(e)}")
+            logger.warning(f"Отклонён вход через apple: {e}")
             raise UnauthorizedException(code=ErrorCode.INVALID_CREDENTIALS, message="Недействительный токен Apple")
 
     @staticmethod
@@ -375,7 +381,7 @@ class AuthService:
 
         await self.db.delete(user)
         # Каскадное удаление данных (transactions, budgets, tokens) отработает благодаря cascade="all, delete-orphan"
-        logger.info(f"Аккаунт пользователя {user.email} (ID: {user.id}) успешно удален")
+        logger.info(f"Аккаунт пользователя {user.id} успешно удален")
 
         # Очистка связанных ключей Redis
         from app.redis import (
@@ -521,40 +527,11 @@ class AuthService:
         new_access_token = self.create_access_token(user.id)
         new_refresh_token = await self.create_refresh_token(user.id)
 
-        logger.info(f"Успешная ротация токенов для пользователя: {user.email}")
+        logger.info(f"Успешная ротация токенов для пользователя {user.id}")
         return TokenResponse(
             access_token=new_access_token,
             refresh_token=new_refresh_token,
             token_type="bearer",
-        )
-
-    def _create_token(self, user_id: str) -> str:
-        """Совместимый приватный метод для создания access токена."""
-        return self.create_access_token(user_id)
-
-    async def _deactivate_token(self, user_id: uuid.UUID, token_string: str) -> None:
-        """Асинхронно деактивировать токен (при выходе пользователя)."""
-        try:
-            payload = jwt.decode(token_string, config.secret_key, algorithms=[config.algorithm])
-            jti = payload.get("jti")
-            if jti:
-                # Добавляем в in-memory набор
-                AuthService._revoked_jtis.add(jti)
-                # Сохраняем в Redis с TTL, соответствующим времени жизни access‑токена
-                from app.redis import get_redis, get_revoked_jti_key
-
-                redis_client = get_redis()
-                ttl_seconds = config.access_token_expire_minutes * 60
-                await redis_client.set(get_revoked_jti_key(jti), "1", ex=ttl_seconds)
-                logger.info(f"Токен успешно отозван при выходе пользователя {user_id}")
-                return
-        except JWTError:
-            pass
-
-        logger.warning(f"Попытка отзыва несуществующего токена для пользователя {user_id}")
-        raise NotFoundException(
-            code=ErrorCode.TOKEN_NOT_FOUND,
-            message="Токен не найден для деактивации",
         )
 
     async def cleanup_expired_tokens(self, retention_days: int = 30) -> int:
@@ -593,6 +570,13 @@ async def get_current_user(
                 code=ErrorCode.INVALID_TOKEN,
                 message="Недействительный тип токена. Ожидается access token",
             )
+    except jwt.ExpiredSignatureError:
+        # Штатная ситуация: клиент получит 401 и обновит пару по refresh-токену
+        logger.debug("Истёк срок действия access-токена")
+        raise UnauthorizedException(
+            code=ErrorCode.INVALID_TOKEN,
+            message="Недействительный или истекший токен авторизации",
+        )
     except JWTError:
         logger.warning("Ошибка валидации подписи JWT access-токена")
         raise UnauthorizedException(
