@@ -20,6 +20,7 @@ from starlette.exceptions import HTTPException
 from app.database import engine, get_db
 from app.exceptions import AppException, ErrorCode
 from app.limiter import limiter
+from app.redis import get_redis
 from app.routers import auth, budgets, currencies, insights, public, sync, transactions
 from app.schemas.schemas import ErrorResponse
 from app.tasks.token_cleanup import periodic_token_cleanup
@@ -219,27 +220,32 @@ app.include_router(public.router)
 async def health_check(db: AsyncSession = Depends(get_db)):
     """Эндпоинт проверки здоровья и доступности API и базы данных PostgreSQL.
 
-    Выполняет проверочный запрос SELECT 1 к базе данных.
-    Если база данных недоступна, возвращает статус 503 Service Unavailable.
+    Выполняет SELECT 1 к базе данных и PING к Redis: без Redis не работают проверка отзыва токенов
+    и rate limiting, поэтому сервис без него не считается здоровым. При сбое любой зависимости — 503.
 
     Возвращает:
         dict: Статус работы сервиса, состояние БД и текущую версию API.
     """
+    checks = {"database": "healthy", "redis": "healthy"}
     try:
         await db.execute(text("SELECT 1"))
-        return {
-            "status": "ok",
-            "version": "0.1.0",
-            "database": "healthy",
-        }
     except Exception as exc:
-        logger.error(f"Healthcheck failed: база данных недоступна: {str(exc)}", exc_info=True)
+        logger.error(f"Healthcheck: база данных недоступна: {exc}")
+        checks["database"] = "unhealthy"
+    try:
+        await get_redis().ping()
+    except Exception as exc:
+        logger.error(f"Healthcheck: Redis недоступен: {exc}")
+        checks["redis"] = "unhealthy"
+
+    if "unhealthy" in checks.values():
         return JSONResponse(
             status_code=503,
             content=ErrorResponse(
                 status="error",
                 code=ErrorCode.SERVICE_UNAVAILABLE,
-                message="База данных недоступна",
-                details={"database": "unhealthy"},
+                message="Зависимости сервиса недоступны",
+                details=checks,
             ).model_dump(exclude_none=True),
         )
+    return {"status": "ok", "version": "0.1.0", **checks}

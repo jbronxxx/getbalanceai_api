@@ -2,7 +2,7 @@
 
 import logging
 import uuid
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import AsyncClient
@@ -35,6 +35,7 @@ class TestHealthCheck:
         assert data["status"] == "ok"
         assert data["version"] == "0.1.0"
         assert data["database"] == "healthy"
+        assert data["redis"] == "healthy"
 
     @pytest.mark.asyncio
     async def test_health_check_db_failure(self, client: AsyncClient):
@@ -54,8 +55,8 @@ class TestHealthCheck:
             data = response.json()
             assert data["status"] == "error"
             assert data["code"] == ErrorCode.SERVICE_UNAVAILABLE
-            assert "База данных недоступна" in data["message"]
             assert data["details"]["database"] == "unhealthy"
+            assert data["details"]["redis"] == "healthy"
         finally:
             app.dependency_overrides.pop(get_db, None)
 
@@ -254,3 +255,30 @@ class TestLogLevelConfiguration:
         assert custom_logger.level == logging.WARNING
         assert len(custom_logger.handlers) == 1
         assert custom_logger.handlers[0].level == logging.WARNING
+
+
+class TestRedisOutage:
+    """Недоступный Redis даёт 503 (временный сбой), а не 500 и не 401."""
+
+    @pytest.mark.asyncio
+    async def test_health_reports_redis_down(self, client: AsyncClient, mock_redis_client):
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        with patch.object(mock_redis_client, "ping", AsyncMock(side_effect=RedisConnectionError("refused"))):
+            response = await client.get("/health")
+
+        assert response.status_code == 503
+        assert response.json()["details"] == {"database": "healthy", "redis": "unhealthy"}
+
+    @pytest.mark.asyncio
+    async def test_authorized_request_returns_503_when_revocation_store_down(
+        self, client: AsyncClient, auth_headers: dict[str, str], mock_redis_client
+    ):
+        """Клиент обновляет токен только на 401: при 503 сессия не сбрасывается, запрос можно повторить."""
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        with patch.object(mock_redis_client, "exists", AsyncMock(side_effect=RedisConnectionError("refused"))):
+            response = await client.get("/api/v1/auth/me", headers=auth_headers)
+
+        assert response.status_code == 503
+        assert response.json()["code"] == ErrorCode.SERVICE_UNAVAILABLE

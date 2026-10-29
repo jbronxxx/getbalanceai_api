@@ -4,13 +4,14 @@ import uuid
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy import delete, or_, select, tuple_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.exceptions import AppException, ErrorCode
+from app.limiter import limiter
 from app.models.models import Budget, Category, Transaction, User
 from app.schemas.schemas import (
     ApiResponse,
@@ -35,6 +36,7 @@ router = APIRouter(
         401: {"model": ErrorResponse, "description": "Требуется авторизация"},
         403: {"model": ErrorResponse, "description": "Доступ запрещен"},
         422: {"model": ErrorResponse, "description": "Ошибка валидации входных данных"},
+        429: {"model": ErrorResponse, "description": "Превышен лимит частоты запросов (60/мин на пользователя)"},
         500: {
             "model": ErrorResponse,
             "description": "Внутренняя ошибка сервера при сохранении данных",
@@ -54,7 +56,9 @@ router = APIRouter(
         "и без нарушения уникальных ограничений базы данных. Конфликтующие записи возвращаются в rejected."
     ),
 )
+@limiter.limit("60/minute")
 async def sync_data(
+    request: Request,
     payload: SyncPayload,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),

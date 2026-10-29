@@ -3,10 +3,11 @@
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Header, Query, Response, status
+from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.limiter import limiter
 from app.models.models import User
 from app.schemas.schemas import (
     ApiResponse,
@@ -26,6 +27,7 @@ router = APIRouter(
         403: {"model": ErrorResponse, "description": "Доступ запрещен"},
         404: {"model": ErrorResponse, "description": "Ресурс не найден"},
         422: {"model": ErrorResponse, "description": "Ошибка валидации входных данных"},
+        429: {"model": ErrorResponse, "description": "Превышен лимит частоты запросов"},
         500: {"model": ErrorResponse, "description": "Внутренняя ошибка сервера"},
     }
 )
@@ -37,7 +39,9 @@ router = APIRouter(
     status_code=status.HTTP_201_CREATED,
     summary="Добавить новую транзакцию",
 )
+@limiter.limit("120/minute")
 async def create_transaction(
+    request: Request,
     payload: TransactionCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
