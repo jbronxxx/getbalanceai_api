@@ -122,14 +122,21 @@ async def sync_data(
             logger.debug("Обработка транзакции с ID: %s", tx_id)
 
             curr = (item.currency or user_base_currency).strip().upper()
-            rate, base_amt = CurrencyService.resolve_amounts(
-                amount=item.amount,
-                currency=curr,
-                base_currency=user_base_currency,
-                client_rate=item.exchange_rate,
-                client_base_amount=item.base_amount,
-                rates=rates,
-            )
+            # Запись, которую нельзя пересчитать в базовую валюту, отклоняется отдельно: иначе клиент
+            # бесконечно повторял бы весь батч и не синхронизировал остальные данные
+            try:
+                rate, base_amt = CurrencyService.resolve_amounts(
+                    amount=item.amount,
+                    currency=curr,
+                    base_currency=user_base_currency,
+                    client_rate=item.exchange_rate,
+                    client_base_amount=item.base_amount,
+                    rates=rates,
+                )
+            except AppException as err:
+                logger.warning("Транзакция %s отклонена при синхронизации: %s", tx_id, err.code)
+                rejected_items.append(SyncRejectedItem(id=item.id, reason=err.message))
+                continue
 
             quantized_amount = item.amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             if item.id and item.id in existing_txs_map:

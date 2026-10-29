@@ -7,8 +7,8 @@ from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
 
-from app.exceptions import InvalidCurrencyException
-from app.models.models import SUPPORTED_CURRENCIES, CurrencyCode
+from app.exceptions import BadRequestException, ErrorCode, InvalidCurrencyException
+from app.models.models import MONEY_DB_MAX, SUPPORTED_CURRENCIES, CurrencyCode
 from app.redis import (
     REDIS_KEY_CURRENCY_RATES,
     REDIS_KEY_CURRENCY_RATES_LAST_SUCCESSFUL,
@@ -172,6 +172,7 @@ class CurrencyService:
 
         Исключения:
             InvalidCurrencyException: Если валюта операции или базовая валюта не поддерживается.
+            BadRequestException: Если сумма в базовой валюте не помещается в денежную колонку БД.
         """
         curr = (currency or base_currency).strip().upper()
         base_curr = base_currency.strip().upper()
@@ -212,6 +213,11 @@ class CurrencyService:
 
         calc_rate = client_rate if use_client_rate else server_rate
         calculated_base_amount = (quantized_amount * calc_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if calculated_base_amount > MONEY_DB_MAX:
+            raise BadRequestException(
+                code=ErrorCode.INVALID_TRANSACTION_AMOUNT,
+                message="Сумма в базовой валюте слишком велика для сохранения",
+            )
         effective_rate = calc_rate.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
 
         if client_base_amount is not None:

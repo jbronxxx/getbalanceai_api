@@ -77,6 +77,9 @@ class CurrencyCode(str, enum.Enum):
 
 SUPPORTED_CURRENCIES: tuple[str, ...] = tuple(c.value for c in CurrencyCode)
 
+# Наибольшее значение денежной колонки Numeric(18, 2): сумма больше не запишется в БД
+MONEY_DB_MAX = Decimal("9999999999999999.99")
+
 
 class User(Base):
     """ORM-модель пользователя системы.
