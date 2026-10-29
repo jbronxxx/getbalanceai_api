@@ -20,6 +20,8 @@ logger = get_logger(__name__)
 
 REDIS_KEY_CURRENCY_RATES = "currency_rates:USD"
 REDIS_KEY_CURRENCY_RATES_LAST_SUCCESSFUL = "currency_rates:last_successful:USD"
+# Блокировка регламентной очистки токенов: живёт интервал очистки, пока она занята — другие воркеры пропускают запуск
+REDIS_KEY_TOKEN_CLEANUP_LOCK = "lock:token_cleanup"
 
 
 def get_budgets_version_key(user_id: uuid.UUID | str) -> str:

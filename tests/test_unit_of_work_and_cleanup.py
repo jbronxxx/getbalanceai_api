@@ -5,14 +5,17 @@ import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+import fakeredis
 import pytest
+from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import UnitOfWork, get_db
 from app.models.models import Category, Token, Transaction, TransactionType, User
+from app.redis import REDIS_KEY_TOKEN_CLEANUP_LOCK
 from app.schemas.schemas import TransactionCreate
 from app.services.auth_service import AuthService
 from app.services.transaction_service import TransactionService
@@ -286,3 +289,73 @@ class TestTokenCleanup:
         pool = engine.pool
         assert pool._pre_ping is True
         assert pool._recycle == 1800
+
+
+class TestTokenCleanupSingleRun:
+    """Очистка токенов выполняется одним воркером: блокировка в Redis (SET NX EX) на интервал очистки."""
+
+    @staticmethod
+    async def _run_workers(count: int, duration: float = 0.1) -> None:
+        """Запустить count планировщиков, как в lifespan воркеров gunicorn, и остановить их через duration."""
+        tasks = [
+            asyncio.create_task(
+                periodic_token_cleanup(
+                    interval_seconds=60,
+                    session_factory=TestingSessionLocal,
+                    check_interval_seconds=0.01,
+                )
+            )
+            for _ in range(count)
+        ]
+        await asyncio.sleep(duration)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_free_lock_runs_cleanup_and_sets_lock(self, mock_redis_client: fakeredis.FakeAsyncRedis):
+        """При свободной блокировке очистка выполняется один раз, блокировка ставится на интервал."""
+        with patch("app.tasks.token_cleanup.run_token_cleanup", AsyncMock(return_value=0)) as mock_cleanup:
+            await self._run_workers(1)
+
+        mock_cleanup.assert_awaited_once_with(retention_days=30, session_factory=TestingSessionLocal)
+        assert 0 < await mock_redis_client.ttl(REDIS_KEY_TOKEN_CLEANUP_LOCK) <= 60
+
+    @pytest.mark.asyncio
+    async def test_busy_lock_skips_cleanup(self, mock_redis_client: fakeredis.FakeAsyncRedis):
+        """Если блокировку держит другой воркер, очистка не выполняется."""
+        await mock_redis_client.set(REDIS_KEY_TOKEN_CLEANUP_LOCK, "other-worker", ex=60)
+
+        with patch("app.tasks.token_cleanup.run_token_cleanup", AsyncMock(return_value=0)) as mock_cleanup:
+            await self._run_workers(1)
+
+        mock_cleanup.assert_not_awaited()
+        assert await mock_redis_client.get(REDIS_KEY_TOKEN_CLEANUP_LOCK) == "other-worker"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_workers_run_cleanup_once(self):
+        """Из четырёх одновременно проверяющих воркеров очистку выполняет ровно один."""
+        with patch("app.tasks.token_cleanup.run_token_cleanup", AsyncMock(return_value=0)) as mock_cleanup:
+            await self._run_workers(4)
+
+        assert mock_cleanup.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_redis_unavailable_skips_cleanup(self, mock_redis_client: fakeredis.FakeAsyncRedis):
+        """Без Redis блокировку не проверить: очистка пропускается, а не выполняется всеми воркерами."""
+        with (
+            patch.object(mock_redis_client, "set", AsyncMock(side_effect=RedisConnectionError("Connection refused"))),
+            patch("app.tasks.token_cleanup.run_token_cleanup", AsyncMock(return_value=0)) as mock_cleanup,
+        ):
+            await self._run_workers(1)
+
+        mock_cleanup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failed_cleanup_releases_lock(self):
+        """Сбой очистки снимает блокировку: следующая проверка повторяет очистку, а не ждёт интервал."""
+        failing_cleanup = AsyncMock(side_effect=RuntimeError("database is unavailable"))
+        with patch("app.tasks.token_cleanup.run_token_cleanup", failing_cleanup):
+            await self._run_workers(1)
+
+        assert failing_cleanup.await_count >= 2
