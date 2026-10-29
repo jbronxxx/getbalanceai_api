@@ -16,84 +16,27 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.exceptions import (
-    BadRequestException,
     NotFoundException,
     ServiceUnavailableException,
     UnauthorizedException,
 )
 from app.models.models import Token, User
 from app.redis import get_revoked_jti_key
-from app.schemas.schemas import (
-    AppleSignInRequest,
-    GoogleSignInRequest,
-    TokenResponse,
-    UserLogin,
-    UserRegister,
-)
+from app.schemas.schemas import AppleSignInRequest, GoogleSignInRequest, TokenResponse
 from app.services.auth_service import AuthService, get_current_user
 from config_reader.config_reader import config
 
 
+async def _create_user(db_session: AsyncSession, email: str) -> User:
+    """Создать пользователя напрямую: аккаунты появляются только через вход Google/Apple."""
+    user = User(email=email, name="Session User")
+    db_session.add(user)
+    await db_session.flush()
+    return user
+
+
 class TestAuthServiceUnit:
     """Юнит-тесты бизнес-логики AuthService."""
-
-    @pytest.mark.asyncio
-    async def test_register_success(self, db_session: AsyncSession):
-        """Успешная регистрация нового пользователя."""
-        service = AuthService(db_session)
-        payload = UserRegister(
-            email=f"newuser_{uuid.uuid4().hex[:6]}@example.com",
-            password="SecurePassword123!",
-            name="New User",
-        )
-        user = await service.register(payload)
-
-        assert user.id is not None
-        assert user.email == payload.email
-        assert user.name == payload.name
-        assert user.hashed_password != payload.password
-
-    @pytest.mark.asyncio
-    async def test_register_duplicate_email(self, db_session: AsyncSession, test_user: User):
-        """Регистрация с существующим email вызывает BadRequestException."""
-        service = AuthService(db_session)
-        payload = UserRegister(
-            email=test_user.email,
-            password="AnotherPassword123!",
-            name="Duplicate User",
-        )
-        with pytest.raises(BadRequestException) as exc_info:
-            await service.register(payload)
-        assert exc_info.value.code == "USER_ALREADY_EXISTS"
-
-    @pytest.mark.asyncio
-    async def test_login_success(self, db_session: AsyncSession):
-        """Успешный вход пользователя с валидными учетными данными."""
-        service = AuthService(db_session)
-        email = f"logintest_{uuid.uuid4().hex[:6]}@example.com"
-        password = "ValidPassword123!"
-        await service.register(UserRegister(email=email, password=password, name="Login User"))
-
-        tokens = await service.login(UserLogin(email=email, password=password))
-        assert tokens.access_token is not None
-        assert tokens.refresh_token is not None
-        assert tokens.token_type == "bearer"
-
-    @pytest.mark.asyncio
-    async def test_login_invalid_password(self, db_session: AsyncSession, test_user: User):
-        """Попытка входа с неверным паролем вызывает UnauthorizedException."""
-        service = AuthService(db_session)
-        with pytest.raises(UnauthorizedException) as exc_info:
-            await service.login(UserLogin(email=test_user.email, password="WrongPassword!"))
-        assert exc_info.value.code == "INVALID_CREDENTIALS"
-
-    @pytest.mark.asyncio
-    async def test_login_nonexistent_user(self, db_session: AsyncSession):
-        """Попытка входа с несуществующим email вызывает UnauthorizedException."""
-        service = AuthService(db_session)
-        with pytest.raises(UnauthorizedException) as exc_info:
-            await service.login(UserLogin(email="nonexistent@example.com", password="Password123!"))
-        assert exc_info.value.code == "INVALID_CREDENTIALS"
 
     @pytest.mark.asyncio
     async def test_refresh_tokens_success(self, db_session: AsyncSession, test_user: User):
@@ -507,34 +450,12 @@ class TestAuthEndpointsIntegration:
     """Интеграционные тесты для эндпоинтов /api/v1/auth/."""
 
     @pytest.mark.asyncio
-    async def test_register_endpoint(self, client: AsyncClient):
-        """POST /api/v1/auth/register возвращает 201 и профиль пользователя."""
-        payload = {
-            "email": f"api_user_{uuid.uuid4().hex[:6]}@example.com",
-            "password": "Password123!",
-            "name": "Api User",
-        }
-        response = await client.post("/api/v1/auth/register", json=payload)
-        assert response.status_code == 201
-        data = response.json()
-        assert data["status"] == "success"
-        assert data["data"]["email"] == payload["email"]
-        assert data["data"]["name"] == payload["name"]
-        assert "hashed_password" not in data["data"]
-
-    @pytest.mark.asyncio
-    async def test_login_and_me_endpoint(self, client: AsyncClient, db_session: AsyncSession):
-        """POST /api/v1/auth/login возвращает токены, GET /api/v1/auth/me возвращает профиль."""
+    async def test_session_me_refresh_logout_flow(self, client: AsyncClient, db_session: AsyncSession):
+        """Сессия: GET /me возвращает профиль, /refresh ротирует пару, после /logout access-токен недействителен."""
         email = f"flow_user_{uuid.uuid4().hex[:6]}@example.com"
-        password = "Password123!"
-        await AuthService(db_session).register(UserRegister(email=email, password=password, name="Flow User"))
-
-        # Login
-        login_res = await client.post("/api/v1/auth/login", json={"email": email, "password": password})
-        assert login_res.status_code == 200
-        tokens = login_res.json()["data"]
-        access_token = tokens["access_token"]
-        refresh_token = tokens["refresh_token"]
+        tokens = await self._login_session(db_session, email)
+        access_token = tokens.access_token
+        refresh_token = tokens.refresh_token
 
         # GET /me with access token
         headers = {"Authorization": f"Bearer {access_token}"}
@@ -559,12 +480,8 @@ class TestAuthEndpointsIntegration:
     @pytest.mark.asyncio
     async def test_delete_me_endpoint(self, client: AsyncClient, db_session: AsyncSession):
         """DELETE /api/v1/auth/me удаляет пользователя и возвращает 200."""
-        email = f"delete_user_{uuid.uuid4().hex[:6]}@example.com"
-        password = "Password123!"
-        await AuthService(db_session).register(UserRegister(email=email, password=password, name="Delete User"))
-
-        login_res = await client.post("/api/v1/auth/login", json={"email": email, "password": password})
-        access_token = login_res.json()["data"]["access_token"]
+        tokens = await self._login_session(db_session, f"delete_user_{uuid.uuid4().hex[:6]}@example.com")
+        access_token = tokens.access_token
         headers = {"Authorization": f"Bearer {access_token}"}
 
         # Delete account
@@ -579,12 +496,13 @@ class TestAuthEndpointsIntegration:
     @staticmethod
     async def _login_session(db_session: AsyncSession, email: str, register: bool = True) -> TokenResponse:
         """Выдать пару токенов через сервис и зафиксировать её: rollback после ошибки запроса её не сотрёт."""
-        service = AuthService(db_session)
         if register:
-            await service.register(UserRegister(email=email, password="Password123!", name="Session User"))
-        tokens = await service.login(UserLogin(email=email, password="Password123!"))
+            user = await _create_user(db_session, email)
+        else:
+            user = (await db_session.execute(select(User).where(User.email == email))).scalar_one()
+        access_token, refresh_token = await AuthService(db_session)._issue_token_pair(user.id)
         await db_session.commit()
-        return tokens
+        return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
     @pytest.mark.asyncio
     async def test_login_links_access_token_to_refresh_session(self, db_session: AsyncSession):
@@ -660,7 +578,7 @@ class TestAuthEndpointsIntegration:
     ):
         """DELETE /api/v1/auth/me при недоступном Redis возвращает 503 и не удаляет аккаунт."""
         email = f"delete_redis_{uuid.uuid4().hex[:6]}@example.com"
-        user = await AuthService(db_session).register(UserRegister(email=email, password="Password123!", name="Keep"))
+        user = await _create_user(db_session, email)
         # id читаем до commit: после него атрибуты объекта истекают и ленивая подгрузка падает вне greenlet
         user_id = user.id
         # Фиксируем пользователя: при ошибке запроса override get_db откатывает сессию
@@ -677,56 +595,7 @@ class TestAuthEndpointsIntegration:
 
 
 class TestAuthLogsWithoutPii:
-    """Логи AuthService содержат user_id вместо email; при неудачном входе — только маскированный email."""
-
-    @pytest.mark.asyncio
-    async def test_register_and_login_log_user_id_not_email(
-        self, db_session: AsyncSession, caplog: pytest.LogCaptureFixture
-    ):
-        """Регистрация и успешный вход пишут в лог ID пользователя, а не email."""
-        service = AuthService(db_session)
-        email = f"piilog_{uuid.uuid4().hex[:6]}@example.com"
-        password = "ValidPassword123!"
-
-        with caplog.at_level(logging.INFO):
-            user = await service.register(UserRegister(email=email, password=password, name="Pii User"))
-            await service.login(UserLogin(email=email, password=password))
-
-        messages = [record.getMessage() for record in caplog.records]
-        assert not any(email in message for message in messages)
-        assert any(str(user.id) in message and "Зарегистрирован" in message for message in messages)
-        assert any(str(user.id) in message and "авторизован" in message for message in messages)
-
-    @pytest.mark.asyncio
-    async def test_duplicate_registration_logs_user_id_not_email(
-        self, db_session: AsyncSession, test_user: User, caplog: pytest.LogCaptureFixture
-    ):
-        """Повторная регистрация логирует ID существующего пользователя без email."""
-        service = AuthService(db_session)
-        payload = UserRegister(email=test_user.email, password="AnotherPassword123!", name="Duplicate")
-
-        with caplog.at_level(logging.WARNING):
-            with pytest.raises(BadRequestException):
-                await service.register(payload)
-
-        messages = [record.getMessage() for record in caplog.records]
-        assert not any(test_user.email in message for message in messages)
-        assert any(str(test_user.id) in message for message in messages)
-
-    @pytest.mark.asyncio
-    async def test_failed_login_logs_masked_email(
-        self, db_session: AsyncSession, test_user: User, caplog: pytest.LogCaptureFixture
-    ):
-        """Неудачный вход логирует маскированный email вида u***@example.com."""
-        service = AuthService(db_session)
-
-        with caplog.at_level(logging.WARNING):
-            with pytest.raises(UnauthorizedException):
-                await service.login(UserLogin(email=test_user.email, password="WrongPassword!"))
-
-        messages = [record.getMessage() for record in caplog.records]
-        assert not any(test_user.email in message for message in messages)
-        assert any("u***@example.com" in message for message in messages)
+    """Логи AuthService содержат user_id вместо email."""
 
     @pytest.mark.asyncio
     async def test_refresh_tokens_logs_user_id_not_email(
@@ -838,3 +707,150 @@ class TestAuthLogsWithoutPii:
         messages = [record.getMessage() for record in caplog.records]
         assert not any(test_user.email in message for message in messages)
         assert any(str(test_user.id) in message and "удален" in message for message in messages)
+
+
+class TestRefreshRotationAtomicity:
+    """Ротация refresh-токена атомарна; повтор давно отозванного токена отзывает все сессии владельца."""
+
+    @staticmethod
+    async def _active_sessions(db_session: AsyncSession, user_id: uuid.UUID) -> int:
+        db_session.expire_all()
+        result = await db_session.execute(select(Token).where(Token.user_id == user_id, Token.status == "active"))
+        return len(result.scalars().all())
+
+    @staticmethod
+    async def _token_row(db_session: AsyncSession, refresh_token: str) -> Token:
+        hashed = hashlib.sha256(refresh_token.encode()).hexdigest()
+        return (await db_session.execute(select(Token).where(Token.token_hash == hashed))).scalar_one()
+
+    @pytest.mark.asyncio
+    async def test_rotation_records_revoked_at(self, db_session: AsyncSession, test_user: User):
+        """Ротированный токен помечается revoked с временем отзыва."""
+        service = AuthService(db_session)
+        _, refresh_token = await service._issue_token_pair(test_user.id)
+
+        await service.refresh_tokens(refresh_token)
+
+        row = await self._token_row(db_session, refresh_token)
+        assert row.status == "revoked"
+        assert row.revoked_at is not None
+
+    @pytest.mark.asyncio
+    async def test_second_use_of_same_token_gets_no_new_session(self, db_session: AsyncSession, test_user: User):
+        """Из двух запросов с одним токеном новую пару получает только первый (проигравший гонку — 401)."""
+        service = AuthService(db_session)
+        _, refresh_token = await service._issue_token_pair(test_user.id)
+
+        await service.refresh_tokens(refresh_token)
+        with pytest.raises(UnauthorizedException) as exc_info:
+            await service.refresh_tokens(refresh_token)
+
+        assert exc_info.value.code == "TOKEN_REVOKED"
+        assert await self._active_sessions(db_session, test_user.id) == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_within_grace_keeps_other_sessions(self, db_session: AsyncSession, test_user: User):
+        """Повтор сразу после ротации (ответ не дошёл) не отзывает сессии на других устройствах."""
+        service = AuthService(db_session)
+        _, other_device_refresh = await service._issue_token_pair(test_user.id)
+        _, refresh_token = await service._issue_token_pair(test_user.id)
+        await service.refresh_tokens(refresh_token)
+
+        with pytest.raises(UnauthorizedException):
+            await service.refresh_tokens(refresh_token)
+
+        assert (await self._token_row(db_session, other_device_refresh)).status == "active"
+        assert await self._active_sessions(db_session, test_user.id) == 2
+
+    @pytest.mark.asyncio
+    async def test_reuse_after_grace_revokes_all_sessions(self, db_session: AsyncSession, test_user: User):
+        """Давно отозванный токен считается украденным: отзываются все активные сессии, и отзыв фиксируется."""
+        # id читаем до commit: после него атрибуты истекают и ленивая подгрузка падает вне greenlet
+        user_id = test_user.id
+        service = AuthService(db_session)
+        _, other_device_refresh = await service._issue_token_pair(user_id)
+        _, stolen_refresh = await service._issue_token_pair(user_id)
+        await service.refresh_tokens(stolen_refresh)
+        row = await self._token_row(db_session, stolen_refresh)
+        row.revoked_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        await db_session.commit()
+
+        with pytest.raises(UnauthorizedException) as exc_info:
+            await service.refresh_tokens(stolen_refresh)
+        # Отзыв переживает откат транзакции запроса, который выполняет get_db после 401
+        await db_session.rollback()
+
+        assert exc_info.value.code == "TOKEN_REVOKED"
+        assert await self._active_sessions(db_session, user_id) == 0
+        assert (await self._token_row(db_session, other_device_refresh)).status == "revoked"
+
+    @pytest.mark.asyncio
+    async def test_logged_out_token_reuse_revokes_all_sessions(self, db_session: AsyncSession, test_user: User):
+        """Refresh-токен вышедшей сессии без времени отзыва (до миграции) тоже считается украденным."""
+        # id читаем до commit: после него атрибуты истекают и ленивая подгрузка падает вне greenlet
+        user_id = test_user.id
+        service = AuthService(db_session)
+        await service._issue_token_pair(user_id)
+        _, old_refresh = await service._issue_token_pair(user_id)
+        row = await self._token_row(db_session, old_refresh)
+        row.status = "revoked"
+        row.revoked_at = None
+        await db_session.commit()
+
+        with pytest.raises(UnauthorizedException):
+            await service.refresh_tokens(old_refresh)
+
+        assert await self._active_sessions(db_session, user_id) == 0
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_of_other_user_rejected(self, db_session: AsyncSession, test_user: User):
+        """Токен с sub чужого пользователя не ротирует строку владельца."""
+        # id читаем до commit: после него атрибуты истекают и ленивая подгрузка падает вне greenlet
+        user_id = test_user.id
+        service = AuthService(db_session)
+        _, refresh_token = await service._issue_token_pair(user_id)
+        payload = jwt.decode(refresh_token, config.secret_key, algorithms=[config.algorithm])
+        payload["sub"] = str(uuid.uuid4())
+        forged = jwt.encode(payload, config.secret_key, algorithm=config.algorithm)
+        row = await self._token_row(db_session, refresh_token)
+        row.token_hash = hashlib.sha256(forged.encode()).hexdigest()
+        await db_session.commit()
+
+        with pytest.raises(UnauthorizedException) as exc_info:
+            await service.refresh_tokens(forged)
+
+        assert exc_info.value.code == "INVALID_TOKEN"
+        assert await self._active_sessions(db_session, user_id) == 1
+
+    @pytest.mark.asyncio
+    async def test_logout_records_revoked_at(self, db_session: AsyncSession, test_user: User):
+        """Выход помечает refresh-токен сессии revoked с временем отзыва."""
+        service = AuthService(db_session)
+        access_token, refresh_token = await service._issue_token_pair(test_user.id)
+
+        await service.logout(test_user.id, access_token)
+
+        row = await self._token_row(db_session, refresh_token)
+        assert row.status == "revoked"
+        assert row.revoked_at is not None
+
+    @pytest.mark.asyncio
+    async def test_refresh_endpoint_reuse_blocks_rotated_session(self, client: AsyncClient, db_session: AsyncSession):
+        """Через API: после повторного предъявления украденного токена новая пара злоумышленника тоже не работает."""
+        user = await _create_user(db_session, f"reuse_{uuid.uuid4().hex[:6]}@example.com")
+        _, stolen_refresh = await AuthService(db_session)._issue_token_pair(user.id)
+        await db_session.commit()
+
+        rotated = await client.post("/api/v1/auth/refresh", json={"refresh_token": stolen_refresh})
+        assert rotated.status_code == 200
+        new_refresh = rotated.json()["data"]["refresh_token"]
+        row = await self._token_row(db_session, stolen_refresh)
+        row.revoked_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+        await db_session.commit()
+
+        reuse = await client.post("/api/v1/auth/refresh", json={"refresh_token": stolen_refresh})
+        after = await client.post("/api/v1/auth/refresh", json={"refresh_token": new_refresh})
+
+        assert reuse.status_code == 401
+        assert reuse.json()["code"] == "TOKEN_REVOKED"
+        assert after.status_code == 401

@@ -86,7 +86,8 @@ class User(Base):
     Поля:
         id (uuid.UUID): Уникальный идентификатор пользователя (Primary Key).
         email (str): Уникальный адрес электронной почты (логин).
-        hashed_password (str): Хеш пароля (bcrypt).
+        hashed_password (str | None): Устаревшее поле входа по паролю (вход выведен из API, значения очищены);
+            колонка удаляется следующей миграцией.
         name (str): Имя пользователя.
         avatar_url (str | None): URL аватара пользователя.
         base_currency (str): Базовая валюта учета пользователя (USD, EUR, KZT, UZS).
@@ -132,6 +133,9 @@ class Token(Base):
         user_id (uuid.UUID): Внешний ключ на владельца токена (users.id).
         token_hash (str): Хеш Refresh-токена.
         created_at (datetime): Дата и время создания токена.
+        expires_at (datetime): Срок действия токена.
+        status (str): active, revoked или expired.
+        revoked_at (datetime | None): Момент отзыва (ротация или выход).
         user (User): Связанный объект пользователя.
     """
 
@@ -143,6 +147,8 @@ class Token(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="active")  # Статус токена (active, revoked, expired)
+    # Момент отзыва: отличает повтор сразу после ротации от предъявления давно отозванного (украденного) токена
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Связь с пользователем
     user: Mapped["User"] = relationship(back_populates="tokens")

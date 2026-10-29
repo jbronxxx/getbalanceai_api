@@ -107,8 +107,8 @@ class TestCorrelationId:
 
         # 422 Validation Error
         res_val = await client.post(
-            "/api/v1/auth/login",
-            json={"email": "invalid-email"},
+            "/api/v1/auth/google",
+            json={"name": "no-id-token"},
             headers={"X-Request-ID": custom_id},
         )
         assert res_val.status_code == 422

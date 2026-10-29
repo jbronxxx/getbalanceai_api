@@ -6,14 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Generic, List, Optional, TypeVar
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    EmailStr,
-    Field,
-    field_validator,
-    model_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.models import (
     EXPENSE_CATEGORIES,
@@ -105,56 +98,6 @@ class UserBase(BaseModel):
     """
 
     user_id: uuid.UUID = Field(..., description="ID пользователя")
-
-
-class UserRegister(BaseModel):
-    """Схема запроса на регистрацию нового пользователя.
-
-    Атрибуты:
-        email (EmailStr): Адрес электронной почты пользователя.
-        password (str): Пароль пользователя (от 6 до 72 символов, минимум 1 буква и 1 цифра).
-        name (str): Имя пользователя.
-    """
-
-    email: EmailStr = Field(..., description="Email адрес пользователя")
-    password: str = Field(
-        ...,
-        min_length=6,
-        description="Пароль пользователя (от 6 символов, до 72 байт, минимум 1 буква и 1 цифра)",
-    )
-    name: str = Field(..., min_length=1, max_length=100, description="Имя пользователя")
-
-    @field_validator("password")
-    @classmethod
-    def validate_password_complexity(cls, v: str) -> str:
-        """Проверяет пароль на наличие букв и цифр, а также ограничение длины bcrypt (72 байта)."""
-        if len(v.encode("utf-8")) > 72:
-            raise ValueError("Длина пароля не должна превышать 72 байта")
-        has_letter = any(c.isalpha() for c in v)
-        has_digit = any(c.isdigit() for c in v)
-        if not (has_letter and has_digit):
-            raise ValueError("Пароль должен содержать как минимум одну букву и одну цифру")
-        return v
-
-
-class UserLogin(BaseModel):
-    """Схема запроса для аутентификации пользователя (логин).
-
-    Атрибуты:
-        email (EmailStr): Зарегистрированный адрес электронной почты.
-        password (str): Пароль пользователя (до 72 символов).
-    """
-
-    email: EmailStr = Field(..., description="Email адрес пользователя")
-    password: str = Field(..., description="Пароль пользователя")
-
-    @field_validator("password")
-    @classmethod
-    def validate_password_length(cls, v: str) -> str:
-        """Проверяет пароль на ограничение длины bcrypt (72 байта)."""
-        if len(v.encode("utf-8")) > 72:
-            raise ValueError("Длина пароля не должна превышать 72 байта")
-        return v
 
 
 class GoogleSignInRequest(BaseModel):

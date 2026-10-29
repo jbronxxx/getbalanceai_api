@@ -39,21 +39,7 @@ API использует единообразный формат ответов 
 
 ### Примеры:
 
-#### Регистрация пользователя (POST /api/v1/auth/register)
-
-```json
-{
-  "status": "success",
-  "data": {
-    "id": "550e8400-e29b-41d4-a716-446655440000",
-    "email": "user@example.com",
-    "name": "John Doe",
-    "avatar_url": null,
-    "base_currency": "EUR",
-    "created_at": "2026-09-10T10:30:00Z"
-  }
-}
-```
+Вход и регистрация по email и паролю (`/auth/register`, `/auth/login`) выведены из API (`404`): аккаунты создаются только входом через Google или Apple.
 
 #### Вход или регистрация через Google (POST /api/v1/auth/google)
 
@@ -294,8 +280,7 @@ API использует единообразный формат ответов 
 | Код ошибки | HTTP-код | Описание |
 | :--- | :--- | :--- |
 | `VALIDATION_ERROR` | 422 | Ошибка валидации параметров запроса Pydantic (содержит `details.fields`) |
-| `INVALID_CREDENTIALS` | 401 | Неверный email или пароль при логине |
-| `USER_ALREADY_EXISTS` | 400 | Пользователь с таким email уже зарегистрирован |
+| `INVALID_CREDENTIALS` | 401 | Недействительный ID-токен Google или Apple |
 | `USER_NOT_FOUND` | 401 / 404 | Пользователь не найден |
 | `EXPIRED_TOKEN` | 401 | Истек срок действия JWT access или refresh токена |
 | `INVALID_TOKEN` | 401 | Некорректная подпись, структура или тип JWT токена |
@@ -340,7 +325,7 @@ API использует единообразный формат ответов 
 {
   "status": "error",
   "code": "INVALID_CREDENTIALS",
-  "message": "Неверный email или пароль"
+  "message": "Недействительный токен Google"
 }
 ```
 
@@ -431,12 +416,12 @@ raise NotFoundException(
 # Ошибка авторизации
 raise UnauthorizedException(
     code=ErrorCode.INVALID_CREDENTIALS,
-    message="Неверный email или пароль",
+    message="Недействительный токен Google",
 )
 
 # Ошибка бизнес-правил
 raise BadRequestException(
-    code=ErrorCode.USER_ALREADY_EXISTS,
-    message="Пользователь с таким email уже зарегистрирован",
+    code=ErrorCode.INVALID_TRANSACTION_AMOUNT,
+    message="Сумма в базовой валюте слишком велика для сохранения",
 )
 ```

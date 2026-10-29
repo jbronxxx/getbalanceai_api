@@ -5,9 +5,8 @@ import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Union
+from typing import NoReturn, Union
 
-import bcrypt
 import jwt
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -19,7 +18,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.exceptions import (
-    BadRequestException,
     ErrorCode,
     NotFoundException,
     ServiceUnavailableException,
@@ -31,20 +29,21 @@ from app.schemas.schemas import (
     AppleSignInRequest,
     GoogleSignInRequest,
     TokenResponse,
-    UserLogin,
-    UserRegister,
     UserResponse,
     UserUpdateRequest,
 )
 from app.services.budget_service import BudgetService
 from app.services.currency_service import CurrencyService
 from config_reader.config_reader import config
-from logger.logger import get_logger, mask_email
+from logger.logger import get_logger
 
 logger = get_logger(__name__)
 
 # Схема Bearer токена для извлечения заголовка Authorization
 bearer_scheme = HTTPBearer()
+
+# Окно, в котором повтор только что ротированного refresh-токена считается сетевым повтором клиента, а не кражей
+REFRESH_REUSE_GRACE = timedelta(seconds=30)
 
 # Допустимые значения claim iss в ID-токенах провайдеров
 GOOGLE_ISSUERS = ("accounts.google.com", "https://accounts.google.com")
@@ -64,28 +63,6 @@ class AuthService:
     def __init__(self, db: AsyncSession):
         """Инициализация сервиса с сессией базы данных."""
         self.db = db
-
-    async def register(self, payload: UserRegister) -> User:
-        """Зарегистрировать нового пользователя в системе."""
-        query = select(User).where(User.email == payload.email)
-        result = await self.db.execute(query)
-        existing = result.scalar_one_or_none()
-
-        if existing:
-            logger.warning(f"Попытка повторной регистрации существующего пользователя {existing.id}")
-            raise BadRequestException(
-                code=ErrorCode.USER_ALREADY_EXISTS,
-                message="Пользователь с таким email уже зарегистрирован",
-            )
-
-        hashed_bytes = await asyncio.to_thread(bcrypt.hashpw, payload.password.encode(), bcrypt.gensalt())
-        hashed = hashed_bytes.decode()
-        user = User(email=payload.email, hashed_password=hashed, name=payload.name)
-        self.db.add(user)
-        await self.db.flush()
-        await self.db.refresh(user)
-        logger.info(f"Зарегистрирован новый пользователь {user.id}")
-        return user
 
     async def update_profile(self, user_id: uuid.UUID, payload: UserUpdateRequest) -> User:
         """Обновить профиль пользователя (имя, аватар, базовая валюта).
@@ -190,32 +167,6 @@ class AuthService:
             logger.info(f"Инвалидирован кэш инсайтов для пользователя {user_id}")
         except Exception as err:
             logger.warning(f"Не удалось инвалидировать кэш инсайтов в Redis при смене валюты: {err}")
-
-    async def login(self, payload: UserLogin) -> TokenResponse:
-        """Аутентифицировать пользователя и выдать JWT access и refresh токены."""
-        query = select(User).where(User.email == payload.email)
-        result = await self.db.execute(query)
-        user = result.scalar_one_or_none()
-
-        is_valid = False
-        if user and user.hashed_password:
-            is_valid = await asyncio.to_thread(bcrypt.checkpw, payload.password.encode(), user.hashed_password.encode())
-
-        if not user or not is_valid:
-            logger.warning(f"Неуспешная попытка входа для email: {mask_email(payload.email)}")
-            raise UnauthorizedException(
-                code=ErrorCode.INVALID_CREDENTIALS,
-                message="Неверный email или пароль",
-            )
-
-        access_token, refresh_token = await self._issue_token_pair(user.id)
-        logger.info(f"Пользователь {user.id} успешно авторизован по email")
-        return TokenResponse(
-            access_token=access_token,
-            refresh_token=refresh_token,
-            token_type="bearer",
-            user=UserResponse.model_validate(user),
-        )
 
     async def _handle_oauth_user(self, provider: str, email: str, name: str, avatar_url: str | None = None) -> TokenResponse:
         """Найти или создать пользователя по email из ID-токена провайдера и выдать пару токенов."""
@@ -355,7 +306,7 @@ class AuthService:
             await self.db.execute(
                 update(Token)
                 .where(Token.id == uuid.UUID(session_id), Token.user_id == user_id, Token.status == "active")
-                .values(status="revoked")
+                .values(status="revoked", revoked_at=datetime.now(timezone.utc))
             )
 
         # Ключ живёт не дольше самого токена: после exp токен отклоняется по сроку
@@ -489,31 +440,6 @@ class AuthService:
                 message="Недействительный или истекший refresh токен",
             )
 
-        hashed_token = hashlib.sha256(refresh_token_string.encode()).hexdigest()
-        query = select(Token).where(Token.token_hash == hashed_token, Token.status == "active")
-        result = await self.db.execute(query)
-        db_token = result.scalar_one_or_none()
-
-        if not db_token:
-            logger.warning("Refresh-токен отсутствует в базе данных либо неактивен")
-            raise UnauthorizedException(
-                code=ErrorCode.TOKEN_REVOKED,
-                message="Refresh токен недействителен или отозван",
-            )
-
-        token_expires_at = db_token.expires_at
-        if token_expires_at.tzinfo is None:
-            token_expires_at = token_expires_at.replace(tzinfo=timezone.utc)
-
-        if token_expires_at < datetime.now(timezone.utc):
-            db_token.status = "expired"
-            await self.db.flush()
-            logger.warning(f"Истек срок действия refresh-токена в базе данных для пользователя {db_token.user_id}")
-            raise UnauthorizedException(
-                code=ErrorCode.EXPIRED_TOKEN,
-                message="Срок действия refresh токена истек",
-            )
-
         try:
             user_uuid = uuid.UUID(str(user_id))
         except (ValueError, TypeError):
@@ -523,27 +449,34 @@ class AuthService:
                 message="Недействительный refresh токен",
             )
 
-        if db_token.user_id != user_uuid:
-            logger.warning(f"Несоответствие идентификатора пользователя в токене ({user_id}) и БД ({db_token.user_id})")
-            raise UnauthorizedException(
-                code=ErrorCode.INVALID_TOKEN,
-                message="Недействительный refresh токен",
+        # Отзыв и проверка — одним UPDATE: из параллельных запросов с одним токеном ротацию выполнит только
+        # первый, остальные не найдут активную строку. Иначе каждый получил бы свою живую сессию
+        hashed_token = hashlib.sha256(refresh_token_string.encode()).hexdigest()
+        now = datetime.now(timezone.utc)
+        rotated = await self.db.execute(
+            update(Token)
+            .where(
+                Token.token_hash == hashed_token,
+                Token.status == "active",
+                Token.expires_at > now,
+                Token.user_id == user_uuid,
             )
+            .values(status="revoked", revoked_at=now)
+            .returning(Token.id)
+        )
+        if rotated.scalar_one_or_none() is None:
+            await self._reject_refresh(hashed_token, now)
 
         user_query = select(User).where(User.id == user_uuid)
         user_result = await self.db.execute(user_query)
         user = user_result.scalar_one_or_none()
 
         if not user:
-            logger.warning(f"Пользователь с ID {db_token.user_id} не найден при ротации токенов")
+            logger.warning(f"Пользователь с ID {user_uuid} не найден при ротации токенов")
             raise UnauthorizedException(
                 code=ErrorCode.USER_NOT_FOUND,
                 message="Пользователь не найден",
             )
-
-        # Ротация refresh-токена: деактивируем старый refresh_token
-        db_token.status = "revoked"
-        await self.db.flush()
 
         # Генерируем новую пару токенов
         new_access_token, new_refresh_token = await self._issue_token_pair(user.id)
@@ -554,6 +487,47 @@ class AuthService:
             refresh_token=new_refresh_token,
             token_type="bearer",
         )
+
+    async def _reject_refresh(self, hashed_token: str, now: datetime) -> NoReturn:
+        """Отклонить refresh-токен, который нельзя ротировать, и выявить его повторное использование.
+
+        Отозванный токен, предъявленный позже REFRESH_REUSE_GRACE после отзыва, считается украденным:
+        легитимный клиент после ротации пользуется новой парой. Тогда отзываются все активные сессии
+        владельца, и отзыв фиксируется commit до ответа 401 — иначе откат транзакции запроса его бы отменил.
+        Повтор в пределах окна (клиент не получил ответ на ротацию) отклоняется без отзыва остальных сессий.
+        """
+        db_token = (await self.db.execute(select(Token).where(Token.token_hash == hashed_token))).scalar_one_or_none()
+
+        if db_token is not None and db_token.status == "active":
+            expires_at = db_token.expires_at
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at <= now:
+                logger.warning(f"Истек срок действия refresh-токена для пользователя {db_token.user_id}")
+                raise UnauthorizedException(code=ErrorCode.EXPIRED_TOKEN, message="Срок действия refresh токена истек")
+            # Активный и не истёкший токен не ротировался только при несовпадении sub с владельцем
+            logger.warning(f"Несоответствие владельца refresh-токена в БД ({db_token.user_id}) и claim sub")
+            raise UnauthorizedException(code=ErrorCode.INVALID_TOKEN, message="Недействительный refresh токен")
+
+        if db_token is not None and db_token.status == "revoked":
+            revoked_at = db_token.revoked_at
+            if revoked_at is not None and revoked_at.tzinfo is None:
+                revoked_at = revoked_at.replace(tzinfo=timezone.utc)
+            if revoked_at is None or now - revoked_at > REFRESH_REUSE_GRACE:
+                owner_id = db_token.user_id
+                await self.db.execute(
+                    update(Token)
+                    .where(Token.user_id == owner_id, Token.status == "active")
+                    .values(status="revoked", revoked_at=now)
+                )
+                await self.db.commit()
+                logger.warning(
+                    f"Повторное использование отозванного refresh-токена пользователя {owner_id}: "
+                    "все активные сессии отозваны"
+                )
+
+        logger.warning("Refresh-токен отсутствует в базе данных либо неактивен")
+        raise UnauthorizedException(code=ErrorCode.TOKEN_REVOKED, message="Refresh токен недействителен или отозван")
 
     async def cleanup_expired_tokens(self, retention_days: int = 30) -> int:
         """Удалить устаревшие токены."""

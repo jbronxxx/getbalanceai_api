@@ -14,7 +14,7 @@
 * **База данных и ORM**: PostgreSQL 16, SQLAlchemy 2.0 (Async Session, asyncpg)
 * **Миграции**: Alembic
 * **Валидация и DTO**: Pydantic v2 (`ConfigDict`, `Field`)
-* **Аутентификация**: JWT (`python-jose`), хеширование паролей (`bcrypt`), ротация Refresh-токенов
+* **Аутентификация**: вход через Google и Apple (ID-токены), JWT (`PyJWT`), ротация Refresh-токенов
 * **Интеграция с LLM**: Google Gemini API
 * **Кэширование**: Redis 7 (кэширование инсайтов и аналитических рекомендаций с отказоустойчивым graceful fallback)
 * **Конфигурация**: Pydantic Settings + `.env`
@@ -102,8 +102,9 @@ erDiagram
 ```
 
 ### Таблицы:
-* `users`: Пользователи системы (email, хешированный пароль, имя, аватар `avatar_url`, базовая расчетная валюта `base_currency`)
-* `tokens`: JWT access и refresh токены сессий пользователей с отслеживанием статуса (`active`, `revoked`, `expired`)
+* `users`: Пользователи системы (email, имя, аватар `avatar_url`, базовая расчетная валюта `base_currency`)
+* `tokens`: refresh-токены сессий пользователей (SHA-256 хеш) со статусом (`active`, `revoked`, `expired`) и временем отзыва `revoked_at`
+* `users.hashed_password`: устаревшая колонка входа по паролю; значения очищены миграцией `j00900900900`, колонка удаляется следующим релизом
 * `transactions`: Финансовые операции (доход/расход с категорией, датой и мультивалютными полями стандарта `NUMERIC(18, 2)` и `NUMERIC(18, 6)`: `amount`, `currency`, `exchange_rate`, `base_amount`)
 * `budgets`: Лимиты расходов по категориям (по месяцам и годам, поле `limit_amount` типа `NUMERIC(18, 2)` в валюте лимита `currency`, CHECK `ck_budgets_currency`)
 * `alembic_version`: Служебная таблица для отслеживания миграций
@@ -161,7 +162,7 @@ getbalanceai_api/
 │   ├── models/                 # ORM-модели SQLAlchemy 2.0
 │   │   └── models.py           # Модели User, Token, Transaction, Budget и Enum-типы
 │   ├── routers/                # Эндпоинты FastAPI (Контроллеры)
-│   │   ├── auth.py             # Авторизация (/register, /login, /refresh, /logout, /me)
+│   │   ├── auth.py             # Авторизация (/google, /apple, /refresh, /logout, /me)
 │   │   ├── budgets.py          # CRUD бюджетов и расчет ETag
 │   │   ├── currencies.py       # Котировки валют (/api/v1/currencies/rates)
 │   │   ├── insights.py         # AI-аналитика расходов (/api/v1/insights)
@@ -173,7 +174,7 @@ getbalanceai_api/
 │   ├── services/               # Слой бизнес-логики
 │   │   ├── ai_service.py       # Интеграция с Google Gemini и кэширование инсайтов
 │   │   ├── insights_formatting.py # Названия категорий и формат сумм для AI-отчёта, как в приложении
-│   │   ├── auth_service.py     # Пароли, JWT, ротация и очистка токенов
+│   │   ├── auth_service.py     # OAuth-вход, JWT, ротация и очистка токенов
 │   │   ├── budget_service.py   # Лимиты бюджетов и подсчет расходов
 │   │   ├── currency_service.py # Получение и кэширование котировок валют (Redis, fallback)
 │   │   ├── legal_pages.py      # Выбор языка и HTML-рендеринг публичных страниц
@@ -212,7 +213,7 @@ getbalanceai_api/
 │   ├── test_public_pages.py    # Тесты публичных страниц (/privacy, /terms, /delete-account)
 │   ├── test_redis_module.py    # Модульные тесты централизованного клиента и ключей Redis
 │   ├── test_oauth_verification.py # Проверка ID-токенов Google/Apple на реальной RSA-подписи (aud, iss, email_verified)
-│   ├── test_security.py        # Тесты CORS, Rate Limiting, ключа лимитера, сложности паролей и prod-настроек
+│   ├── test_security.py        # Тесты CORS, Rate Limiting, ключа лимитера, удалённых эндпоинтов входа по паролю и prod-настроек
 │   ├── test_sync.py            # Интеграционные тесты офлайн-синхронизации
 │   ├── test_transaction_service.py # Тесты сервиса транзакций
 │   ├── test_transactions.py    # Тесты транзакций и кэширования инсайтов
@@ -265,7 +266,9 @@ getbalanceai_api/
    * **Stateless JWT**: `access_token` не сохраняется в базу данных и валидируется криптографически без обращения к СУБД.
    * **Сессия**: access и refresh токены выдаются парой (`AuthService._issue_token_pair`) при входе и ротации; `id` строки refresh-токена в `tokens` записывается в access-токен как claim `sid`.
    * **Logout** (`POST /auth/logout`, `DELETE /auth/me`) завершает только текущую сессию: refresh-токен с `id = sid` помечается `revoked`, а `jti` access-токена записывается в Redis (`revoked_jti:{jti}`) с TTL до истечения токена. `get_current_user` проверяет этот ключ, поэтому отзыв сразу действует во всех воркерах gunicorn; другие устройства пользователя не затрагиваются. Выход завершается только после подтверждённой записи в Redis: при его недоступности ответ `503 SERVICE_UNAVAILABLE`, транзакция откатывается вместе с отзывом refresh-токена, токены остаются действующими, а `DELETE /auth/me` не удаляет аккаунт. У access-токенов, выданных до появления `sid`, при logout отзывается только сам access-токен; после ближайшей ротации пара уже связана.
-   * Реализован паттерн **Refresh Token Rotation**: при обновлении токена старый refresh-токен помечается в БД как `revoked`, а клиенту выдается новая пара токенов.
+   * Реализован паттерн **Refresh Token Rotation**: при обновлении токена старый refresh-токен помечается в БД как `revoked` (с `revoked_at`), а клиенту выдается новая пара токенов. Проверка и отзыв выполняются одним `UPDATE ... WHERE status='active' RETURNING`: из параллельных запросов с одним токеном новую пару получает только один.
+   * **Обнаружение повторного использования**: отозванный refresh-токен, предъявленный позже 30 секунд после отзыва (`REFRESH_REUSE_GRACE`), считается украденным — отзываются все активные сессии владельца, отзыв фиксируется `commit` до ответа `401 TOKEN_REVOKED`. Повтор в пределах окна (клиент не получил ответ на ротацию) отклоняется без отзыва других сессий.
+   * **Вход по паролю выведен из API**: `/auth/register` и `/auth/login` удалены. Иначе можно было заранее зарегистрировать аккаунт на чужой email с паролем: при входе владельца через Google аккаунт привязывался по email, а пароль злоумышленника продолжал работать.
    * **OAuth и синхронизация профиля**:
      * При входе через Google (`POST /api/v1/auth/google`) и Apple (`POST /api/v1/auth/apple`) проверяются подпись (JWKS провайдера; ключи кэшируются на час в клиенте уровня класса `AuthService`, то есть один раз на воркер, а не на запрос), срок, `aud` и `iss` ID-токена (`AuthService._decode_oauth_token`). `aud` должен совпасть с одним из client ID из `GOOGLE_CLIENT_ID` / `APPLE_CLIENT_ID` (список через запятую — Android, iOS, Web); без настроенных client ID вход через провайдера отклоняется. `iss`: Google — `accounts.google.com` или `https://accounts.google.com`, Apple — `https://appleid.apple.com`. Для Google дополнительно требуется `email_verified=true`.
      * Эндпоинт Google поддерживает опциональные поля `avatar_url` и `name` в теле запроса в качестве fallback при кешировании ID-токена Google Play Services / GIS на мобильном клиенте.
@@ -274,11 +277,10 @@ getbalanceai_api/
 
 4. **Безопасность и ограничение частоты запросов (Security & Rate Limiting)**:
    * **CORS Middleware**: Подключен `CORSMiddleware` с параметризацией разрешенных ориджинов, методов и заголовков через `app_config.yaml` и переменные окружения (`CORS_ORIGINS`, `CORS_ALLOW_METHODS`, `CORS_ALLOW_HEADERS`). `CORS_ALLOW_CREDENTIALS` по умолчанию `false`: клиенты авторизуются Bearer-токеном, cookie не используются.
-   * **Rate Limiting**: Используется `slowapi` для защиты критичных эндпоинтов авторизации (`/register`, `/login` — 5 запросов/мин) и ресурсоемких AI-инсайтов (`/insights` — 10 запросов/мин). При превышении возвращается стандартизированный `ErrorResponse` с HTTP 429 и кодом `RATE_LIMIT_EXCEEDED`.
+   * **Rate Limiting**: Используется `slowapi` для защиты критичных эндпоинтов авторизации (`/google`, `/apple` — 5 запросов/мин) и ресурсоемких AI-инсайтов (`/insights` — 10 запросов/мин). При превышении возвращается стандартизированный `ErrorResponse` с HTTP 429 и кодом `RATE_LIMIT_EXCEEDED`.
      * Ключ лимита — `user:<sub>` только из access-токена с проверенной подписью и сроком (`app/limiter.py`), иначе IP клиента: поддельный `sub` не даёт отдельного счётчика.
      * IP клиента за nginx: nginx перезаписывает `X-Forwarded-For` значением `$remote_addr`, gunicorn запущен с `--forwarded-allow-ips "*"` (gunicorn 23 не принимает подсеть CIDR; порт 8000 доступен только из сети Docker и с хоста).
      * Счётчики хранятся в `RATE_LIMIT_STORAGE_URI` (в docker-compose — Redis, общий для 4 воркеров gunicorn; по умолчанию `memory://`, например в тестах). При недоступности Redis лимиты временно считаются в памяти воркера (`in_memory_fallback_enabled`), запросы не падают.
-   * **Валидация сложности паролей**: Пароли при регистрации ограничены 72 байтами (жесткий лимит алгоритма bcrypt) и валидируются на наличие хотя бы одной буквы и одной цифры.
    * **Защита продакшн-конфигурации**: `APP_DEBUG` по умолчанию `false`. При старте в режиме `debug=False` блокируется запуск с дефолтным или пустым `SECRET_KEY`, без `GOOGLE_CLIENT_ID` (`APPLE_CLIENT_ID` необязателен — без него вход через Apple отклоняется) и с `CORS_ORIGINS=*` вместе с `CORS_ALLOW_CREDENTIALS=true`.
 
 5. **Управление транзакциями и пулом соединений (Unit of Work, get_db & Pool Resilience)**:
@@ -330,7 +332,7 @@ getbalanceai_api/
   * Сервис `promtail` собирает логи всех запущенных Docker-контейнеров (метки `container`, `service`, `logstream`). Системные логи хоста (`/var/log`: `auth.log`, `syslog` с IP и логинами SSH) не собираются и в контейнер не монтируются.
   * Контейнеры promtail находит через `docker-socket-proxy` (`tcp://docker-socket-proxy:2375`), а не через `docker.sock`: сокет даже с `:ro` открывает весь Docker API (запуск привилегированных контейнеров, `exec`), то есть root на хосте. Прокси пропускает только чтение контейнеров, сетей и сведений о демоне (`CONTAINERS=1`, `NETWORKS=1`, `INFO=1`, `POST=0`, `EVENTS=0`) и доступен лишь по изолированной сети `docker-api` (`internal: true`), к которой подключены promtail и cadvisor. Чтение контейнеров включает их inspect, поэтому переменные окружения контейнеров promtail видеть по-прежнему может.
   * Логи пересылаются в `loki` (хранилище логов, оптимизированное для работы с тегами). Срок хранения — 30 дней (`limits_config.retention_period: 720h` и компактор `retention_enabled` в `loki/local-config.yaml`); значение указано в Политике конфиденциальности.
-  * Уровни: INFO — бизнес-события (регистрация и вход с указанием способа: email, google, apple; ротация и отзыв токенов, создание/удаление транзакций и бюджетов, генерация AI-инсайтов, синхронизация); WARNING — отклонённые запросы и деградация внешних сервисов; ERROR — сбои сервера (500 с методом и путём, ошибки Gemini). Чтения, попадания в кэш, инвалидация ETag и истёкший access-токен — DEBUG.
+  * Уровни: INFO — бизнес-события (регистрация и вход с указанием способа: google, apple; ротация и отзыв токенов, создание/удаление транзакций и бюджетов, генерация AI-инсайтов, синхронизация); WARNING — отклонённые запросы и деградация внешних сервисов; ERROR — сбои сервера (500 с методом и путём, ошибки Gemini). Чтения, попадания в кэш, инвалидация ETag и истёкший access-токен — DEBUG.
   * Персональные данные в логи не пишутся: пользователь идентифицируется по `user_id`, при неудачном входе email маскируется (`j***@gmail.com`, `mask_email` в `logger/logger.py`); ответ LLM не логируется — при ошибке разбора только текст ошибки и длина ответа.
   * Каждая строка лога содержит ID запроса из `X-Request-ID` / `X-Correlation-ID`. Входящее значение принимается, только если это ≤ 64 символов `[A-Za-z0-9-]` (`normalize_request_id`), иначе генерируется UUID4 — так клиент не может подделать строки лога или раздуть записи.
 * **Сбор метрик (Prometheus + cAdvisor)**:

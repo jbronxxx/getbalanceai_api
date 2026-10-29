@@ -9,7 +9,7 @@ FastAPI бэкенд для персонального финансового т
 * **Веб-фреймворк:** FastAPI + Uvicorn
 * **База данных:** PostgreSQL 16
 * **ORM & Миграции:** SQLAlchemy 2.0 + Alembic
-* **Безопасность & Авторизация:** JWT Access & Refresh токенов с ротацией (`python-jose`) + хеширование паролей (`bcrypt`)
+* **Безопасность & Авторизация:** JWT Access & Refresh токенов с ротацией (`PyJWT`), вход только через Google и Apple
 * **AI Интеграция:** Google Gemini API (модель `gemini-3.5-flash-lite`)
 * **Контейнеризация:** Docker & Docker Compose
 * **Тестирование:** Pytest + HTTPX / TestClient
@@ -257,8 +257,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000 --timeout-keep-alive 75
 
 ### Основные API-эндпоинты:
 - **Аутентификация (`/api/v1/auth`):**
-  - `POST /api/v1/auth/register` — регистрация пользователя
-  - `POST /api/v1/auth/login` — аутентификация и получение пары `access_token` и `refresh_token`
+  - `POST /api/v1/auth/google`, `POST /api/v1/auth/apple` — вход или регистрация по ID-токену провайдера и получение пары `access_token` и `refresh_token`
   - `POST /api/v1/auth/refresh` — бессрочное/бесшовное обновление `access_token` с помощью `refresh_token` (механизм Refresh Token Rotation)
   - `POST /api/v1/auth/logout` — выход из системы и отзыв активного токена
   - `GET /api/v1/auth/me` — получение данных текущего авторизованного пользователя
