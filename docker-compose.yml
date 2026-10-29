@@ -89,14 +89,37 @@ services:
         max-file: "3"
     image: grafana/promtail:3.0.0
     volumes:
-      - /var/log:/var/log
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./promtail:/etc/promtail
     command: -config.file=/etc/promtail/config.yml
+    # default — отправка в Loki, docker-api — обнаружение контейнеров через прокси вместо docker.sock
+    networks:
+      - default
+      - docker-api
     restart: unless-stopped
     depends_on:
       - loki
+      - docker-socket-proxy
+
+  # Docker API только на чтение для promtail: список контейнеров, сети и логи. Сокет с :ro всё равно даёт полный
+  # API (запуск контейнеров, exec) — прокси пропускает лишь разрешённые GET-эндпоинты, POST запрещён
+  docker-socket-proxy:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    environment:
+      - CONTAINERS=1
+      - NETWORKS=1
+      - EVENTS=0
+      - POST=0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - docker-api
+    restart: unless-stopped
 
   grafana:
     logging:
@@ -162,6 +185,11 @@ services:
       - -docker_only=true
       - -housekeeping_interval=10s
     restart: unless-stopped
+networks:
+  # Изолированная сеть без выхода наружу: прокси Docker API доступен только promtail
+  docker-api:
+    internal: true
+
 volumes:
   postgres_data:
   redis_data:
