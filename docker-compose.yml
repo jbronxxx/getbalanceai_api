@@ -101,8 +101,8 @@ services:
       - loki
       - docker-socket-proxy
 
-  # Docker API только на чтение для promtail: список контейнеров, сети и логи. Сокет с :ro всё равно даёт полный
-  # API (запуск контейнеров, exec) — прокси пропускает лишь разрешённые GET-эндпоинты, POST запрещён
+  # Docker API только на чтение для promtail и cadvisor: контейнеры, сети, сведения о демоне. Сокет с :ro всё равно
+  # даёт полный API (запуск контейнеров, exec) — прокси пропускает лишь разрешённые GET-эндпоинты, POST запрещён
   docker-socket-proxy:
     logging:
       driver: "json-file"
@@ -113,6 +113,7 @@ services:
     environment:
       - CONTAINERS=1
       - NETWORKS=1
+      - INFO=1
       - EVENTS=0
       - POST=0
     volumes:
@@ -168,14 +169,12 @@ services:
         max-size: "10m"
         max-file: "3"
     image: gcr.io/cadvisor/cadvisor:v0.49.1
-    privileged: true
-    devices:
-      - /dev/kmsg
+    # Без privileged и /dev/kmsg: метрики CPU, памяти и сети читаются из cgroup и /rootfs, а события OOM
+    # из журнала ядра дашборды не используют. Docker API — через прокси вместо docker.sock
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
       - /:/rootfs:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - /sys:/sys:ro
       - /sys/fs/cgroup:/sys/fs/cgroup:ro
       - /var/lib/docker/:/var/lib/docker:ro
@@ -183,10 +182,16 @@ services:
     command:
       - -machine_id_file=/rootfs/var/lib/machine-id
       - -docker_only=true
+      - -docker=tcp://docker-socket-proxy:2375
       - -housekeeping_interval=10s
+    networks:
+      - default
+      - docker-api
     restart: unless-stopped
+    depends_on:
+      - docker-socket-proxy
 networks:
-  # Изолированная сеть без выхода наружу: прокси Docker API доступен только promtail
+  # Изолированная сеть без выхода наружу: прокси Docker API доступен только promtail и cadvisor
   docker-api:
     internal: true
 
