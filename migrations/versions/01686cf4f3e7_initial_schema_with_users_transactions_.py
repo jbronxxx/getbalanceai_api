@@ -111,4 +111,7 @@ def downgrade() -> None:
     op.drop_table("tokens")
     op.drop_table("budgets")
     op.drop_table("users")
+    # drop_table не удаляет ENUM-типы Postgres: без этого повторный upgrade падает на CREATE TYPE
+    sa.Enum(name="transactiontype").drop(op.get_bind(), checkfirst=True)
+    sa.Enum(name="category").drop(op.get_bind(), checkfirst=True)
     # ### end Alembic commands ###
