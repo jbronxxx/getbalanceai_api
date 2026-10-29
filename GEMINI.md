@@ -1,4 +1,4 @@
-# Регламент разработки Finance App API (FastAPI)
+# Регламент разработки GetBalance AI API (FastAPI)
 
 Production-grade финансовое API. Источник правды: [ARCHITECTURE.md](ARCHITECTURE.md), [RESPONSE_FORMAT.md](RESPONSE_FORMAT.md). Локальные правила: `app/routers/`, `app/services/`, `app/models/`, `tests/`, `migrations/` (`GEMINI.md` в каждой).
 

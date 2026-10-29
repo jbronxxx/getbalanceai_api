@@ -1,4 +1,4 @@
-# Finance App API
+# GetBalance AI API
 
 FastAPI бэкенд для персонального финансового трекера с аналитикой расходов и AI-рекомендациями на базе Google Gemini.
 
@@ -87,7 +87,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
 ```bash
 crontab -e
 # Добавьте строку:
-0 3 * * * /absolute/path/to/finance_app/scripts/backup_db.sh
+0 3 * * * /opt/getbalanceai_api/scripts/backup_db.sh
 ```
 
 Хранение: в режиме по умолчанию (`daily`) скрипт оставляет 7 последних копий `db_backup_*.sql` (при ежедневном cron — около 7 суток). Деплой вызывает скрипт в режиме `predeploy`: копии `predeploy_backup_*.sql` хранятся отдельно, не более 3 штук и не дольше 7 суток, и не вытесняют ежедневные. Срок 7 суток указан в Политике конфиденциальности. Файлы создаются с правами только для владельца (`umask 077`). Логи Loki хранятся 30 дней (`loki/local-config.yaml`). После изменения конфига Loki на сервере выполните `docker compose restart loki`: `up -d` не перечитывает смонтированный файл.
