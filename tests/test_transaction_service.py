@@ -12,6 +12,7 @@ from app.exceptions import NotFoundException
 from app.models.models import Category, Transaction, TransactionType, User
 from app.schemas.schemas import TransactionCreate
 from app.services.transaction_service import TransactionService
+from tests.conftest import SQLALCHEMY_DATABASE_URL
 
 
 class TestTransactionServiceUnit:
@@ -365,3 +366,77 @@ class TestTransactionEndpointsIntegration:
         assert paged_res.status_code == 200
         assert "ETag" not in paged_res.headers
         assert len(paged_res.json()["data"]["items"]) == 2
+
+
+class TestTransactionsEtagOnEdits:
+    """ETag списка транзакций меняется при правке записи, а не только при создании и удалении."""
+
+    @staticmethod
+    def _sync_item(tx_id: str, amount: float, category: str = "food") -> dict:
+        return {
+            "id": tx_id,
+            "amount": amount,
+            "currency": "USD",
+            "description": "Покупка",
+            "category": category,
+            "type": "expense",
+            "date": "2026-10-10T12:00:00Z",
+        }
+
+    async def _etag(self, client: AsyncClient, headers: dict[str, str]) -> str:
+        response = await client.get("/api/v1/transactions/", headers=headers)
+        assert response.status_code == 200
+        return response.headers["ETag"]
+
+    @pytest.mark.asyncio
+    async def test_edit_via_sync_changes_etag_and_disables_304(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Правка суммы с другого устройства: клиент со старым ETag получает 200 с новыми данными, а не 304."""
+        tx_id = str(uuid.uuid4())
+        await client.post("/api/v1/sync/", json={"transactions": [self._sync_item(tx_id, 10.0)]}, headers=auth_headers)
+        old_etag = await self._etag(client, auth_headers)
+
+        await client.post("/api/v1/sync/", json={"transactions": [self._sync_item(tx_id, 25.0)]}, headers=auth_headers)
+        response = await client.get("/api/v1/transactions/", headers={**auth_headers, "If-None-Match": old_etag})
+
+        assert response.status_code == 200
+        assert response.headers["ETag"] != old_etag
+        assert response.json()["data"]["items"][0]["amount"] == "25.00"
+
+    @pytest.mark.asyncio
+    async def test_category_edit_changes_etag(self, client: AsyncClient, auth_headers: dict[str, str]):
+        tx_id = str(uuid.uuid4())
+        await client.post("/api/v1/sync/", json={"transactions": [self._sync_item(tx_id, 10.0)]}, headers=auth_headers)
+        old_etag = await self._etag(client, auth_headers)
+
+        item = self._sync_item(tx_id, 10.0, category="transport")
+        await client.post("/api/v1/sync/", json={"transactions": [item]}, headers=auth_headers)
+
+        assert await self._etag(client, auth_headers) != old_etag
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        SQLALCHEMY_DATABASE_URL.startswith("sqlite"),
+        reason="SQLite не хранит часовой пояс: дата из батча всегда отличается от прочитанной, и строка обновляется",
+    )
+    async def test_unchanged_resync_keeps_etag(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Повтор той же записи без изменений не сбрасывает кэш клиента."""
+        item = self._sync_item(str(uuid.uuid4()), 10.0)
+        await client.post("/api/v1/sync/", json={"transactions": [item]}, headers=auth_headers)
+        etag = await self._etag(client, auth_headers)
+
+        await client.post("/api/v1/sync/", json={"transactions": [item]}, headers=auth_headers)
+
+        assert await self._etag(client, auth_headers) == etag
+
+    @pytest.mark.asyncio
+    async def test_base_currency_change_changes_etag(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Пакетный пересчёт base_amount при смене базовой валюты тоже меняет ETag списка."""
+        await client.post(
+            "/api/v1/sync/", json={"transactions": [self._sync_item(str(uuid.uuid4()), 10.0)]}, headers=auth_headers
+        )
+        old_etag = await self._etag(client, auth_headers)
+
+        response = await client.patch("/api/v1/auth/me", json={"base_currency": "EUR"}, headers=auth_headers)
+        assert response.status_code == 200
+
+        assert await self._etag(client, auth_headers) != old_etag

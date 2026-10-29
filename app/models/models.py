@@ -8,7 +8,7 @@ from typing import Optional
 
 from sqlalchemy import CheckConstraint, DateTime
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import ForeignKey, Index, Numeric, String, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, Numeric, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -171,6 +171,7 @@ class Transaction(Base):
         type (TransactionType): Тип транзакции (income / expense).
         date (datetime): Дата совершения операции.
         created_at (datetime): Дата и время записи в БД.
+        updated_at (datetime): Дата и время последнего изменения записи (участвует в ETag списка).
         user (User): Связанный объект пользователя.
     """
 
@@ -200,6 +201,14 @@ class Transaction(Base):
     type: Mapped[TransactionType] = mapped_column(SAEnum(TransactionType), nullable=False)
     date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    # onupdate срабатывает и при ORM-правке, и при пакетном UPDATE (пересчёт при смене базовой валюты)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+        nullable=False,
+    )
 
     # Связь с пользователем
     user: Mapped["User"] = relationship(back_populates="transactions")
