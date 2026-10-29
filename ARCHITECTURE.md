@@ -1,16 +1,15 @@
-# Архитектура и база знаний проекта Finance App API
+# Архитектура и база знаний проекта GetBalance AI API
 
 > [!NOTE]
-> Данный документ является единым источником правды по архитектуре, модели данных, контрактам и правилам работы с проектом **Finance App API**.
-> Реестр задач и багов с указанием конкретных файлов и строк кода находится в [`TASKS.md`](file:///Users/user/finance_app/TASKS.md).
+> Данный документ является единым источником правды по архитектуре, модели данных, контрактам и правилам работы с проектом **GetBalance AI API**.
 
 ---
 
 ## 1. Назначение и стек технологий
 
-**Finance App API** — бэкенд-сервис (REST API) для персонального учета финансов с интеграцией искусственного интеллекта (Google Gemini) и возможностью пакетной офлайн-синхронизации.
+**GetBalance AI API** — бэкенд-сервис (REST API) для персонального учета финансов с интеграцией искусственного интеллекта (Google Gemini) и возможностью пакетной офлайн-синхронизации.
 
-* **Репозиторий**: `jbronxxx/finance_app_api`
+* **Репозиторий**: `jbronxxx/getbalanceai_api`
 * **Фреймворк**: FastAPI (Python 3.11+)
 * **База данных и ORM**: PostgreSQL 16, SQLAlchemy 2.0 (Async Session, asyncpg)
 * **Миграции**: Alembic
@@ -156,7 +155,7 @@ erDiagram
 ## 4. Структура каталогов
 
 ```
-finance_app/
+getbalanceai_api/
 ├── app/                        # Основной пакет приложения
 │   ├── legal/                  # Тексты публичных страниц (ru/en/uz/kk): privacy.py, terms.py, delete_account.py, ui.py
 │   ├── models/                 # ORM-модели SQLAlchemy 2.0
@@ -230,8 +229,7 @@ finance_app/
 ├── requirements-dev.txt        # Зависимости для тестирования и разработки
 ├── RESPONSE_FORMAT.md          # Спецификация форматов ответов API
 ├── ARCHITECTURE.md             # Архитектурная документация сервиса
-├── TEST_CHECKLIST.md           # Чек-лист проверок (автотесты и QA)
-└── TASKS.md                    # Полный реестр багов и задач
+└── TEST_CHECKLIST.md           # Чек-лист проверок (автотесты и QA)
 ```
 
 ---
@@ -257,7 +255,7 @@ finance_app/
      }
      ```
    * **Простой ответ**: `BaseResponse` (для операций `delete` / `logout`).
-   * Полная спецификация и примеры приведены в [`RESPONSE_FORMAT.md`](file:///Users/user/finance_app/RESPONSE_FORMAT.md).
+   * Полная спецификация и примеры приведены в [`RESPONSE_FORMAT.md`](RESPONSE_FORMAT.md).
 
 2. **Исключения**:
    * В контроллерах и сервисах выбрасываются доменные исключения `AppException` (`BadRequestException`, `NotFoundException`, `UnauthorizedException`) из `app.exceptions`, которые автоматически конвертируются в `ErrorResponse` глобальным обработчиком в `main.py`.

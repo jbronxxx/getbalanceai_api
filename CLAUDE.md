@@ -1,4 +1,4 @@
-# Finance App API (FastAPI)
+# GetBalance AI API (FastAPI)
 
 Production-grade финансовое API. Источники правды: @ARCHITECTURE.md, @RESPONSE_FORMAT.md. Локальные правила — `CLAUDE.md` в `app/routers/`, `app/services/`, `app/models/`, `tests/`, `migrations/`. Пошаговый процесс задач — skill `task-implementation-workflow`.
 

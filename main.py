@@ -1,4 +1,4 @@
-"""Точка входа в приложение Finance App API.
+"""Точка входа в приложение GetBalance AI API.
 
 Инициализация FastAPI приложения, подключение роутеров и управление
 жизненным циклом сервиса (lifespan).
@@ -59,7 +59,7 @@ async def lifespan(app_instance: FastAPI):
     Аргументы:
         app_instance (FastAPI): Экземпляр веб-приложения FastAPI.
     """
-    logger.info("Starting Finance App API")
+    logger.info("Starting GetBalance AI API")
     cleanup_task = asyncio.create_task(periodic_token_cleanup())
     background_tasks.add(cleanup_task)
     cleanup_task.add_done_callback(background_tasks.discard)
@@ -75,11 +75,11 @@ async def lifespan(app_instance: FastAPI):
 
     await close_redis()
     await close_http_client()
-    logger.info("Stopping Finance App API")
+    logger.info("Stopping GetBalance AI API")
 
 
 app = FastAPI(
-    title="Finance App API",
+    title="GetBalance AI API",
     description="Персональный финансовый трекер с AI-инсайтами и аналитикой",
     version="0.1.0",
     lifespan=lifespan,
