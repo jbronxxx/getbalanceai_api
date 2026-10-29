@@ -117,10 +117,13 @@ class User(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    # Связи с другими сущностями
-    transactions: Mapped[list["Transaction"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    budgets: Mapped[list["Budget"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    tokens: Mapped[list["Token"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    # Связи с другими сущностями. Удаление пользователя каскадирует БД (ON DELETE CASCADE): passive_deletes
+    # не даёт ORM загружать все транзакции и удалять их по одной
+    transactions: Mapped[list["Transaction"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", passive_deletes=True
+    )
+    budgets: Mapped[list["Budget"]] = relationship(back_populates="user", cascade="all, delete-orphan", passive_deletes=True)
+    tokens: Mapped[list["Token"]] = relationship(back_populates="user", cascade="all, delete-orphan", passive_deletes=True)
 
 
 class Token(Base):
@@ -142,7 +145,7 @@ class Token(Base):
     __tablename__ = "tokens"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     token_hash: Mapped[str] = mapped_column(String(500), nullable=False, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -187,7 +190,7 @@ class Transaction(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(precision=18, scale=2), nullable=False)
     currency: Mapped[str] = mapped_column(String(10), default="USD", server_default="USD", nullable=False)
     exchange_rate: Mapped[Decimal] = mapped_column(
@@ -241,7 +244,7 @@ class Budget(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     category: Mapped[Category] = mapped_column(SAEnum(Category), nullable=False)
     limit_amount: Mapped[Decimal] = mapped_column(Numeric(precision=18, scale=2), nullable=False)
     currency: Mapped[str] = mapped_column(String(10), default="USD", server_default="USD", nullable=False)
