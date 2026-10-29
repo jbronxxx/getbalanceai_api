@@ -13,6 +13,7 @@ from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
 from jwt.exceptions import InvalidTokenError as JWTError
+from redis.exceptions import RedisError
 from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,9 +22,11 @@ from app.exceptions import (
     BadRequestException,
     ErrorCode,
     NotFoundException,
+    ServiceUnavailableException,
     UnauthorizedException,
 )
 from app.models.models import SUPPORTED_CURRENCIES, Token, Transaction, User
+from app.redis import get_redis, get_revoked_jti_key
 from app.schemas.schemas import (
     AppleSignInRequest,
     GoogleSignInRequest,
@@ -53,7 +56,6 @@ class AuthService:
 
     bearer_scheme = HTTPBearer()
 
-    _revoked_jtis: set[str] = set()
     # Клиенты JWKS живут на уровне класса: сервис создаётся на каждый запрос, и в атрибуте экземпляра
     # кэш ключей провайдера терялся бы, заставляя скачивать их при каждом входе
     _google_jwks_client: PyJWKClient | None = None
@@ -206,8 +208,7 @@ class AuthService:
                 message="Неверный email или пароль",
             )
 
-        access_token = self.create_access_token(user.id)
-        refresh_token = await self.create_refresh_token(user.id)
+        access_token, refresh_token = await self._issue_token_pair(user.id)
         logger.info(f"Пользователь {user.id} успешно авторизован по email")
         return TokenResponse(
             access_token=access_token,
@@ -234,8 +235,7 @@ class AuthService:
         await self.db.flush()
         await self.db.refresh(user)
 
-        access_token = self.create_access_token(user.id)
-        refresh_token = await self.create_refresh_token(user.id)
+        access_token, refresh_token = await self._issue_token_pair(user.id)
         if is_new:
             logger.info(f"Зарегистрирован новый пользователь {user.id} через {provider}")
         else:
@@ -325,40 +325,48 @@ class AuthService:
             raise ValueError("Invalid token issuer")
         return data
 
-    def logout(self, user_id: uuid.UUID, token_string: str) -> None:
-        """Выйти из системы, деактивировать токен синхронно.
+    async def logout(self, user_id: uuid.UUID, token_string: str) -> None:
+        """Завершить сессию: отозвать refresh-токен в БД и access-токен в Redis.
 
-        Декодирует токен, добавляет jti в in-memory набор и сохраняет в Redis с TTL.
-        При невозможности найти токен поднимает NotFoundException.
+        Refresh-токен сессии находится по claim sid access-токена и помечается revoked, иначе
+        по нему после выхода можно получить новую пару. jti access-токена записывается в Redis
+        на оставшийся срок его жизни — это хранилище отзывов, общее для всех воркеров.
+        Выход считается завершённым только после подтверждённой записи: при сбое Redis
+        поднимается ServiceUnavailableException, транзакция откатывается вместе с отзывом
+        refresh-токена, и клиент не считает живой токен отозванным.
         """
-        import asyncio
-
-        from app.redis import get_redis, get_revoked_jti_key
-
         try:
-            payload = jwt.decode(token_string, config.secret_key, algorithms=[config.algorithm])
-            jti = payload.get("jti")
-            if jti:
-                # in-memory revocation
-                AuthService._revoked_jtis.add(jti)
-                # store in Redis with TTL
-                redis_client = get_redis()
-                ttl_seconds = config.access_token_expire_minutes * 60
-                # If event loop is running, schedule async set, else run directly
-                if asyncio.get_event_loop().is_running():
-                    asyncio.create_task(redis_client.set(get_revoked_jti_key(jti), "1", ex=ttl_seconds))
-                else:
-                    asyncio.run(redis_client.set(get_revoked_jti_key(jti), "1", ex=ttl_seconds))
-                logger.info(f"Токен успешно отозван при выходе пользователя {user_id}")
-                return
+            payload = jwt.decode(
+                token_string, config.secret_key, algorithms=[config.algorithm], options={"require": ["exp", "jti"]}
+            )
         except JWTError:
-            pass
-        # If we reach here, token not found or invalid
-        logger.warning(f"Попытка отзыва несуществующего токена для пользователя {user_id}")
-        raise NotFoundException(
-            code=ErrorCode.TOKEN_NOT_FOUND,
-            message="Токен не найден для деактивации",
-        )
+            payload = {}
+
+        jti = payload.get("jti")
+        if not jti:
+            logger.warning(f"Попытка отзыва несуществующего токена для пользователя {user_id}")
+            raise NotFoundException(
+                code=ErrorCode.TOKEN_NOT_FOUND,
+                message="Токен не найден для деактивации",
+            )
+
+        session_id = payload.get("sid")
+        if session_id:
+            await self.db.execute(
+                update(Token)
+                .where(Token.id == uuid.UUID(session_id), Token.user_id == user_id, Token.status == "active")
+                .values(status="revoked")
+            )
+
+        # Ключ живёт не дольше самого токена: после exp токен отклоняется по сроку
+        expires_in = int(payload["exp"] - datetime.now(timezone.utc).timestamp())
+        try:
+            await get_redis().set(get_revoked_jti_key(jti), "1", ex=max(expires_in, 1))
+        except RedisError as err:
+            logger.error(f"Не удалось отозвать токен пользователя {user_id}: Redis недоступен ({type(err).__name__})")
+            raise ServiceUnavailableException(message="Не удалось завершить выход, повторите попытку позже")
+
+        logger.info(f"Токен успешно отозван при выходе пользователя {user_id}")
 
     async def find_users_by_email(self, email: str) -> list[User]:
         """Найти пользователей по email без учёта регистра (для административных операций)."""
@@ -398,8 +406,19 @@ class AuthService:
             async for key in redis_client.scan_iter(match=pattern):
                 await redis_client.unlink(key)
 
-    def create_access_token(self, user_id: Union[str, uuid.UUID]) -> str:
-        """Сгенерировать access_token для пользователя."""
+    async def _issue_token_pair(self, user_id: uuid.UUID) -> tuple[str, str]:
+        """Выдать связанную пару access и refresh токенов одной сессии.
+
+        id строки refresh-токена в БД попадает в access-токен как claim sid: по нему logout
+        отзывает refresh-токен именно этого устройства, не затрагивая другие сессии пользователя.
+        """
+        session_id = uuid.uuid4()
+        refresh_token = await self.create_refresh_token(user_id, session_id=session_id)
+        access_token = self.create_access_token(user_id, session_id=session_id)
+        return access_token, refresh_token
+
+    def create_access_token(self, user_id: Union[str, uuid.UUID], session_id: uuid.UUID | None = None) -> str:
+        """Сгенерировать access_token для пользователя (с sid, если токен выдан в паре с refresh)."""
         user_id_str = str(user_id)
         expire = datetime.now(timezone.utc) + timedelta(minutes=config.access_token_expire_minutes)
         payload = {
@@ -408,12 +427,14 @@ class AuthService:
             "exp": expire,
             "jti": uuid.uuid4().hex,
         }
+        if session_id is not None:
+            payload["sid"] = str(session_id)
         logger.debug(f"Генерация access-токена для пользователя {user_id_str} (истекает: {expire})")
         token_str = jwt.encode(payload, config.secret_key, algorithm=config.algorithm)
         return token_str
 
-    async def create_refresh_token(self, user_id: Union[str, uuid.UUID]) -> str:
-        """Сгенерировать и сохранить в БД refresh_token для пользователя."""
+    async def create_refresh_token(self, user_id: Union[str, uuid.UUID], session_id: uuid.UUID | None = None) -> str:
+        """Сгенерировать и сохранить в БД refresh_token для пользователя; session_id — id строки в tokens."""
         user_id_str = str(user_id)
         user_uuid = uuid.UUID(user_id_str) if isinstance(user_id, str) else user_id
         expire = datetime.now(timezone.utc) + timedelta(days=config.refresh_token_expire_days)
@@ -429,6 +450,7 @@ class AuthService:
         hashed_token = hashlib.sha256(refresh_token_str.encode()).hexdigest()
 
         db_token = Token(
+            id=session_id or uuid.uuid4(),
             user_id=user_uuid,
             token_hash=hashed_token,
             expires_at=expire,
@@ -524,8 +546,7 @@ class AuthService:
         await self.db.flush()
 
         # Генерируем новую пару токенов
-        new_access_token = self.create_access_token(user.id)
-        new_refresh_token = await self.create_refresh_token(user.id)
+        new_access_token, new_refresh_token = await self._issue_token_pair(user.id)
 
         logger.info(f"Успешная ротация токенов для пользователя {user.id}")
         return TokenResponse(
@@ -600,16 +621,7 @@ async def get_current_user(
             message="Недействительный токен авторизации",
         )
 
-    if jti in AuthService._revoked_jtis:
-        raise UnauthorizedException(
-            code=ErrorCode.TOKEN_REVOKED,
-            message="Токен отозван или недействителен",
-        )
-    # Проверяем отозван ли токен в Redis
-    from app.redis import get_redis, get_revoked_jti_key
-
-    redis_client = get_redis()
-    if await redis_client.exists(get_revoked_jti_key(jti)):
+    if await get_redis().exists(get_revoked_jti_key(jti)):
         raise UnauthorizedException(
             code=ErrorCode.TOKEN_REVOKED,
             message="Токен отозван или недействителен",

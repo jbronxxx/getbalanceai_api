@@ -1,22 +1,32 @@
 """Юнит и интеграционные тесты для AuthService и эндпоинтов авторизации."""
 
+import hashlib
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+import fakeredis
 import jwt
 import pytest
 from fastapi.security import HTTPAuthorizationCredentials
 from httpx import AsyncClient
+from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.exceptions import BadRequestException, NotFoundException, UnauthorizedException
+from app.exceptions import (
+    BadRequestException,
+    NotFoundException,
+    ServiceUnavailableException,
+    UnauthorizedException,
+)
 from app.models.models import Token, User
+from app.redis import get_revoked_jti_key
 from app.schemas.schemas import (
     AppleSignInRequest,
     GoogleSignInRequest,
+    TokenResponse,
     UserLogin,
     UserRegister,
 )
@@ -158,7 +168,7 @@ class TestAuthServiceUnit:
         service = AuthService(db_session)
         token_str = service.create_access_token(test_user.id)
 
-        service.logout(test_user.id, token_str)
+        await service.logout(test_user.id, token_str)
 
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_str)
         with pytest.raises(UnauthorizedException) as exc_info:
@@ -170,8 +180,66 @@ class TestAuthServiceUnit:
         """Попытка деактивации несуществующего токена вызывает NotFoundException."""
         service = AuthService(db_session)
         with pytest.raises(NotFoundException) as exc_info:
-            service.logout(test_user.id, "nonexistent-token")
+            await service.logout(test_user.id, "nonexistent-token")
         assert exc_info.value.code == "TOKEN_NOT_FOUND"
+
+    @pytest.mark.asyncio
+    async def test_logout_token_without_exp(self, db_session: AsyncSession, test_user: User):
+        """Токен без срока действия не отзывается: ключ в Redis был бы вечным."""
+        token_str = jwt.encode(
+            {"sub": str(test_user.id), "type": "access", "jti": uuid.uuid4().hex},
+            config.secret_key,
+            algorithm=config.algorithm,
+        )
+        with pytest.raises(NotFoundException) as exc_info:
+            await AuthService(db_session).logout(test_user.id, token_str)
+        assert exc_info.value.code == "TOKEN_NOT_FOUND"
+
+    @pytest.mark.asyncio
+    async def test_logout_stores_jti_in_redis_with_token_ttl(
+        self, db_session: AsyncSession, test_user: User, mock_redis_client: fakeredis.FakeAsyncRedis
+    ):
+        """Logout записывает jti в Redis с TTL не больше оставшегося срока жизни токена."""
+        service = AuthService(db_session)
+        token_str = service.create_access_token(test_user.id)
+        jti = jwt.decode(token_str, config.secret_key, algorithms=[config.algorithm])["jti"]
+
+        await service.logout(test_user.id, token_str)
+
+        ttl = await mock_redis_client.ttl(get_revoked_jti_key(jti))
+        assert 0 < ttl <= config.access_token_expire_minutes * 60
+
+    @pytest.mark.asyncio
+    async def test_logout_visible_to_another_worker(
+        self, db_session: AsyncSession, test_user: User, mock_redis_client: fakeredis.FakeAsyncRedis
+    ):
+        """Отзыв, записанный в Redis другим воркером, отклоняет токен без локального состояния процесса."""
+        token_str = AuthService(db_session).create_access_token(test_user.id)
+        jti = jwt.decode(token_str, config.secret_key, algorithms=[config.algorithm])["jti"]
+        await mock_redis_client.set(get_revoked_jti_key(jti), "1", ex=60)
+
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_str)
+        with pytest.raises(UnauthorizedException) as exc_info:
+            await get_current_user(credentials=creds, db=db_session)
+        assert exc_info.value.code == "TOKEN_REVOKED"
+
+    @pytest.mark.asyncio
+    async def test_logout_redis_failure(
+        self, db_session: AsyncSession, test_user: User, mock_redis_client: fakeredis.FakeAsyncRedis
+    ):
+        """При сбое Redis logout возвращает 503, а токен остаётся действующим — без ложного успеха."""
+        service = AuthService(db_session)
+        token_str = service.create_access_token(test_user.id)
+
+        with patch.object(mock_redis_client, "set", AsyncMock(side_effect=RedisConnectionError("Connection refused"))):
+            with pytest.raises(ServiceUnavailableException) as exc_info:
+                await service.logout(test_user.id, token_str)
+        assert exc_info.value.code == "SERVICE_UNAVAILABLE"
+        assert exc_info.value.status_code == 503
+
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_str)
+        user = await get_current_user(credentials=creds, db=db_session)
+        assert user.id == test_user.id
 
     @pytest.mark.asyncio
     @patch("app.services.auth_service.PyJWKClient")
@@ -406,7 +474,7 @@ class TestGetCurrentUserDependency:
         """Отозванный токен вызывает UnauthorizedException."""
         service = AuthService(db_session)
         token_str = service.create_access_token(test_user.id)
-        service.logout(test_user.id, token_str)
+        await service.logout(test_user.id, token_str)
 
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_str)
         with pytest.raises(UnauthorizedException) as exc_info:
@@ -507,6 +575,105 @@ class TestAuthEndpointsIntegration:
         # После удаления старый access token недействителен
         me_after_del = await client.get("/api/v1/auth/me", headers=headers)
         assert me_after_del.status_code == 401
+
+    @staticmethod
+    async def _login_session(db_session: AsyncSession, email: str, register: bool = True) -> TokenResponse:
+        """Выдать пару токенов через сервис и зафиксировать её: rollback после ошибки запроса её не сотрёт."""
+        service = AuthService(db_session)
+        if register:
+            await service.register(UserRegister(email=email, password="Password123!", name="Session User"))
+        tokens = await service.login(UserLogin(email=email, password="Password123!"))
+        await db_session.commit()
+        return tokens
+
+    @pytest.mark.asyncio
+    async def test_login_links_access_token_to_refresh_session(self, db_session: AsyncSession):
+        """Access-токен содержит sid — id строки своего refresh-токена в таблице tokens."""
+        tokens = await self._login_session(db_session, f"sid_{uuid.uuid4().hex[:6]}@example.com")
+
+        sid = jwt.decode(tokens.access_token, config.secret_key, algorithms=[config.algorithm])["sid"]
+        db_token = await db_session.get(Token, uuid.UUID(sid))
+        assert db_token is not None
+        assert db_token.status == "active"
+        assert db_token.token_hash == hashlib.sha256(tokens.refresh_token.encode()).hexdigest()
+
+    @pytest.mark.asyncio
+    async def test_logout_revokes_refresh_token_of_session(self, client: AsyncClient, db_session: AsyncSession):
+        """После logout refresh-токен той же сессии не обменивается на новую пару (401 TOKEN_REVOKED)."""
+        tokens = await self._login_session(db_session, f"logout_rt_{uuid.uuid4().hex[:6]}@example.com")
+
+        logout_res = await client.post("/api/v1/auth/logout", headers={"Authorization": f"Bearer {tokens.access_token}"})
+        assert logout_res.status_code == 200
+
+        refresh_res = await client.post("/api/v1/auth/refresh", json={"refresh_token": tokens.refresh_token})
+        assert refresh_res.status_code == 401
+        assert refresh_res.json()["code"] == "TOKEN_REVOKED"
+
+    @pytest.mark.asyncio
+    async def test_logout_keeps_other_sessions(self, client: AsyncClient, db_session: AsyncSession):
+        """Logout на одном устройстве не отзывает refresh-токен другой сессии пользователя."""
+        email = f"two_devices_{uuid.uuid4().hex[:6]}@example.com"
+        phone = await self._login_session(db_session, email)
+        tablet = await self._login_session(db_session, email, register=False)
+
+        logout_res = await client.post("/api/v1/auth/logout", headers={"Authorization": f"Bearer {phone.access_token}"})
+        assert logout_res.status_code == 200
+
+        refresh_res = await client.post("/api/v1/auth/refresh", json={"refresh_token": tablet.refresh_token})
+        assert refresh_res.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_logout_after_refresh_revokes_rotated_session(self, client: AsyncClient, db_session: AsyncSession):
+        """Access-токен после ротации связан с новым refresh-токеном, и logout отзывает именно его."""
+        tokens = await self._login_session(db_session, f"rotated_{uuid.uuid4().hex[:6]}@example.com")
+        rotated_res = await client.post("/api/v1/auth/refresh", json={"refresh_token": tokens.refresh_token})
+        rotated = rotated_res.json()["data"]
+
+        logout_res = await client.post("/api/v1/auth/logout", headers={"Authorization": f"Bearer {rotated['access_token']}"})
+        assert logout_res.status_code == 200
+
+        refresh_res = await client.post("/api/v1/auth/refresh", json={"refresh_token": rotated["refresh_token"]})
+        assert refresh_res.status_code == 401
+        assert refresh_res.json()["code"] == "TOKEN_REVOKED"
+
+    @pytest.mark.asyncio
+    async def test_logout_endpoint_redis_unavailable(
+        self, client: AsyncClient, db_session: AsyncSession, mock_redis_client: fakeredis.FakeAsyncRedis
+    ):
+        """POST /api/v1/auth/logout при недоступном Redis возвращает 503, отзыв refresh-токена откатывается."""
+        tokens = await self._login_session(db_session, f"logout_redis_{uuid.uuid4().hex[:6]}@example.com")
+
+        with patch.object(mock_redis_client, "set", AsyncMock(side_effect=RedisConnectionError("Connection refused"))):
+            response = await client.post("/api/v1/auth/logout", headers={"Authorization": f"Bearer {tokens.access_token}"})
+
+        assert response.status_code == 503
+        body = response.json()
+        assert body["status"] == "error"
+        assert body["code"] == "SERVICE_UNAVAILABLE"
+
+        refresh_res = await client.post("/api/v1/auth/refresh", json={"refresh_token": tokens.refresh_token})
+        assert refresh_res.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_delete_me_endpoint_redis_unavailable(
+        self, client: AsyncClient, db_session: AsyncSession, mock_redis_client: fakeredis.FakeAsyncRedis
+    ):
+        """DELETE /api/v1/auth/me при недоступном Redis возвращает 503 и не удаляет аккаунт."""
+        email = f"delete_redis_{uuid.uuid4().hex[:6]}@example.com"
+        user = await AuthService(db_session).register(UserRegister(email=email, password="Password123!", name="Keep"))
+        # id читаем до commit: после него атрибуты объекта истекают и ленивая подгрузка падает вне greenlet
+        user_id = user.id
+        # Фиксируем пользователя: при ошибке запроса override get_db откатывает сессию
+        await db_session.commit()
+        headers = {"Authorization": f"Bearer {AuthService(db_session).create_access_token(user_id)}"}
+
+        with patch.object(mock_redis_client, "set", AsyncMock(side_effect=RedisConnectionError("Connection refused"))):
+            response = await client.delete("/api/v1/auth/me", headers=headers)
+
+        assert response.status_code == 503
+        assert response.json()["code"] == "SERVICE_UNAVAILABLE"
+        result = await db_session.execute(select(User).where(User.id == user_id))
+        assert result.scalar_one_or_none() is not None
 
 
 class TestAuthLogsWithoutPii:

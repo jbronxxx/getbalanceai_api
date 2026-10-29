@@ -37,6 +37,7 @@ router = APIRouter(
         422: {"model": ErrorResponse, "description": "Ошибка валидации данных"},
         429: {"model": ErrorResponse, "description": "Превышен лимит частоты запросов"},
         500: {"model": ErrorResponse, "description": "Внутренняя ошибка сервера"},
+        503: {"model": ErrorResponse, "description": "Хранилище отзыва токенов недоступно (SERVICE_UNAVAILABLE)"},
     }
 )
 
@@ -122,9 +123,9 @@ async def logout(
     current_user: User = Depends(get_current_user),
     credentials: HTTPBearer = Depends(AuthService.bearer_scheme),
 ) -> dict[str, str]:
-    """Выйти из системы, деактивируя токен асинхронно."""
+    """Выйти из системы: отозвать текущий access-токен во всех воркерах."""
     service = AuthService(db)
-    service.logout(current_user.id, credentials.credentials)
+    await service.logout(current_user.id, credentials.credentials)
     return {"status": "success", "message": "Successfully logged out"}
 
 
@@ -174,8 +175,8 @@ async def delete_me(
 ) -> dict[str, str]:
     """Удалить аккаунт и все связанные данные (токены, бюджеты, транзакции)."""
     service = AuthService(db)
-    # Сначала инвалидируем текущий токен в памяти
-    service.logout(current_user.id, credentials.credentials)
+    # Сначала отзываем текущий токен: при недоступном Redis аккаунт не удаляется, клиент повторит запрос
+    await service.logout(current_user.id, credentials.credentials)
     # Затем удаляем пользователя из БД
     await service.delete_account(current_user.id)
     return {"status": "success", "message": "Account successfully deleted"}
