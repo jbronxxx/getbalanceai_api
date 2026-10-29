@@ -47,6 +47,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 3s
+    restart: unless-stopped
 
   redis:
     logging:
@@ -66,6 +67,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 3s
+    restart: unless-stopped
 
   loki:
     logging:

@@ -17,6 +17,9 @@ services:
       - ./nginx/htpasswd:/etc/nginx/htpasswd:ro
     depends_on:
       - api
+    # certbot обновляет сертификат в общем томе, но nginx читает его только при старте или reload:
+    # перечитываем конфигурацию раз в 6 часов, иначе после renew до истечения работал бы старый сертификат
+    command: "/bin/sh -c 'while :; do sleep 6h & wait $${!}; nginx -s reload; done & exec nginx -g \"daemon off;\"'"
     restart: unless-stopped
 
   grafana:
@@ -29,6 +32,7 @@ services:
       - certbot_www:/var/www/certbot
       - certbot_certs:/etc/letsencrypt
     entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    restart: unless-stopped
 
 volumes:
   certbot_www:
