@@ -104,7 +104,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    image: grafana/grafana:9.5.15
+    image: grafana/grafana:11.6.16
     ports:
       - "127.0.0.1:3000:3000"
     environment:
@@ -113,8 +113,7 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=false
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_USERS_VIEWERS_CAN_EDIT=false
-      - GF_PANELS_DISABLE_ANGULAR_PANELS=false
-      - GF_SECURITY_ANGULAR_SUPPORT_ENABLED=true
+      - GF_SECURITY_ANGULAR_SUPPORT_ENABLED=false
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources

@@ -285,6 +285,13 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000 --timeout-keep-alive 75
 * **Grafana** (Дашборды и визуализация) — локально `http://localhost:3000`, на проде `https://grafana.getbalanceai.app` (порт 3000 опубликован только на `127.0.0.1`, снаружи доступ лишь через nginx). Анонимный доступ и саморегистрация отключены. Логин/пароль администратора — `GRAFANA_ADMIN_USER` и `GRAFANA_ADMIN_PASSWORD` в `.env` (пароль обязателен); они применяются только при первом создании тома `grafana_data`, позже пароль меняется командой `docker compose exec grafana grafana-cli admin reset-admin-password <пароль>`.
   * Учётки для команды создаёт администратор: **Administration → Users → New user** (роль по умолчанию — Viewer). Viewer видит только дашборды, без Explore (`GF_USERS_VIEWERS_CAN_EDIT=false`); для свободных запросов к логам нужна роль Editor. Это ограничение интерфейса: в Grafana OSS любой вошедший пользователь может выполнить запрос к источникам данных через HTTP API (`/api/ds/query`), поэтому учётку Grafana выдают только тем, кому допустимо видеть логи целиком.
   * Первичный выпуск сертификата для поддомена: `docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm --entrypoint certbot certbot certonly --webroot -w /var/www/certbot -d grafana.getbalanceai.app`.
+  * **Смена версии Grafana:** новая версия при старте необратимо мигрирует базу в томе `grafana_data`, поэтому до мержа PR с новым образом на сервере выполняется `./scripts/backup_grafana.sh` (Grafana останавливается на несколько секунд; архив `backups/grafana_backup_*.tar.gz`, хранятся 3 последних). Откат: вернуть прежний тег образа в `docker-compose.yml`, затем восстановить том из архива:
+    ```bash
+    dc() { docker compose -f docker-compose.yml -f docker-compose.prod.yml "$@"; }
+    dc stop grafana
+    dc run --rm --no-deps -T --entrypoint sh grafana -c 'rm -rf /var/lib/grafana/* && tar xzf - -C /var/lib/grafana' < backups/grafana_backup_<время>.tar.gz
+    dc up -d grafana
+    ```
 * **Loki + Promtail** — автоматический сбор всех логов контейнеров.
 * **Prometheus + cAdvisor** — сбор системных метрик контейнеров (CPU, RAM) и метрик самого приложения FastAPI (`/metrics`).
 
