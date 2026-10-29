@@ -338,11 +338,14 @@ pytest tests/ -v
 
 # Запуск тестов с подсчетом покрытия (Coverage)
 pytest --cov=app --cov-report=term-missing tests/
+
+# Те же тесты на Postgres, как в CI (БД пересоздаёт таблицы на каждый тест — только отдельная тестовая база)
+TEST_DATABASE_URL=postgresql+asyncpg://<user>:<pass>@localhost:5432/<test_db> pytest tests/
 ```
 
 Проект защищен от попадания нерабочего кода:
 1. **Git pre-push hook:** Автоматически запускает тесты локально при `git push`.
-2. **CI (`.github/workflows/main.yml`):** линтеры и тесты на каждый PR и push в `main`; автодеплой запускается только после успешного CI. В `Dockerfile` тесты не выполняются.
+2. **CI (`.github/workflows/main.yml`):** линтеры; миграции на Postgres (`upgrade head`, `alembic check` — модели совпадают с миграциями, `downgrade base`, повторный `upgrade`); тесты на Postgres (`TEST_DATABASE_URL`) на каждый PR и push в `main`; автодеплой запускается только после успешного CI. В `Dockerfile` тесты не выполняются.
 3. Полный список тестовых проверок, как ручных, так и автоматизированных, находится в документе [**TEST_CHECKLIST.md**](TEST_CHECKLIST.md).
 
 ---

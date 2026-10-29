@@ -14,7 +14,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
 from jwt.exceptions import InvalidTokenError as JWTError
 from redis.exceptions import RedisError
-from sqlalchemy import case, func, select, update
+from sqlalchemy import Numeric, case, func, literal, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -155,13 +155,19 @@ class AuthService:
             for c in SUPPORTED_CURRENCIES
         }
 
-        rate_whens = [(Transaction.currency == curr, rate) for curr, rate in rate_cases.items()]
-        exchange_rate_expr = case(*rate_whens, else_=Decimal("1.0"))
+        # Курс передаётся как NUMERIC без масштаба: иначе литерал наследует тип amount (Numeric(18, 2)),
+        # asyncpg приводит параметр к NUMERIC(18, 2), и курс 1/12800 (UZS -> USD) округлялся до 0.00
+        rate_whens = [(Transaction.currency == curr, literal(rate, Numeric())) for curr, rate in rate_cases.items()]
+        exchange_rate_expr = case(*rate_whens, else_=literal(Decimal("1.0"), Numeric()))
 
         base_whens = [
             (
                 Transaction.currency == curr,
-                Transaction.amount if curr == new_currency else func.round(Transaction.amount * rate, 2),
+                (
+                    Transaction.amount
+                    if curr == new_currency
+                    else func.round(Transaction.amount * literal(rate, Numeric()), 2)
+                ),
             )
             for curr, rate in rate_cases.items()
         ]

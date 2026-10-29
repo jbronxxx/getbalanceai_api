@@ -1,5 +1,6 @@
 """Модуль общих фикстур pytest для изолированного тестирования приложения."""
 
+import os
 import uuid
 from unittest.mock import patch
 
@@ -9,7 +10,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 from app.database import Base, get_db
 from app.models.models import User
@@ -17,15 +18,19 @@ from app.services.auth_service import AuthService
 from config_reader.config_reader import config
 from main import app
 
-# Создаем in-memory базу SQLite с пулом StaticPool
+# По умолчанию — SQLite в памяти. TEST_DATABASE_URL (postgresql+asyncpg://...) прогоняет те же тесты на Postgres:
+# только он проверяет длину строк, точность Numeric и диалектные конструкции (ON CONFLICT, tuple IN), как на проде
+SQLALCHEMY_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
-SQLALCHEMY_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
-
-engine = create_async_engine(
-    SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
+if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+    engine = create_async_engine(
+        SQLALCHEMY_DATABASE_URL,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+else:
+    # Без пула: у каждого теста свой event loop, а соединения asyncpg привязаны к циклу, в котором открыты
+    engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
 TestingSessionLocal = async_sessionmaker(autocommit=False, autoflush=False, bind=engine, class_=AsyncSession)
 
 

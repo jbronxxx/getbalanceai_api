@@ -583,3 +583,44 @@ class TestMultiCurrencyBackend:
             rates = await service._fetch_rates_from_gateway()
             # Должен вернуть None, так как не все валюты валидны (KZT < 0, UZS == 0)
             assert rates is None
+
+
+class TestBaseCurrencyRecalculationPrecision:
+    """Пересчёт при смене базовой валюты не округляет курс до масштаба суммы (на Postgres курс 1/12800 давал 0.00)."""
+
+    @pytest.mark.asyncio
+    async def test_small_cross_rates_keep_precision(self, db_session: AsyncSession, test_user: User):
+        from app.schemas.schemas import CurrencyRatesResponse, UserUpdateRequest
+        from app.services.auth_service import AuthService
+
+        rates = CurrencyRatesResponse(
+            base="USD",
+            rates={"USD": Decimal("1"), "EUR": Decimal("0.92"), "UZS": Decimal("12800"), "KZT": Decimal("495")},
+            updated_at=datetime.now(timezone.utc),
+        )
+        user_id = test_user.id
+        test_user.base_currency = "UZS"
+        for currency, amount in (("UZS", "1000000"), ("KZT", "49500"), ("EUR", "100")):
+            db_session.add(
+                Transaction(
+                    user_id=user_id,
+                    amount=Decimal(amount),
+                    currency=currency,
+                    description="Покупка",
+                    category=Category.food,
+                    type=TransactionType.expense,
+                )
+            )
+        await db_session.commit()
+
+        with patch.object(CurrencyService, "get_rates", new_callable=AsyncMock, return_value=rates):
+            await AuthService(db_session).update_profile(user_id, UserUpdateRequest(base_currency="USD"))
+        await db_session.commit()
+
+        db_session.expire_all()
+        result = await db_session.execute(select(Transaction).where(Transaction.user_id == user_id))
+        by_currency = {t.currency: t for t in result.scalars().all()}
+        assert by_currency["UZS"].base_amount == Decimal("78.13")
+        assert by_currency["KZT"].base_amount == Decimal("100.00")
+        assert by_currency["EUR"].base_amount == Decimal("108.70")
+        assert by_currency["UZS"].exchange_rate == Decimal("0.000078")
