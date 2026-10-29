@@ -175,7 +175,12 @@ class AuthService:
             logger.warning(f"Не удалось инвалидировать кэш инсайтов в Redis при смене валюты: {err}")
 
     async def _handle_oauth_user(self, provider: str, email: str, name: str, avatar_url: str | None = None) -> TokenResponse:
-        """Найти или создать пользователя по email из ID-токена провайдера и выдать пару токенов."""
+        """Найти или создать пользователя по email из ID-токена провайдера и выдать пару токенов.
+
+        Email хранится и ищется в нижнем регистре: иначе один адрес в разном регистре
+        давал бы два аккаунта, а уникальность колонки email регистр учитывает.
+        """
+        email = email.strip().lower()
         query = select(User).where(User.email == email)
         result = await self.db.execute(query)
         user = result.scalar_one_or_none()

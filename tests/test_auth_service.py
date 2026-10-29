@@ -12,7 +12,7 @@ import pytest
 from fastapi.security import HTTPAuthorizationCredentials
 from httpx import AsyncClient
 from redis.exceptions import ConnectionError as RedisConnectionError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.exceptions import (
@@ -854,3 +854,37 @@ class TestRefreshRotationAtomicity:
         assert reuse.status_code == 401
         assert reuse.json()["code"] == "TOKEN_REVOKED"
         assert after.status_code == 401
+
+
+class TestOAuthEmailCaseInsensitive:
+    """Один адрес в разном регистре — один аккаунт."""
+
+    @staticmethod
+    def _google_claims(email: str) -> dict:
+        return {"email": email, "iss": "https://accounts.google.com", "email_verified": True}
+
+    @pytest.mark.asyncio
+    @patch("app.services.auth_service.PyJWKClient")
+    @patch("app.services.auth_service.jwt.decode")
+    async def test_new_user_email_stored_lowercase(self, mock_jwt_decode, mock_jwk_client, db_session: AsyncSession):
+        mock_jwt_decode.return_value = self._google_claims("  Mixed.Case@Example.COM ")
+
+        tokens = await AuthService(db_session).google_login(GoogleSignInRequest(id_token="t"))
+
+        assert tokens.user.email == "mixed.case@example.com"
+
+    @pytest.mark.asyncio
+    @patch("app.services.auth_service.PyJWKClient")
+    @patch("app.services.auth_service.jwt.decode")
+    async def test_mixed_case_login_finds_existing_account(self, mock_jwt_decode, mock_jwk_client, db_session: AsyncSession):
+        """Вход через Apple с адресом в другом регистре попадает в аккаунт, созданный через Google."""
+        service = AuthService(db_session)
+        mock_jwt_decode.return_value = self._google_claims("owner@example.com")
+        first = await service.google_login(GoogleSignInRequest(id_token="t1"))
+
+        mock_jwt_decode.return_value = {"email": "Owner@Example.com", "iss": "https://appleid.apple.com"}
+        second = await service.apple_login(AppleSignInRequest(identity_token="t2"))
+
+        assert second.user.id == first.user.id
+        count = (await db_session.execute(select(func.count(User.id)))).scalar_one()
+        assert count == 1
