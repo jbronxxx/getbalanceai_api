@@ -130,11 +130,13 @@ class TestUserProfileAndBaseCurrency:
             tx_data = tx_res.json()["data"]
             assert float(tx_data["base_amount"]) == 12800.00
 
+            # Период лимита — текущий месяц: транзакция создана без даты, то есть сейчас
+            now = datetime.now(timezone.utc)
             budget_payload = {
                 "category": "food",
                 "limit_amount": "128000.00",
-                "month": 10,
-                "year": 2026,
+                "month": now.month,
+                "year": now.year,
             }
             b_res = await client.post("/api/v1/budgets/", json=budget_payload, headers=auth_headers)
             assert b_res.status_code == 201
@@ -153,7 +155,7 @@ class TestUserProfileAndBaseCurrency:
             assert float(updated_tx["base_amount"]) == 1.00
 
             # 5. Лимит создан без валюты — в тогдашней базовой UZS — и не пересчитывается
-            b_list_res = await client.get("/api/v1/budgets/?month=10&year=2026", headers=auth_headers)
+            b_list_res = await client.get(f"/api/v1/budgets/?month={now.month}&year={now.year}", headers=auth_headers)
             assert b_list_res.status_code == 200
             budgets = b_list_res.json()["data"]
             assert len(budgets) >= 1
