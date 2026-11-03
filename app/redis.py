@@ -24,6 +24,10 @@ REDIS_KEY_CURRENCY_RATES_LAST_SUCCESSFUL = "currency_rates:last_successful:USD"
 REDIS_KEY_TOKEN_CLEANUP_LOCK = "lock:token_cleanup"
 
 
+# Срок жизни версии ETag бюджетов: после истечения ETag один раз изменится, и клиент перезагрузит список
+BUDGETS_VERSION_TTL_SECONDS = 30 * 86400
+
+
 def get_budgets_version_key(user_id: uuid.UUID | str) -> str:
     """Сформировать ключ версии ETag кэша бюджетов пользователя."""
     return f"budgets_version:{user_id}"

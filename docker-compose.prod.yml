@@ -5,7 +5,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    image: nginx:1.25-alpine
+    image: nginx:1.30-alpine
     ports:
       - "80:80"
       - "443:443"
@@ -27,7 +27,7 @@ services:
       - GF_SERVER_ROOT_URL=https://grafana.getbalanceai.app
 
   certbot:
-    image: certbot/certbot:latest
+    image: certbot/certbot:v5.8.0
     volumes:
       - certbot_www:/var/www/certbot
       - certbot_certs:/etc/letsencrypt

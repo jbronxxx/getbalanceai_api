@@ -16,7 +16,7 @@
 * **Валидация и DTO**: Pydantic v2 (`ConfigDict`, `Field`)
 * **Аутентификация**: вход через Google и Apple (ID-токены), JWT (`PyJWT`), ротация Refresh-токенов
 * **Интеграция с LLM**: Google Gemini API
-* **Кэширование**: Redis 7 (кэширование инсайтов и аналитических рекомендаций с отказоустойчивым graceful fallback)
+* **Кэширование**: Redis 7 (кэширование инсайтов и аналитических рекомендаций с отказоустойчивым graceful fallback). AOF, потолок `--maxmemory 256mb` с политикой `noeviction`: при заполнении запись отклоняется, а не вытесняет ключи — вытеснение могло бы удалить отозванные `jti`
 * **Конфигурация**: Pydantic Settings + `.env`
 * **Контейнеризация**: Docker & Docker Compose
 * **Тестирование**: Pytest (`TestClient`, `httpx.AsyncClient`)
@@ -128,7 +128,7 @@ erDiagram
    - Централизованные билдеры ключей:
      - `REDIS_KEY_CURRENCY_RATES = "currency_rates:USD"` — основной кэш котировок (TTL из конфигурации).
      - `REDIS_KEY_CURRENCY_RATES_LAST_SUCCESSFUL = "currency_rates:last_successful:USD"` — постоянный источник резервных котировок без TTL.
-     - `get_budgets_version_key(user_id)` -> `budgets_version:{user_id}` — версия ETag для бюджетов.
+     - `get_budgets_version_key(user_id)` -> `budgets_version:{user_id}` — версия ETag для бюджетов (TTL 30 дней: истечение лишь один раз меняет ETag).
      - `get_insights_cache_key(user_id, locale, currency, month, year)` -> `insights_cache:{user_id}:{locale}:{currency}:{month}:{year}` — сохранённый AI-отчёт за месяц вместе с отпечатком данных периода (TTL 400 дней).
      - `get_insights_daily_quota_key(user_id, date_str)` -> `insights_daily_calls:{user_id}:{date_str}` — суточный счётчик вызовов LLM.
      - `get_insights_user_patterns(user_id)` — маски для неблокирующей инвалидации через `scan_iter` (включая счётчики `insights_tx_count:*` прежней схемы до истечения их TTL).
@@ -359,7 +359,7 @@ getbalanceai_api/
   * Доступ: порт 3000 опубликован только на `127.0.0.1`; на проде Grafana открыта через nginx по HTTPS на поддомене `grafana.getbalanceai.app` (`GF_SERVER_ROOT_URL` в `docker-compose.prod.yml`). Перед Grafana nginx требует basic auth (`nginx/htpasswd`, только на сервере), заголовок `Authorization` в Grafana не передаётся. Анонимный доступ и саморегистрация отключены, учётки выдаёт администратор; роль Viewer видит только дашборды, без Explore (`GF_USERS_VIEWERS_CAN_EDIT=false`). Права на источники данных по ролям в Grafana OSS нет: Viewer может выполнить произвольный запрос к Loki/Prometheus через `/api/ds/query`.
   * Состояние Grafana (пользователи, роли) хранится в томе `grafana_data`; дашборды провижинятся из `grafana/dashboards` (монтируются в `/etc/grafana/dashboards`).
 * **Сетевой периметр (прод)**:
-  * Наружу открыты только 80/443 nginx; `default_server` отклоняет запросы по IP и с чужим `Host` (`444` на HTTP, `ssl_reject_handshake` на HTTPS). Включены HSTS и `server_tokens off`.
+  * Наружу открыты только 80/443 nginx; `default_server` отклоняет запросы по IP и с чужим `Host` (`444` на HTTP, `ssl_reject_handshake` на HTTPS). Включены HSTS (`includeSubDomains`) и `server_tokens off`. Версии образов nginx (`1.30-alpine`, стабильная ветка) и certbot (`v5.8.0`) зафиксированы в `docker-compose.prod.yml`.
   * Порт API публикуется на `${APP_BIND:-127.0.0.1}`, остальные сервисы — на `127.0.0.1`. Docker пишет правила в iptables в обход ufw, поэтому привязка к `127.0.0.1` — единственная защита этих портов.
   * Swagger/ReDoc/OpenAPI и Grafana — за basic auth с лимитом `10r/s` на IP (зона `protected`); деплой останавливается, если на сервере нет `nginx/htpasswd`.
   * Образ собирается без `.env`, `backups/`, `.git` (`.dockerignore`); код в контейнер монтируется только локально (`docker-compose.override.yml`).

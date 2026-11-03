@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.exceptions import ErrorCode, NotFoundException
 from app.models.models import Budget, Category, Transaction, TransactionType, User
-from app.redis import get_budgets_version_key, get_redis
+from app.redis import BUDGETS_VERSION_TTL_SECONDS, get_budgets_version_key, get_redis
 from app.schemas.schemas import BudgetCreate, BudgetResponse
 from app.services.currency_service import CurrencyService
 from app.services.period import month_bounds, timezone_key, year_bounds
@@ -154,7 +154,7 @@ class BudgetService:
         """Инвалидировать ETag кэш бюджетов пользователя в Redis при смене базовой валюты или обновлении."""
         try:
             client = get_redis()
-            await client.set(get_budgets_version_key(user_id), str(uuid.uuid4()))
+            await client.set(get_budgets_version_key(user_id), str(uuid.uuid4()), ex=BUDGETS_VERSION_TTL_SECONDS)
             logger.debug(f"Инвалидирован ETag кэш бюджетов для пользователя {user_id}")
         except Exception as err:
             logger.warning(f"Не удалось обновить ключ budgets_version в Redis для {user_id}: {err}")

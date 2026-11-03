@@ -64,3 +64,18 @@ async def test_get_redis_and_close():
     # После закрытия get_redis() инициализирует рабочий клиент
     reopened = get_redis()
     assert reopened is not None
+
+
+@pytest.mark.asyncio
+async def test_budgets_version_key_expires(mock_redis_client):
+    """Версия ETag бюджетов не копится в Redis бессрочно."""
+    import uuid
+
+    from app.redis import BUDGETS_VERSION_TTL_SECONDS, get_budgets_version_key
+    from app.services.budget_service import BudgetService
+
+    user_id = uuid.uuid4()
+    await BudgetService.invalidate_etag(user_id)
+
+    ttl = await mock_redis_client.ttl(get_budgets_version_key(user_id))
+    assert 0 < ttl <= BUDGETS_VERSION_TTL_SECONDS
