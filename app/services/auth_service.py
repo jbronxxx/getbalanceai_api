@@ -24,7 +24,7 @@ from app.exceptions import (
     UnauthorizedException,
 )
 from app.models.models import SUPPORTED_CURRENCIES, Token, Transaction, User
-from app.redis import get_redis, get_revoked_jti_key
+from app.redis import get_budgets_version_key, get_redis, get_revoked_jti_key
 from app.schemas.schemas import (
     AppleSignInRequest,
     GoogleSignInRequest,
@@ -350,23 +350,18 @@ class AuthService:
             )
 
         await self.db.delete(user)
-        # Каскадное удаление данных (transactions, budgets, tokens) отработает благодаря cascade="all, delete-orphan"
-        logger.info(f"Аккаунт пользователя {user.id} успешно удален")
+        # Транзакции, бюджеты и токены удаляет БД (ON DELETE CASCADE) одним DELETE пользователя
+        await self.db.flush()
+        logger.info(f"Аккаунт пользователя {user_id} успешно удален")
 
-        # Очистка связанных ключей Redis
-        from app.redis import (
-            get_budgets_version_key,
-            get_insights_user_patterns,
-            get_redis,
-        )
+        # Кэш пользователя в Redis: ключи без владельца истекли бы сами, сбой очистки не отменяет удаление
+        try:
+            await get_redis().delete(get_budgets_version_key(user_id))
+        except RedisError as err:
+            logger.warning(f"Не удалось удалить версию бюджетов пользователя {user_id} из Redis: {err}")
+        from app.services.ai_service import AIService
 
-        redis_client = get_redis()
-        # Удаляем версию бюджета
-        await redis_client.delete(get_budgets_version_key(user.id))
-        # Инвалидация всех инсайт‑ключей пользователя
-        for pattern in get_insights_user_patterns(user.id):
-            async for key in redis_client.scan_iter(match=pattern):
-                await redis_client.unlink(key)
+        await AIService.invalidate_cache(user_id)
 
     async def _issue_token_pair(self, user_id: uuid.UUID) -> tuple[str, str]:
         """Выдать связанную пару access и refresh токенов одной сессии.

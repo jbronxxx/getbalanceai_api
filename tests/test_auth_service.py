@@ -888,3 +888,48 @@ class TestOAuthEmailCaseInsensitive:
         assert second.user.id == first.user.id
         count = (await db_session.execute(select(func.count(User.id)))).scalar_one()
         assert count == 1
+
+
+class TestAccountDeletionCascade:
+    """Удаление аккаунта каскадирует БД: связанные строки удаляются без загрузки в память."""
+
+    @pytest.mark.asyncio
+    async def test_delete_account_removes_related_rows_without_loading_them(self, db_session: AsyncSession, test_user: User):
+        from decimal import Decimal
+
+        from sqlalchemy import event
+
+        from app.models.models import Budget, Category, Transaction, TransactionType
+
+        user_id = test_user.id
+        for i in range(20):
+            db_session.add(
+                Transaction(
+                    user_id=user_id,
+                    amount=Decimal("1.00"),
+                    description=f"tx {i}",
+                    category=Category.food,
+                    type=TransactionType.expense,
+                )
+            )
+        db_session.add(Budget(user_id=user_id, category=Category.food, limit_amount=Decimal("10"), month=1, year=2026))
+        await AuthService(db_session)._issue_token_pair(user_id)
+        await db_session.commit()
+
+        statements: list[str] = []
+
+        def record(conn, cursor, statement, *args) -> None:
+            statements.append(statement)
+
+        sync_engine = db_session.bind.sync_engine
+        event.listen(sync_engine, "before_cursor_execute", record)
+        try:
+            await AuthService(db_session).delete_account(user_id)
+            await db_session.commit()
+        finally:
+            event.remove(sync_engine, "before_cursor_execute", record)
+
+        assert not any("FROM transactions" in s for s in statements)
+        for model in (Transaction, Budget, Token):
+            count = (await db_session.execute(select(func.count()).select_from(model))).scalar_one()
+            assert count == 0
