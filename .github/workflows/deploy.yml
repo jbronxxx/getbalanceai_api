@@ -73,22 +73,54 @@ jobs:
             # поэтому откат выполняется восстановлением этой копии. При ошибке бэкапа деплой останавливается (set -e)
             ./scripts/backup_db.sh predeploy </dev/null
 
+            DC="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
+            # Имена совпадают с image сервиса api в docker-compose.yml
+            API_IMAGE=getbalanceai-api:latest
+            ROLLBACK_IMAGE=getbalanceai-api:rollback
+
+            # Запоминаем текущий образ api до сборки: build перевешивает тег на новый образ, и откатиться было бы не на что.
+            # Отдельный тег защищает образ от docker image prune; на первом деплое образа ещё нет
+            if docker image inspect "$API_IMAGE" >/dev/null 2>&1; then
+              docker tag "$API_IMAGE" "$ROLLBACK_IMAGE"
+            fi
+
             # Сначала собираем образ api: run не пересобирает образ, и миграции выполнились бы старым кодом
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml build api
+            $DC build api
 
             # Применяем миграции базы данных новым образом до перезапуска сервисов
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm -T api alembic upgrade head </dev/null
+            $DC run --rm -T api alembic upgrade head </dev/null
 
             # Всегда пересоздаём контейнер api: код читается gunicorn только при старте,
             # поэтому без пересоздания процесс продолжает работать на старой версии
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --no-deps --force-recreate api
+            $DC up -d --no-deps --force-recreate api
+
+            # Ждём healthcheck нового контейнера (start_period 30 с + 3 неудачные проверки по 10 с укладываются в 90 с).
+            # Если он не стал healthy, возвращаем предыдущий образ и завершаем деплой с ошибкой. Миграции при этом
+            # не откатываются: схема должна оставаться совместимой с прошлой версией кода (двухфазное удаление колонок),
+            # иначе откат выполняется восстановлением predeploy-копии БД
+            API_STATUS=starting
+            for _ in $(seq 1 45); do
+              API_STATUS=$(docker inspect --format '{{.State.Health.Status}}' "$($DC ps -q api)" 2>/dev/null || echo missing)
+              [ "$API_STATUS" = "starting" ] || break
+              sleep 2
+            done
+            if [ "$API_STATUS" != "healthy" ]; then
+              echo "Контейнер api не прошёл healthcheck (статус: $API_STATUS)" >&2
+              $DC logs --tail 100 api >&2
+              if docker image inspect "$ROLLBACK_IMAGE" >/dev/null 2>&1; then
+                docker tag "$ROLLBACK_IMAGE" "$API_IMAGE"
+                $DC up -d --no-deps --force-recreate api
+                echo "api откатан на предыдущий образ" >&2
+              fi
+              exit 1
+            fi
 
             # Поднимаем остальные сервисы (пересоздаются только те, у кого изменился образ или конфигурация)
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+            $DC up -d
 
             # Применяем конфигурацию Nginx без простоя (при ошибке синтаксиса деплой завершится с ошибкой, старый конфиг продолжит работать)
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T nginx nginx -t </dev/null
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T nginx nginx -s reload </dev/null
+            $DC exec -T nginx nginx -t </dev/null
+            $DC exec -T nginx nginx -s reload </dev/null
 
             # Очищаем старые неиспользуемые образы Docker для экономии места
             docker image prune -f
