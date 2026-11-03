@@ -195,8 +195,9 @@ services:
       - /sys/fs/cgroup:/sys/fs/cgroup:ro
       - /var/lib/docker/:/var/lib/docker:ro
       - /dev/disk/:/dev/disk:ro
+    # machine_id_file не задаётся: cAdvisor сам добавляет префикс /rootfs к путям по умолчанию
+    # (/etc/machine-id, /var/lib/dbus/machine-id), а явный /rootfs/... превращался в /rootfs/rootfs/...
     command:
-      - -machine_id_file=/rootfs/var/lib/machine-id
       - -docker_only=true
       - -docker=tcp://docker-socket-proxy:2375
       - -housekeeping_interval=10s
