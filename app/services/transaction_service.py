@@ -153,21 +153,22 @@ class TransactionService:
     ) -> str:
         """Рассчитать глобальный ETag коллекции транзакций пользователя без привязки к пагинации.
 
-        Вычисляется по совокупности: user_id, общему количеству транзакций,
-        максимальной дате создания и опциональному фильтру since.
+        Вычисляется по совокупности: user_id, количеству транзакций, последнему изменению (updated_at)
+        и опциональному фильтру since. Количество ловит удаления, updated_at — создание и правку:
+        по одной дате создания правка суммы или категории с другого устройства не меняла ETag, и клиент получал 304.
         """
         query = select(
             func.count(Transaction.id),
-            func.max(Transaction.created_at),
+            func.max(Transaction.updated_at),
         ).where(Transaction.user_id == user_id)
 
         if since:
             query = query.where(Transaction.created_at >= since)
 
         result = await self.db.execute(query)
-        total_count, max_created = result.one()
+        total_count, max_updated = result.one()
 
-        max_created_str = max_created.isoformat() if max_created else ""
+        max_updated_str = max_updated.isoformat() if max_updated else ""
         since_str = since.isoformat() if since else ""
-        raw_str = f"{user_id}:{total_count}:{max_created_str}:{since_str}"
+        raw_str = f"{user_id}:{total_count}:{max_updated_str}:{since_str}"
         return hashlib.md5(raw_str.encode(), usedforsecurity=False).hexdigest()
