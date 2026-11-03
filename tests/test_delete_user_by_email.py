@@ -33,7 +33,7 @@ async def _create_user(email: str, with_data: bool = False) -> uuid.UUID:
     """Создать пользователя (опционально с транзакцией, бюджетом и токеном) в тестовой БД."""
     user_id = uuid.uuid4()
     async with TestingSessionLocal() as session:
-        session.add(User(id=user_id, email=email, name="CLI User", hashed_password="hashed_pwd"))
+        session.add(User(id=user_id, email=email, name="CLI User"))
         await session.flush()
         if with_data:
             session.add(

@@ -69,7 +69,6 @@ class TestTransactionServiceUnit:
             id=other_user_id,
             email=f"other_{other_user_id.hex[:6]}@example.com",
             name="Other User",
-            hashed_password="pwd",
         )
         db_session.add(other_user)
         user_id = test_user.id
@@ -195,7 +194,6 @@ class TestTransactionServiceUnit:
             id=other_user_id,
             email=f"other_{other_user_id.hex[:6]}@example.com",
             name="Other User",
-            hashed_password="pwd",
         )
         db_session.add(other_user)
         user_id = test_user.id

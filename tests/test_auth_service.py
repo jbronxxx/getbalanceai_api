@@ -211,7 +211,6 @@ class TestAuthServiceUnit:
         user = result.scalar_one_or_none()
         assert user is not None
         assert user.avatar_url == "https://example.com/avatar.png"
-        assert user.hashed_password is None
 
     @pytest.mark.asyncio
     @patch("app.services.auth_service.PyJWKClient")
@@ -361,7 +360,6 @@ class TestAuthServiceUnit:
         assert user is not None
         assert user.name == "appleuser"
         assert user.avatar_url is None
-        assert user.hashed_password is None
 
     @pytest.mark.asyncio
     async def test_delete_account_success(self, db_session: AsyncSession, test_user: User):

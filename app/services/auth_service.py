@@ -187,7 +187,7 @@ class AuthService:
         is_new = user is None
 
         if not user:
-            user = User(email=email, name=name, avatar_url=avatar_url, hashed_password=None)
+            user = User(email=email, name=name, avatar_url=avatar_url)
             self.db.add(user)
         else:
             if avatar_url and user.avatar_url != avatar_url:
