@@ -59,7 +59,8 @@ class BudgetService:
             )
             .on_conflict_do_update(
                 index_elements=["user_id", "category", "month", "year"],
-                set_={"limit_amount": payload.limit_amount, "currency": currency},
+                # Без явной валюты у существующего лимита валюта сохраняется, как и в /sync
+                set_={"limit_amount": payload.limit_amount, **({"currency": payload.currency} if payload.currency else {})},
             )
             .returning(Budget)
         )

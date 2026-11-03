@@ -129,7 +129,7 @@ API использует единообразный формат ответов 
 
 #### Котировки валют (GET /api/v1/currencies/rates)
 
-*Заголовки ответа:* `Cache-Control: public, max-age=3600` (клиентское и прокси-кэширование котировок).
+*Заголовки ответа:* `Cache-Control: public, max-age=<CURRENCY_RATES_CACHE_TTL>` (сутки по умолчанию); для резервных котировок (`is_fallback=true`) — `max-age=<CURRENCY_RATES_FALLBACK_CACHE_TTL>` (180 с), чтобы клиент не держал их сутки.
 
 ```json
 {
@@ -296,6 +296,7 @@ API использует единообразный формат ответов 
 | `BUDGET_NOT_FOUND` | 404 | Бюджет с указанным ID/категорией не найден |
 | `BUDGET_LIMIT_EXCEEDED` | 400 | Превышен установленный лимит бюджета по категории |
 | `SYNC_FAILED` | 400 / 500 | Ошибка при выполнении пакетной офлайн-синхронизации |
+| `INVALID_CURSOR` | 400 | Курсор пагинации `GET /transactions` повреждён (первая страница молча не возвращается) |
 | `BAD_REQUEST` | 400 | Общая ошибка некорректного запроса |
 | `UNAUTHORIZED` | 401 | Требуется авторизация |
 | `FORBIDDEN` | 403 | Отсутствует токен доступа или доступ к ресурсу запрещен |
@@ -318,12 +319,14 @@ API использует единообразный формат ответов 
   "message": "Ошибка валидации входных данных",
   "details": {
     "fields": {
-      "email": "value is not a valid email address",
-      "password": "String should have at least 6 characters"
+      "transactions.1.amount": "Input should be greater than 0",
+      "limit_amount": "Input should be greater than 0"
     }
   }
 }
 ```
+
+Ключ `fields` — путь к полю без источника (`body`, `query`): для плоского тела это имя поля, для вложенных списков — с индексом записи (`transactions.1.amount`).
 
 #### 2. Неверные учетные данные (401 Unauthorized)
 

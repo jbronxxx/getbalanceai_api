@@ -52,22 +52,18 @@ class AIService:
     def __init__(self, db: AsyncSession, client=None, model_name=None):
         """Инициализация сервиса с сессией базы данных и клиентом Gemini."""
         self.db = db
-        # Инициализируем клиента, если не передан мок
-        if not client:
-            # Настраиваем ключ API глобально, если он есть
-            if (
-                config.gemini_api_key
-                and not config.gemini_api_key.startswith("sk-")
-                and not config.gemini_api_key.startswith("your-")
-                and config.gemini_api_key != "valid-real-api-key"
-                and config.gemini_api_key != "test-api-key"
-            ):
-                self.client = genai.Client(api_key=config.gemini_api_key)
-            else:
-                self.client = genai.Client(api_key="placeholder")
-        else:
+        if client:
             self.client = client
+        else:
+            # Без настоящего ключа клиент создаётся с заглушкой: get_insights до вызова LLM не дойдёт
+            api_key = "placeholder" if self._is_placeholder_key(config.gemini_api_key) else config.gemini_api_key
+            self.client = genai.Client(api_key=api_key)
         self.model_name = model_name or config.ai_model
+
+    @staticmethod
+    def _is_placeholder_key(api_key: str) -> bool:
+        """Ключ не задан или остался шаблоном из .env.example (sk-..., your-...)."""
+        return not api_key or api_key.startswith(("sk-", "your-"))
 
     @classmethod
     async def invalidate_cache(cls, user_id: uuid.UUID) -> None:
@@ -228,14 +224,7 @@ class AIService:
         if (target_year, target_month) > (current_year, current_month):
             return InsightResponse(insights=[], generated_at=now, state=InsightState.no_data)
 
-        is_placeholder = (
-            not config.gemini_api_key
-            or config.gemini_api_key.startswith("sk-")
-            or config.gemini_api_key.startswith("your-")
-            or config.gemini_api_key == "valid-real-api-key"
-        )
-        # Для тестов пропускаем проверку плейсхолдера, если ключ явно valid-real-key или test-api-key
-        if is_placeholder and config.gemini_api_key != "valid-real-key" and config.gemini_api_key != "test-api-key":
+        if self._is_placeholder_key(config.gemini_api_key):
             logger.warning("GEMINI_API_KEY is not set or is a placeholder, returning stub insights")
             stub_msg = {
                 "ru": "В разработке...",
