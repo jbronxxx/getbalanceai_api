@@ -1,0 +1,41 @@
+// Сбор логов всех контейнеров в Loki. Контейнеры и их логи читаются через docker-socket-proxy (только GET),
+// а не через docker.sock. Метки container, logstream, service совпадают с прежним конфигом promtail
+
+discovery.docker "containers" {
+	host             = "tcp://docker-socket-proxy:2375"
+	refresh_interval = "5s"
+}
+
+discovery.relabel "containers" {
+	targets = []
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		target_label  = "container"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_log_stream"]
+		target_label  = "logstream"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+		target_label  = "service"
+	}
+}
+
+loki.source.docker "containers" {
+	host             = "tcp://docker-socket-proxy:2375"
+	targets          = discovery.docker.containers.targets
+	forward_to       = [loki.write.loki.receiver]
+	relabel_rules    = discovery.relabel.containers.rules
+	refresh_interval = "5s"
+}
+
+loki.write "loki" {
+	endpoint {
+		url = "http://loki:3100/loki/api/v1/push"
+	}
+}
