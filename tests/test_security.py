@@ -20,7 +20,6 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.exceptions import ErrorCode
 from app.limiter import get_user_id_or_ip, limiter
-from app.schemas.schemas import UserLogin, UserRegister
 from config_reader.config_reader import Settings, config
 from main import app
 
@@ -56,7 +55,7 @@ class TestCorsMiddleware:
     async def test_cors_preflight_options_request(self, client: AsyncClient):
         """Проверяет корректный ответ сервера на предварительный preflight (OPTIONS) запрос."""
         response = await client.options(
-            "/api/v1/auth/login",
+            "/api/v1/auth/google",
             headers={
                 "Origin": "http://localhost:3000",
                 "Access-Control-Request-Method": "POST",
@@ -72,92 +71,19 @@ class TestCorsMiddleware:
         assert "access-control-allow-methods" in response.headers
 
 
-class TestPasswordValidation:
-    """Тестирование правил валидации и сложности паролей."""
-
-    @pytest.mark.asyncio
-    async def test_register_password_without_numbers_rejected(self):
-        """Проверяет отклонение пароля без цифр."""
-        with pytest.raises(
-            ValueError,
-            match="Пароль должен содержать как минимум одну букву и одну цифру",
-        ):
-            UserRegister(
-                email="user@example.com",
-                password="OnlyLettersPassword",
-                name="Test User",
-            )
-
-    @pytest.mark.asyncio
-    async def test_register_password_without_letters_rejected(self):
-        """Проверяет отклонение пароля без букв."""
-        with pytest.raises(
-            ValueError,
-            match="Пароль должен содержать как минимум одну букву и одну цифру",
-        ):
-            UserRegister(
-                email="user@example.com",
-                password="1234567890",
-                name="Test User",
-            )
-
-    @pytest.mark.asyncio
-    async def test_register_password_too_short_rejected(self):
-        """Проверяет отклонение пароля короче 6 символов."""
-        with pytest.raises(ValueError):
-            UserRegister(
-                email="user@example.com",
-                password="A1b",
-                name="Test User",
-            )
-
-    @pytest.mark.asyncio
-    async def test_register_password_exceeding_72_bytes_rejected(self):
-        """Проверяет отклонение пароля длиннее 72 байт (ограничение bcrypt)."""
-        long_password = "A1" + "a" * 75
-        with pytest.raises(ValueError):
-            UserRegister(
-                email="user@example.com",
-                password=long_password,
-                name="Test User",
-            )
-
-    @pytest.mark.asyncio
-    async def test_register_valid_password_accepted(self):
-        """Проверяет успешное создание схемы с корректным паролем."""
-        payload = UserRegister(
-            email="user@example.com",
-            password="ValidPass123",
-            name="Test User",
-        )
-        assert payload.password == "ValidPass123"
-
-    @pytest.mark.asyncio
-    async def test_login_password_exceeding_72_chars_rejected(self):
-        """Проверяет ограничение максимальной длины пароля в схеме входа."""
-        long_password = "A" * 75
-        with pytest.raises(ValueError):
-            UserLogin(
-                email="user@example.com",
-                password=long_password,
-            )
-
-
 class TestRateLimiting:
     """Тестирование ограничения частоты запросов (Rate Limiting)."""
 
     @pytest.mark.asyncio
-    async def test_login_rate_limiting_exceeded(self, client: AsyncClient):
-        """Проверяет блокировку частых попыток входа с одного IP (лимит 5/мин)."""
-        login_data = {"email": "attacker@example.com", "password": "WrongPassword123"}
+    async def test_google_login_rate_limiting_exceeded(self, client: AsyncClient):
+        """Проверяет блокировку частых попыток входа через Google с одного IP (лимит 5/мин)."""
+        payload = {"id_token": "invalid-google-token"}
 
-        # Выполняем 5 разрешенных попыток
         for _ in range(5):
-            res = await client.post("/api/v1/auth/login", json=login_data)
-            assert res.status_code in (401, 200)
+            res = await client.post("/api/v1/auth/google", json=payload)
+            assert res.status_code == 401
 
-        # 6-я попытка должна вернуть 429 Too Many Requests
-        response = await client.post("/api/v1/auth/login", json=login_data)
+        response = await client.post("/api/v1/auth/google", json=payload)
         assert response.status_code == 429
         data = response.json()
         assert data["status"] == "error"
@@ -165,32 +91,23 @@ class TestRateLimiting:
         assert "лимит" in data["message"].lower() or "limit" in data["message"].lower()
 
     @pytest.mark.asyncio
-    async def test_register_rate_limiting_exceeded(self, client: AsyncClient):
-        """Проверяет ограничение частоты запросов на регистрацию (лимит 5/мин)."""
-        # Выполняем 5 запросов
-        for i in range(5):
-            await client.post(
-                "/api/v1/auth/register",
-                json={
-                    "email": f"ratelimit{i}@example.com",
-                    "password": "Password123",
-                    "name": f"User {i}",
-                },
-            )
+    async def test_apple_login_rate_limiting_exceeded(self, client: AsyncClient):
+        """Проверяет ограничение частоты входа через Apple (лимит 5/мин)."""
+        payload = {"identity_token": "invalid-apple-token"}
 
-        # 6-й запрос превышает лимит
-        response = await client.post(
-            "/api/v1/auth/register",
-            json={
-                "email": "ratelimit_over@example.com",
-                "password": "Password123",
-                "name": "Over Limit",
-            },
-        )
+        for _ in range(5):
+            await client.post("/api/v1/auth/apple", json=payload)
+
+        response = await client.post("/api/v1/auth/apple", json=payload)
         assert response.status_code == 429
-        data = response.json()
-        assert data["status"] == "error"
-        assert data["code"] == ErrorCode.RATE_LIMIT_EXCEEDED
+        assert response.json()["code"] == ErrorCode.RATE_LIMIT_EXCEEDED
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["/api/v1/auth/register", "/api/v1/auth/login"])
+    async def test_password_auth_endpoints_removed(self, client: AsyncClient, path: str):
+        """Вход и регистрация по паролю выведены из API: иначе аккаунт можно было бы заранее занять на чужой email."""
+        response = await client.post(path, json={"email": "victim@example.com", "password": "Password123", "name": "X"})
+        assert response.status_code == 404
 
     @pytest.mark.asyncio
     async def test_patch_me_rate_limiting_exceeded(self, client: AsyncClient, auth_headers: dict[str, str]):
@@ -495,16 +412,16 @@ class TestRateLimitKey:
         Как в gunicorn с --forwarded-allow-ips "*": nginx (172.18.0.5) передаёт адрес клиента в X-Forwarded-For.
         """
         proxied_app = ProxyHeadersMiddleware(app, trusted_hosts="*")
-        login_data = {"email": "attacker@example.com", "password": "WrongPassword123"}
+        login_data = {"id_token": "invalid-google-token"}
         transport = ASGITransport(app=proxied_app, client=("172.18.0.5", 40000))
         async with AsyncClient(transport=transport, base_url="http://test") as proxied:
             for _ in range(5):
-                res = await proxied.post("/api/v1/auth/login", json=login_data, headers={"X-Forwarded-For": "198.51.100.1"})
+                res = await proxied.post("/api/v1/auth/google", json=login_data, headers={"X-Forwarded-For": "198.51.100.1"})
                 assert res.status_code == 401
-            blocked = await proxied.post("/api/v1/auth/login", json=login_data, headers={"X-Forwarded-For": "198.51.100.1"})
+            blocked = await proxied.post("/api/v1/auth/google", json=login_data, headers={"X-Forwarded-For": "198.51.100.1"})
             assert blocked.status_code == 429
 
             other_client = await proxied.post(
-                "/api/v1/auth/login", json=login_data, headers={"X-Forwarded-For": "198.51.100.2"}
+                "/api/v1/auth/google", json=login_data, headers={"X-Forwarded-For": "198.51.100.2"}
             )
             assert other_client.status_code == 401

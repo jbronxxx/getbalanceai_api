@@ -3,7 +3,6 @@
 import uuid
 from unittest.mock import patch
 
-import bcrypt
 import fakeredis
 import pytest
 import pytest_asyncio
@@ -82,12 +81,10 @@ async def client(db_session: AsyncSession) -> AsyncClient:
 async def test_user(db_session: AsyncSession) -> User:
     """Фикстура созданного тестового пользователя в базе данных."""
     user_id = uuid.uuid4()
-    hashed_pwd = bcrypt.hashpw("Password123!".encode(), bcrypt.gensalt()).decode()
     user = User(
         id=user_id,
         email=f"user_{user_id.hex[:8]}@example.com",
         name="Test User",
-        hashed_password=hashed_pwd,
     )
     db_session.add(user)
     await db_session.commit()

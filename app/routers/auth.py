@@ -1,6 +1,6 @@
 """Эндпоинты авторизации и аутентификации пользователей."""
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Request
 from fastapi.security import HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,8 +15,6 @@ from app.schemas.schemas import (
     GoogleSignInRequest,
     RefreshTokenRequest,
     TokenResponse,
-    UserLogin,
-    UserRegister,
     UserResponse,
     UserUpdateRequest,
 )
@@ -26,11 +24,11 @@ router = APIRouter(
     responses={
         400: {
             "model": ErrorResponse,
-            "description": "Ошибка бизнес-логики (например, USER_ALREADY_EXISTS)",
+            "description": "Ошибка бизнес-логики",
         },
         401: {
             "model": ErrorResponse,
-            "description": "Ошибка авторизации (INVALID_CREDENTIALS, EXPIRED_TOKEN)",
+            "description": "Ошибка авторизации (INVALID_CREDENTIALS, INVALID_TOKEN, TOKEN_REVOKED, EXPIRED_TOKEN)",
         },
         403: {"model": ErrorResponse, "description": "Доступ запрещен"},
         404: {"model": ErrorResponse, "description": "Ресурс не найден"},
@@ -40,35 +38,6 @@ router = APIRouter(
         503: {"model": ErrorResponse, "description": "Хранилище отзыва токенов недоступно (SERVICE_UNAVAILABLE)"},
     }
 )
-
-
-@router.post(
-    "/register",
-    response_model=ApiResponse[UserResponse],
-    status_code=status.HTTP_201_CREATED,
-    summary="Регистрация нового пользователя",
-    deprecated=True,
-)
-@limiter.limit("5/minute")
-async def register(request: Request, payload: UserRegister, db: AsyncSession = Depends(get_db)) -> dict[str, str | User]:
-    """Зарегистрировать нового пользователя в системе."""
-    service = AuthService(db)
-    user = await service.register(payload)
-    return {"status": "success", "data": user}
-
-
-@router.post(
-    "/login",
-    response_model=ApiResponse[TokenResponse],
-    summary="Вход в систему и получение токенов",
-    deprecated=True,
-)
-@limiter.limit("5/minute")
-async def login(request: Request, payload: UserLogin, db: AsyncSession = Depends(get_db)) -> dict[str, str | TokenResponse]:
-    """Аутентификация пользователя по email и паролю с возвратом JWT access и refresh токенов."""
-    service = AuthService(db)
-    tokens = await service.login(payload)
-    return {"status": "success", "data": tokens}
 
 
 @router.post(

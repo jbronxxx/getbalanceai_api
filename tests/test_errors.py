@@ -25,8 +25,8 @@ class TestErrorContract:
     @pytest.mark.asyncio
     async def test_validation_error_contract(self, client: AsyncClient):
         """Проверка структуры ошибки при невалидных входных данных (422)."""
-        # Передаем невалидное тело для регистрации (пустой пароль, некорректный email)
-        response = await client.post("/api/v1/auth/register", json={"email": "not-an-email", "password": "123"})
+        # Тело без обязательного поля id_token
+        response = await client.post("/api/v1/auth/google", json={"name": "x"})
         assert response.status_code == 422
         data = response.json()
         assert data["status"] == "error"
@@ -36,17 +36,14 @@ class TestErrorContract:
         assert "fields" in data["details"]
 
     @pytest.mark.asyncio
-    async def test_login_invalid_credentials_error_code(self, client: AsyncClient):
-        """Проверка кода ошибки INVALID_CREDENTIALS при неверном логине/пароле."""
-        response = await client.post(
-            "/api/v1/auth/login",
-            json={"email": "nonexistent@example.com", "password": "wrongpassword"},
-        )
+    async def test_oauth_invalid_credentials_error_code(self, client: AsyncClient):
+        """Проверка кода ошибки INVALID_CREDENTIALS при недействительном ID-токене провайдера."""
+        response = await client.post("/api/v1/auth/google", json={"id_token": "invalid-google-token"})
         assert response.status_code == 401
         data = response.json()
         assert data["status"] == "error"
         assert data["code"] == ErrorCode.INVALID_CREDENTIALS
-        assert data["message"] == "Неверный email или пароль"
+        assert data["message"] == "Недействительный токен Google"
 
     @pytest.mark.asyncio
     async def test_not_found_error_contract(self, client: AsyncClient):
