@@ -9,9 +9,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 COPY . .
 
 EXPOSE 8000
+# Метрики всех воркеров gunicorn собираются в общем каталоге (см. gunicorn.conf.py)
+ENV PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus_multiproc
 # Keep-alive дольше, чем клиент держит простаивающее соединение (Dart HttpClient — 15 с):
 # иначе по умолчанию через 2 с сервер закрывает соединение в момент, когда клиент
 # отправляет по нему запрос, и тот обрывается без ответа.
 # X-Forwarded-For принимается от любого адреса: порт 8000 доступен только из сети Docker и с хоста (127.0.0.1),
 # а nginx перезаписывает заголовок адресом клиента. Подсеть Docker указать нельзя — gunicorn не принимает CIDR
-CMD ["gunicorn", "main:app", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--keep-alive", "75", "--forwarded-allow-ips", "*"]
+CMD ["gunicorn", "-c", "gunicorn.conf.py", "main:app", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--keep-alive", "75", "--forwarded-allow-ips", "*"]
