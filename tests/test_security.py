@@ -247,8 +247,8 @@ class TestDefaultSecretsValidation:
     def test_db_pool_settings_defaults_and_env(self, monkeypatch):
         """Проверяет значения по умолчанию и переопределение через env для параметров пула БД."""
         settings = Settings(_env_file=None, debug=True)
-        assert settings.db_pool_size == 10
-        assert settings.db_max_overflow == 20
+        assert settings.db_pool_size == 5
+        assert settings.db_max_overflow == 10
         assert settings.db_pool_timeout == 30
         assert settings.db_pool_recycle == 1800
         assert settings.db_pool_pre_ping is True

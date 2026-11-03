@@ -749,6 +749,19 @@ class TestSyncEndpointIntegration:
         assert res2.status_code == 200
 
 
+class TestSyncRateLimit:
+    @pytest.mark.asyncio
+    async def test_sync_limited_per_user(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """60 синхронизаций в минуту на пользователя, дальше 429 (клиент повторит позже)."""
+        for _ in range(60):
+            assert (await client.post("/api/v1/sync/", json={}, headers=auth_headers)).status_code == 200
+
+        response = await client.post("/api/v1/sync/", json={}, headers=auth_headers)
+
+        assert response.status_code == 429
+        assert response.json()["code"] == "RATE_LIMIT_EXCEEDED"
+
+
 class TestSyncInputLimits:
     """Границы входных данных синхронизации: запись вне границ не должна ронять весь батч с 500."""
 

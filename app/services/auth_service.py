@@ -606,7 +606,14 @@ async def get_current_user(
             message="Недействительный токен авторизации",
         )
 
-    if await get_redis().exists(get_revoked_jti_key(jti)):
+    try:
+        is_revoked = await get_redis().exists(get_revoked_jti_key(jti))
+    except RedisError as err:
+        # Без хранилища отзывов нельзя отличить отозванный токен от живого: не пускаем, но как временный
+        # сбой (503), а не ошибку сервера и не 401 — иначе клиент счёл бы сессию завершённой
+        logger.error(f"Проверка отзыва токена недоступна: Redis ({type(err).__name__})")
+        raise ServiceUnavailableException(message="Сервис временно недоступен, повторите попытку позже")
+    if is_revoked:
         raise UnauthorizedException(
             code=ErrorCode.TOKEN_REVOKED,
             message="Токен отозван или недействителен",

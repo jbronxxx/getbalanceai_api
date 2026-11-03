@@ -21,8 +21,10 @@ class Settings(BaseSettings):
         "postgresql://finance_user:finance_pass@db:5432/finance_db",
         alias="DATABASE_URL",
     )
-    db_pool_size: int = Field(10, alias="DB_POOL_SIZE")
-    db_max_overflow: int = Field(20, alias="DB_MAX_OVERFLOW")
+    # Пул на каждый воркер gunicorn: 4 × (5 + 10) = 60 соединений, с запасом до max_connections=100 Postgres
+    # для alembic, бэкапа и скриптов. Прежние 10 + 20 давали до 120 и ошибку "too many clients" под нагрузкой
+    db_pool_size: int = Field(5, alias="DB_POOL_SIZE")
+    db_max_overflow: int = Field(10, alias="DB_MAX_OVERFLOW")
     db_pool_timeout: int = Field(30, alias="DB_POOL_TIMEOUT")
     db_pool_recycle: int = Field(1800, alias="DB_POOL_RECYCLE")
     db_pool_pre_ping: bool = Field(True, alias="DB_POOL_PRE_PING")
@@ -41,6 +43,8 @@ class Settings(BaseSettings):
     gemini_api_key: str = Field("", alias="GEMINI_API_KEY")
     ai_model: str = Field("gemini-3.5-flash-lite", alias="AI_MODEL")
     ai_daily_limit_per_user: int = Field(5, alias="AI_DAILY_LIMIT_PER_USER")
+    # Предел ожидания ответа Gemini: зависший вызов иначе держал бы воркер и запрос клиента без ответа
+    ai_request_timeout: float = Field(30.0, alias="AI_REQUEST_TIMEOUT")
 
     redis_url: str = Field("redis://localhost:6379/0", alias="REDIS_URL")
     # Хранилище счётчиков rate limiting; в Docker — Redis, чтобы лимит был общим для всех воркеров gunicorn

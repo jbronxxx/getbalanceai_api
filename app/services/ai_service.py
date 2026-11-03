@@ -1,5 +1,6 @@
 """Сервис формирования персональных финансовых инсайтов с использованием Google Gemini."""
 
+import asyncio
 import json
 import re
 import uuid
@@ -270,22 +271,26 @@ class AIService:
                 return self._response_from_cache(cached, is_outdated=True)
             return InsightResponse(insights=[], generated_at=now, state=InsightState.not_generated)
 
-        # Проверка суточного лимита обращений к LLM
+        # Суточная квота занимается атомарным INCR до вызова LLM: при чтении и последующей записи
+        # параллельные запросы видели одно значение счётчика и все проходили лимит
         date_str = now.strftime("%Y-%m-%d")
         daily_quota_key = get_insights_daily_quota_key(user_id, date_str)
-        daily_calls = 0
         try:
-            calls_val = await redis_client.get(daily_quota_key)
-            if calls_val:
-                daily_calls = int(calls_val)
+            daily_calls = await redis_client.incr(daily_quota_key)
+            if daily_calls == 1:
+                await redis_client.expire(daily_quota_key, 86400)
         except Exception as err:
-            logger.warning(f"Не удалось прочитать счетчик квоты из Redis для пользователя {user_id}: {err}")
+            # Без счётчика лимит не проверить, а каждый вызов LLM платный: генерацию не запускаем
+            logger.warning(f"Не удалось занять квоту AI в Redis для пользователя {user_id}: {err}")
+            if cached:
+                return self._response_from_cache(cached, is_outdated=True, state=InsightState.busy)
+            return InsightResponse(insights=self._fallback_messages(lang_prefix), generated_at=now, state=InsightState.busy)
 
-        if daily_calls >= config.ai_daily_limit_per_user:
+        if daily_calls > config.ai_daily_limit_per_user:
             logger.warning(
                 "Суточный лимит вызовов AI исчерпан для пользователя %s (%s/%s)",
                 user_id,
-                daily_calls,
+                daily_calls - 1,
                 config.ai_daily_limit_per_user,
             )
             if cached:
@@ -344,7 +349,56 @@ class AIService:
             logger.warning(f"Не удалось загрузить бюджеты для пользователя {user_id}: {err}")
 
         summary = self._build_summary(transactions, budgets, currency, locale)
+        # Данные прочитаны: завершаем читающую транзакцию, чтобы соединение вернулось в пул
+        # и не простаивало весь вызов LLM (до AI_REQUEST_TIMEOUT секунд)
+        await self.db.commit()
 
+        try:
+            insights = await asyncio.wait_for(
+                self._call_gemini(summary, locale, currency), timeout=config.ai_request_timeout
+            )
+            response = InsightResponse(insights=insights, generated_at=datetime.now(timezone.utc))
+        except Exception as e:
+            logger.error(f"Ошибка запроса инсайтов к Gemini для пользователя {user_id}: {type(e).__name__}: {e}")
+            await self._release_quota(daily_quota_key, user_id)
+            # Сообщение остаётся в insights для старых клиентов; новые по state показывают свою карточку
+            return InsightResponse(
+                insights=self._fallback_messages(lang_prefix),
+                generated_at=datetime.now(timezone.utc),
+                state=InsightState.busy,
+            )
+
+        try:
+            cache_val = json.dumps(
+                {
+                    "insights": insights,
+                    "generated_at": response.generated_at.isoformat(),
+                    "signature": fingerprint.signature,
+                    "tx_count": fingerprint.tx_count,
+                },
+                ensure_ascii=False,
+            )
+            await redis_client.setex(cache_key, INSIGHTS_CACHE_TTL_SECONDS, cache_val)
+        except Exception as err:
+            logger.warning(f"Не удалось записать кэш инсайтов в Redis для пользователя {user_id}: {err}")
+
+        logger.info(
+            f"Сгенерированы AI-инсайты для пользователя {user_id} за {target_month}/{target_year}: "
+            f"{len(insights)} советов, вызовов за сутки {daily_calls}/{config.ai_daily_limit_per_user}"
+        )
+        return response
+
+    @staticmethod
+    async def _release_quota(daily_quota_key: str, user_id: uuid.UUID) -> None:
+        """Вернуть занятый вызов квоты: неудачная генерация не должна расходовать суточный лимит."""
+        try:
+            await redis_client.decr(daily_quota_key)
+        except Exception as err:
+            logger.warning(f"Не удалось вернуть квоту AI в Redis для пользователя {user_id}: {err}")
+
+    @staticmethod
+    def _fallback_messages(lang_prefix: str) -> list[str]:
+        """Сообщение о временной недоступности генерации на языке пользователя."""
         fallback_messages = {
             "ru": [
                 "К сожалению, наши умные помощники сейчас очень заняты и не могут проанализировать данные.",
@@ -363,46 +417,7 @@ class AIService:
                 "Кеңестер алу үшін сәл кейінірек кіріңіз.",
             ],
         }
-
-        try:
-            insights = await self._call_gemini(summary, locale, currency)
-            response = InsightResponse(insights=insights, generated_at=datetime.now(timezone.utc))
-
-            try:
-                cache_val = json.dumps(
-                    {
-                        "insights": insights,
-                        "generated_at": response.generated_at.isoformat(),
-                        "signature": fingerprint.signature,
-                        "tx_count": fingerprint.tx_count,
-                    },
-                    ensure_ascii=False,
-                )
-                await redis_client.setex(cache_key, INSIGHTS_CACHE_TTL_SECONDS, cache_val)
-            except Exception as err:
-                logger.warning(f"Не удалось записать кэш инсайтов в Redis для пользователя {user_id}: {err}")
-
-            try:
-                pipe = redis_client.pipeline()
-                pipe.incr(daily_quota_key)
-                pipe.expire(daily_quota_key, 86400)
-                await pipe.execute()
-            except Exception as err:
-                logger.warning(f"Не удалось обновить счетчик суточной квоты в Redis для пользователя {user_id}: {err}")
-
-            logger.info(
-                f"Сгенерированы AI-инсайты для пользователя {user_id} за {target_month}/{target_year}: "
-                f"{len(insights)} советов, вызовов за сутки {daily_calls + 1}/{config.ai_daily_limit_per_user}"
-            )
-            return response
-        except Exception as e:
-            logger.error(f"Ошибка запроса инсайтов к Gemini для пользователя {user_id}: {e}")
-            # Сообщение остаётся в insights для старых клиентов; новые по state показывают свою карточку
-            return InsightResponse(
-                insights=fallback_messages.get(lang_prefix, fallback_messages["en"]),
-                generated_at=datetime.now(timezone.utc),
-                state=InsightState.busy,
-            )
+        return fallback_messages.get(lang_prefix, fallback_messages["en"])
 
     def _build_summary(
         self,

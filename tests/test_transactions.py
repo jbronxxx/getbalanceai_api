@@ -106,7 +106,7 @@ class TestInsights:
         """Авторизованный запрос возвращает 200 OK и структуру ApiResponse[InsightResponse]."""
         test_user = MagicMock(spec=User)
         test_user.id = uuid.uuid4()
-        mock_db = MagicMock()
+        mock_db = MagicMock(commit=AsyncMock())
         mock_db.execute = AsyncMock()
 
         app.dependency_overrides[get_current_user] = lambda: test_user
@@ -130,7 +130,7 @@ class TestInsights:
         """Два последовательных HTTP-запроса проверяют работу кэширования через API."""
         test_user = MagicMock(spec=User)
         test_user.id = uuid.uuid4()
-        mock_db = MagicMock()
+        mock_db = MagicMock(commit=AsyncMock())
 
         app.dependency_overrides[get_current_user] = lambda: test_user
         app.dependency_overrides[get_db] = lambda: mock_db
@@ -178,7 +178,7 @@ class TestInsights:
         """Параллельный вызов /api/v1/insights/ и /health подтверждает неблокируемость Event Loop."""
         test_user = MagicMock(spec=User)
         test_user.id = uuid.uuid4()
-        mock_db = MagicMock()
+        mock_db = MagicMock(commit=AsyncMock())
 
         app.dependency_overrides[get_current_user] = lambda: test_user
         app.dependency_overrides[get_db] = lambda: mock_db
