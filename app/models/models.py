@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, Column, DateTime
+from sqlalchemy import CheckConstraint, DateTime
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy import ForeignKey, Index, Numeric, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
@@ -98,7 +98,6 @@ class User(Base):
     """
 
     __tablename__ = "users"
-    __mapper_args__ = {"exclude_properties": ["hashed_password"]}
     __table_args__ = (
         CheckConstraint(
             f"base_currency IN {SUPPORTED_CURRENCIES}",
@@ -108,9 +107,6 @@ class User(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    # Устаревшая колонка входа по паролю (значения очищены): есть в таблице, но исключена из маппера и не попадает
-    # ни в SELECT, ни в INSERT. Поэтому следующий релиз удалит её, не ломая контейнер этой версии во время миграции
-    hashed_password = Column(String(255), nullable=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     avatar_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     base_currency: Mapped[str] = mapped_column(
