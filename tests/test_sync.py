@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import Budget, Category, Transaction, TransactionType, User
@@ -747,3 +747,140 @@ class TestSyncEndpointIntegration:
         # 2. Повторный запрос идемпотентно завершается успехом (200 OK)
         res2 = await client.post("/api/v1/sync/", json=payload, headers=auth_headers)
         assert res2.status_code == 200
+
+
+class TestSyncInputLimits:
+    """Границы входных данных синхронизации: запись вне границ не должна ронять весь батч с 500."""
+
+    @staticmethod
+    def _tx(description: str = "Покупка", amount: float | str = 100.0, currency: str = "USD") -> dict:
+        return {
+            "id": str(uuid.uuid4()),
+            "amount": amount,
+            "currency": currency,
+            "description": description,
+            "category": "food",
+            "type": "expense",
+            "date": "2026-10-10T12:00:00Z",
+        }
+
+    @pytest.mark.asyncio
+    async def test_sync_long_description_truncated_to_column_length(
+        self, client: AsyncClient, auth_headers: dict[str, str], db_session: AsyncSession
+    ):
+        """Описание длиннее 255 символов обрезается, а не роняет батч ошибкой БД."""
+        item = self._tx(description="а" * 300)
+        response = await client.post("/api/v1/sync/", json={"transactions": [item]}, headers=auth_headers)
+
+        assert response.status_code == 200
+        synced = response.json()["data"]["synced_transactions"]
+        assert len(synced) == 1
+        assert synced[0]["description"] == "а" * 255
+        stored = (await db_session.execute(select(Transaction).where(Transaction.id == uuid.UUID(item["id"])))).scalar_one()
+        assert len(stored.description) == 255
+
+    @pytest.mark.asyncio
+    async def test_sync_amount_above_limit_returns_422(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Сумма больше 10^12 отклоняется валидацией 422, а не ошибкой переполнения Numeric (500)."""
+        item = self._tx(amount="1000000000000.01")
+        response = await client.post("/api/v1/sync/", json={"transactions": [item]}, headers=auth_headers)
+
+        assert response.status_code == 422
+        assert response.json()["code"] == "VALIDATION_ERROR"
+
+    @pytest.mark.asyncio
+    async def test_sync_budget_limit_above_limit_returns_422(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Лимит бюджета больше 10^12 отклоняется валидацией 422."""
+        budget = {"category": "food", "limit_amount": "1000000000000.01", "month": 10, "year": 2026}
+        response = await client.post("/api/v1/sync/", json={"budgets": [budget]}, headers=auth_headers)
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_sync_base_amount_overflow_rejected_without_failing_batch(
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, str],
+        db_session: AsyncSession,
+        test_user: User,
+    ):
+        """Сумма, которая после пересчёта в базовую валюту не помещается в Numeric(18, 2), уходит в rejected."""
+        test_user.base_currency = "UZS"
+        await db_session.commit()
+
+        overflow = self._tx(amount="1000000000000", currency="USD")
+        valid = self._tx(amount=10.0, currency="USD")
+        response = await client.post("/api/v1/sync/", json={"transactions": [overflow, valid]}, headers=auth_headers)
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert [t["id"] for t in data["synced_transactions"]] == [valid["id"]]
+        assert len(data["rejected"]) == 1
+        assert data["rejected"][0]["id"] == overflow["id"]
+        stored = (
+            await db_session.execute(select(Transaction).where(Transaction.id == uuid.UUID(overflow["id"])))
+        ).scalar_one_or_none()
+        assert stored is None
+
+    @pytest.mark.asyncio
+    async def test_sync_retry_with_client_id_does_not_duplicate(
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, str],
+        db_session: AsyncSession,
+        test_user: User,
+    ):
+        """Повтор батча с тем же клиентским id (ответ первого потерян) обновляет запись, а не создаёт дубль."""
+        item = self._tx(amount=42.0)
+        first = await client.post("/api/v1/sync/", json={"transactions": [item]}, headers=auth_headers)
+        second = await client.post("/api/v1/sync/", json={"transactions": [item]}, headers=auth_headers)
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        count = (
+            await db_session.execute(select(func.count(Transaction.id)).where(Transaction.user_id == test_user.id))
+        ).scalar_one()
+        assert count == 1
+
+
+class TestTransactionInputLimits:
+    """Границы сумм при создании транзакций и бюджетов через REST."""
+
+    @pytest.mark.asyncio
+    async def test_create_transaction_amount_above_limit_returns_422(
+        self, client: AsyncClient, auth_headers: dict[str, str]
+    ):
+        payload = {"amount": "1000000000000.01", "description": "x", "category": "food", "type": "expense"}
+        response = await client.post("/api/v1/transactions/", json=payload, headers=auth_headers)
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_create_transaction_base_amount_overflow_returns_400(
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, str],
+        db_session: AsyncSession,
+        test_user: User,
+    ):
+        """Переполнение суммы в базовой валюте — 400 INVALID_TRANSACTION_AMOUNT, а не 500."""
+        test_user.base_currency = "UZS"
+        await db_session.commit()
+        payload = {
+            "amount": "1000000000000",
+            "currency": "USD",
+            "description": "x",
+            "category": "food",
+            "type": "expense",
+        }
+        response = await client.post("/api/v1/transactions/", json=payload, headers=auth_headers)
+
+        assert response.status_code == 400
+        assert response.json()["code"] == "INVALID_TRANSACTION_AMOUNT"
+
+    @pytest.mark.asyncio
+    async def test_create_budget_limit_above_limit_returns_422(self, client: AsyncClient, auth_headers: dict[str, str]):
+        payload = {"category": "food", "limit_amount": "1000000000000.01", "month": 10, "year": 2026}
+        response = await client.post("/api/v1/budgets/", json=payload, headers=auth_headers)
+
+        assert response.status_code == 422

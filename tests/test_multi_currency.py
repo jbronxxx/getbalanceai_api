@@ -302,8 +302,9 @@ class TestMultiCurrencyBackend:
             payload=BudgetCreate(
                 category=Category.health,
                 limit_amount=Decimal("20000000000.00"),  # 20 миллиардов UZS
-                month=10,
-                year=2026,
+                # Текущий месяц: транзакция выше создана без даты, то есть сейчас
+                month=datetime.now(timezone.utc).month,
+                year=datetime.now(timezone.utc).year,
             ),
             user_base_currency="UZS",
         )

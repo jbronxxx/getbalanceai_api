@@ -24,6 +24,11 @@ from app.models.models import (
     TransactionType,
 )
 
+# Верхняя граница сумм операций и лимитов: с запасом под колонку Numeric(18, 2) и пересчёт в базовую валюту
+MAX_MONEY_AMOUNT = Decimal("1000000000000")
+# Длина описания операции — как у колонки transactions.description
+DESCRIPTION_MAX_LENGTH = 255
+
 # ============================================================================
 # Базовые response обертки для стандартизации ответов
 # ============================================================================
@@ -266,7 +271,9 @@ class TransactionCreate(BaseModel):
         date (datetime | None): Дата и время операции.
     """
 
-    amount: Decimal = Field(..., gt=Decimal("0"), description="Сумма операции (должна быть больше 0)")
+    amount: Decimal = Field(
+        ..., gt=Decimal("0"), le=MAX_MONEY_AMOUNT, description="Сумма операции (больше 0, не больше 10^12)"
+    )
     currency: Optional[str] = Field(
         default=None,
         description="Код валюты операции (USD, EUR, KZT, UZS). По умолчанию базовая валюта пользователя",
@@ -282,7 +289,9 @@ class TransactionCreate(BaseModel):
         gt=Decimal("0"),
         description="Сумма в базовой валюте (опционально, рассчитывается сервером)",
     )
-    description: str = Field(..., min_length=1, max_length=255, description="Описание или назначение платежа")
+    description: str = Field(
+        ..., min_length=1, max_length=DESCRIPTION_MAX_LENGTH, description="Описание или назначение платежа"
+    )
     category: Category = Field(..., description="Категория операции")
     type: TransactionType = Field(..., description="Тип операции: income (доход) или expense (расход)")
     date: datetime | None = Field(default=None, description="Дата транзакции (по умолчанию текущая)")
@@ -383,7 +392,9 @@ class BudgetCreate(BaseModel):
     """
 
     category: Category = Field(..., description="Категория расходов")
-    limit_amount: Decimal = Field(..., gt=Decimal("0"), description="Лимит суммы на указанный месяц")
+    limit_amount: Decimal = Field(
+        ..., gt=Decimal("0"), le=MAX_MONEY_AMOUNT, description="Лимит суммы на указанный месяц (не больше 10^12)"
+    )
     currency: Optional[str] = Field(
         default=None,
         description="Валюта лимита (USD, EUR, KZT, UZS). По умолчанию базовая валюта пользователя",
@@ -459,7 +470,7 @@ class TransactionSyncItem(BaseModel):
     local_id: Optional[int] = Field(default=None, description="Локальный ID на клиенте")
     type: TransactionType = Field(..., description="Тип операции")
     category: Category = Field(..., description="Категория")
-    amount: Decimal = Field(..., gt=Decimal("0"), description="Сумма")
+    amount: Decimal = Field(..., gt=Decimal("0"), le=MAX_MONEY_AMOUNT, description="Сумма (не больше 10^12)")
     currency: Optional[str] = Field(
         default=None,
         description="Код валюты операции (USD, EUR, KZT, UZS). По умолчанию базовая валюта пользователя",
@@ -476,7 +487,19 @@ class TransactionSyncItem(BaseModel):
         description="Сумма в базовой валюте (опционально, рассчитывается сервером)",
     )
     date: datetime = Field(..., description="Дата и время")
-    description: str = Field(..., description="Описание")
+    description: str = Field(..., description="Описание (длиннее 255 символов обрезается)")
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def truncate_description(cls, v: Any) -> Any:
+        """Обрезать описание до длины колонки БД.
+
+        Оффлайн-очередь клиента отправляет один и тот же батч, пока он не примется: отказ из-за
+        длинного описания блокировал бы синхронизацию всех остальных записей пользователя.
+        """
+        if isinstance(v, str) and len(v) > DESCRIPTION_MAX_LENGTH:
+            return v[:DESCRIPTION_MAX_LENGTH]
+        return v
 
     @field_validator("currency", mode="before")
     @classmethod
@@ -522,7 +545,8 @@ class BudgetSyncItem(BaseModel):
     limit_amount: Decimal = Field(
         default=Decimal("0.00"),
         ge=Decimal("0"),
-        description="Лимит бюджета в валюте лимита",
+        le=MAX_MONEY_AMOUNT,
+        description="Лимит бюджета в валюте лимита (не больше 10^12)",
     )
     currency: Optional[str] = Field(
         default=None,
