@@ -5,7 +5,7 @@ import json
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from decimal import Decimal
 
 from google import genai
@@ -23,6 +23,8 @@ from app.redis import (
 from app.schemas.schemas import BudgetResponse, InsightResponse, InsightState
 from app.services.budget_service import BudgetService
 from app.services.insights_formatting import category_name, format_money
+from app.services.period import current_month as client_current_month
+from app.services.period import month_bounds
 from config_reader.config_reader import config
 from logger.logger import get_logger
 
@@ -123,21 +125,20 @@ class AIService:
         return json.loads(cleaned)
 
     @staticmethod
-    def _month_bounds(month: int, year: int) -> tuple[datetime, datetime]:
-        """Границы календарного месяца в UTC: [начало, начало следующего)."""
-        start = datetime(year, month, 1, tzinfo=timezone.utc)
-        if month == 12:
-            return start, datetime(year + 1, 1, 1, tzinfo=timezone.utc)
-        return start, datetime(year, month + 1, 1, tzinfo=timezone.utc)
+    def _month_bounds(month: int, year: int, tz: tzinfo = timezone.utc) -> tuple[datetime, datetime]:
+        """Границы календарного месяца в поясе клиента, переведённые в UTC: [начало, начало следующего)."""
+        return month_bounds(year, month, tz)
 
-    async def _month_fingerprint(self, user_id: uuid.UUID, month: int, year: int) -> MonthFingerprint:
+    async def _month_fingerprint(
+        self, user_id: uuid.UUID, month: int, year: int, tz: tzinfo = timezone.utc
+    ) -> MonthFingerprint:
         """Отпечаток данных месяца: итоги операций по категории, типу и валюте и лимиты с валютой.
 
         Меняется при любом изменении, влияющем на суммы отчёта: добавление, удаление и правка
         операции (сумма, категория, тип, валюта), а также лимита (сумма, валюта). Совпадение
         с сохранённым в кэше означает, что цифры отчёта совпадают с текущими данными.
         """
-        start, end = self._month_bounds(month, year)
+        start, end = self._month_bounds(month, year, tz)
         tx_rows = (
             await self.db.execute(
                 select(
@@ -209,6 +210,7 @@ class AIService:
         month: int | None = None,
         year: int | None = None,
         generate: bool = True,
+        tz: tzinfo = timezone.utc,
     ) -> InsightResponse:
         """Вернуть AI-отчёт за месяц, по возможности без вызова LLM.
 
@@ -217,11 +219,13 @@ class AIService:
         отчёта нет). Отчёты хранятся в Redis вместе с отпечатком данных месяца.
         """
         now = datetime.now(timezone.utc)
-        target_month = month or now.month
-        target_year = year or now.year
+        # Текущий месяц — по часам клиента: в UTC+5 1-го числа до 05:00 по UTC ещё прошлый месяц
+        current_year, current_month = client_current_month(tz)
+        target_month = month or current_month
+        target_year = year or current_year
         lang_prefix = locale[:2].lower()
 
-        if (target_year, target_month) > (now.year, now.month):
+        if (target_year, target_month) > (current_year, current_month):
             return InsightResponse(insights=[], generated_at=now, state=InsightState.no_data)
 
         is_placeholder = (
@@ -244,7 +248,7 @@ class AIService:
                 generated_at=now,
             )
 
-        fingerprint = await self._month_fingerprint(user_id, target_month, target_year)
+        fingerprint = await self._month_fingerprint(user_id, target_month, target_year, tz)
         if fingerprint.tx_count == 0:
             return InsightResponse(insights=[], generated_at=now, state=InsightState.no_data)
 
@@ -321,7 +325,7 @@ class AIService:
                 state=InsightState.quota_exceeded,
             )
 
-        start_date, end_date = self._month_bounds(target_month, target_year)
+        start_date, end_date = self._month_bounds(target_month, target_year, tz)
         query = (
             select(Transaction)
             .where(
@@ -344,6 +348,7 @@ class AIService:
                 month=target_month,
                 year=target_year,
                 user_base_currency=currency,
+                tz=tz,
             )
         except Exception as err:
             logger.warning(f"Не удалось загрузить бюджеты для пользователя {user_id}: {err}")

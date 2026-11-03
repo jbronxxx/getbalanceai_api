@@ -1,7 +1,7 @@
 """Эндпоинт пакетной синхронизации оффлайн данных транзакций и бюджетов."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, Request, status
@@ -13,6 +13,7 @@ from app.database import get_db
 from app.exceptions import AppException, ErrorCode
 from app.limiter import limiter
 from app.models.models import Budget, Category, Transaction, User
+from app.routers.dependencies import get_client_timezone
 from app.schemas.schemas import (
     ApiResponse,
     ErrorResponse,
@@ -62,6 +63,7 @@ async def sync_data(
     payload: SyncPayload,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    tz: tzinfo = Depends(get_client_timezone),
 ):
     user_id = current_user.id
     user_base_currency = (current_user.base_currency or "USD").strip().upper()
@@ -332,6 +334,7 @@ async def sync_data(
             synced_budgets,
             user_id,
             user_base_currency=user_base_currency,
+            tz=tz,
         )
 
     except AppException:

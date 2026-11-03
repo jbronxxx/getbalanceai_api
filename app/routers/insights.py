@@ -1,6 +1,6 @@
 """Эндпоинты формирования персональной AI-аналитики и рекомендаций."""
 
-from datetime import datetime, timezone
+from datetime import tzinfo
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,9 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.limiter import limiter
 from app.models.models import CurrencyCode, User
+from app.routers.dependencies import get_client_timezone
 from app.schemas.schemas import ApiResponse, ErrorResponse, InsightResponse
 from app.services.ai_service import AIService
 from app.services.auth_service import get_current_user
+from app.services.period import current_month as client_current_month
 
 router = APIRouter(
     responses={
@@ -46,14 +48,16 @@ async def get_insights(
     ),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    tz: tzinfo = Depends(get_client_timezone),
 ):
     """Вернуть AI-отчёт за месяц: сохранённый, если данные периода не менялись, иначе сгенерировать.
 
     Для будущего месяца и месяца без операций LLM не вызывается (`state=no_data`).
     """
-    now = datetime.now(timezone.utc)
-    target_month = month or now.month
-    target_year = year or now.year
+    # Месяц по умолчанию — текущий по часам клиента (заголовок X-Timezone-Offset)
+    current_year, current_month = client_current_month(tz)
+    target_month = month or current_month
+    target_year = year or current_year
 
     effective_currency = currency.value if currency else (current_user.base_currency or "USD").strip().upper()
     service = AIService(db)
@@ -64,5 +68,6 @@ async def get_insights(
         month=target_month,
         year=target_year,
         generate=generate,
+        tz=tz,
     )
     return {"status": "success", "data": insights}

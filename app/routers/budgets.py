@@ -1,6 +1,7 @@
 """Эндпоинты управления бюджетами и лимитами расходов по категориям."""
 
 import uuid
+from datetime import tzinfo
 
 from fastapi import APIRouter, Depends, Header, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.exceptions import ErrorCode, NotFoundException
 from app.models.models import Category, User
+from app.routers.dependencies import get_client_timezone
 from app.schemas.schemas import (
     ApiResponse,
     BaseResponse,
@@ -40,6 +42,7 @@ async def create_budget(
     payload: BudgetCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    tz: tzinfo = Depends(get_client_timezone),
 ):
     """Установить лимит бюджета по определенной категории на месяц и год."""
     service = BudgetService(db)
@@ -47,6 +50,7 @@ async def create_budget(
         current_user.id,
         payload,
         user_base_currency=current_user.base_currency,
+        tz=tz,
     )
     return {"status": "success", "data": budget}
 
@@ -74,6 +78,7 @@ async def list_budgets(
     ),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    tz: tzinfo = Depends(get_client_timezone),
 ):
     """Получить список бюджетов с расчетом израсходованных средств и остатка лимита.
 
@@ -88,6 +93,7 @@ async def list_budgets(
         month=month,
         year=year,
         base_currency=current_user.base_currency,
+        tz=tz,
     )
 
     if if_none_match:
@@ -102,6 +108,7 @@ async def list_budgets(
         month=month,
         year=year,
         user_base_currency=current_user.base_currency,
+        tz=tz,
     )
     response.headers["ETag"] = f'"{current_etag}"'
 
@@ -117,6 +124,7 @@ async def get_budget(
     budget_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    tz: tzinfo = Depends(get_client_timezone),
 ):
     """Получить информацию о бюджете по его уникальному ID."""
     service = BudgetService(db)
@@ -124,6 +132,7 @@ async def get_budget(
         current_user.id,
         budget_id,
         user_base_currency=current_user.base_currency,
+        tz=tz,
     )
     return {"status": "success", "data": budget}
 

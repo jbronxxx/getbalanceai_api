@@ -7,6 +7,7 @@
 ### 1. Авторизация и Управление пользователями (Auth Service)
 *   [x] **Email без учёта регистра:** при OAuth-входе email нормализуется (`strip().lower()`); вход с адресом в другом регистре попадает в существующий аккаунт (`TestOAuthEmailCaseInsensitive`).
 *   [x] **Каскадное удаление аккаунта:** транзакции, бюджеты и токены удаляются БД (`ON DELETE CASCADE`), ORM их не загружает; в тестах SQLite включён `PRAGMA foreign_keys` (`TestAccountDeletionCascade`).
+*   [x] **Часовой пояс клиента:** разбор `X-Timezone-Offset` (вне диапазона и мусор → UTC); границы месяца и переход через год; ночная трата 1-го числа по UTC+5 входит в бюджет нового месяца, без заголовка — по UTC; ETag зависит от пояса; `/sync` и отпечаток AI-отчёта считают в поясе клиента (`tests/test_client_timezone.py`).
 *   [x] **Сбой Redis:** авторизованный запрос — 503 `SERVICE_UNAVAILABLE`, `/health` — 503 с `redis: unhealthy` (`TestRedisOutage`).
 *   [x] **Квота и таймаут AI:** из 10 параллельных запросов LLM вызывается 5 раз; ошибка LLM возвращает квоту; зависший вызов обрывается по таймауту; без Redis LLM не вызывается; транзакция БД завершается до вызова LLM; невалидные `currency`/`locale` — 422 (`TestInsightsQuotaAndTimeout`, `TestInsightsEndpointValidation`).
 *   [x] **Лимит `/sync`:** 61-й запрос в минуту от пользователя — 429 (`TestSyncRateLimit`).
