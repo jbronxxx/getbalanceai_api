@@ -33,5 +33,7 @@ async def get_currency_rates(
     Возвращает заголовок Cache-Control для эффективного кэширования на стороне клиента.
     """
     rates = await currency_service.get_rates()
-    response.headers["Cache-Control"] = f"public, max-age={config.currency_rates_cache_ttl}"
+    # Резервные курсы кэшируются так же коротко, как на сервере: иначе клиент держал бы их сутки
+    max_age = config.currency_rates_fallback_cache_ttl if rates.is_fallback else config.currency_rates_cache_ttl
+    response.headers["Cache-Control"] = f"public, max-age={max_age}"
     return {"status": "success", "data": rates}

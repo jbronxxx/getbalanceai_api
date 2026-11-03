@@ -42,6 +42,7 @@ class ErrorCode(StrEnum):
 
     # Синхронизация
     SYNC_FAILED = "SYNC_FAILED"
+    INVALID_CURSOR = "INVALID_CURSOR"
 
     # Безопасность и лимиты
     RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED"

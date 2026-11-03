@@ -10,7 +10,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.exceptions import ErrorCode, NotFoundException
+from app.exceptions import BadRequestException, ErrorCode, NotFoundException
 from app.models.models import Transaction, User
 from app.schemas.schemas import TransactionCreate
 from app.services.budget_service import BudgetService
@@ -106,8 +106,11 @@ class TransactionService:
                         and_(Transaction.date == cursor_date, Transaction.id < cursor_id),
                     )
                 )
-            except Exception as e:
+            except (ValueError, KeyError, TypeError) as e:
+                # Молча отдавать первую страницу нельзя: клиент, листающий по курсору, получил бы те же
+                # записи заново и зациклился бы на них
                 logger.warning(f"Некорректный курсор пагинации от пользователя {user_id}: {type(e).__name__}")
+                raise BadRequestException(code=ErrorCode.INVALID_CURSOR, message="Некорректный курсор пагинации")
 
         query = query.order_by(Transaction.date.desc(), Transaction.id.desc())
 

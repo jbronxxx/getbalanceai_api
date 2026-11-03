@@ -158,7 +158,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     """Обработчик ошибок валидации входных данных Pydantic."""
     errors_dict = {}
     for error in exc.errors():
-        field = str(error["loc"][-1]) if error["loc"] else "unknown"
+        # Полный путь к полю без источника (body/query/header): transactions.3.amount, а не просто amount —
+        # иначе в пакете /sync не понять, какая запись невалидна, а одноимённые ошибки затирают друг друга
+        location = [str(part) for part in error["loc"]]
+        if len(location) > 1 and location[0] in ("body", "query", "path", "header", "cookie"):
+            location = location[1:]
+        field = ".".join(location) or "unknown"
         msg = error.get("msg", "Неверное значение")
         errors_dict[field] = msg
 
