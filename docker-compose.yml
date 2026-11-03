@@ -6,6 +6,8 @@ services:
         max-size: "10m"
         max-file: "3"
     build: .
+    # Явное имя образа: деплой держит рядом тег предыдущей версии (getbalanceai-api:rollback) для отката
+    image: getbalanceai-api:latest
     # По умолчанию API доступен только с хоста; снаружи — через nginx. Для теста с телефона в LAN: APP_BIND=0.0.0.0
     ports:
       - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8000}:8000"
@@ -20,9 +22,19 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Статус health ждёт деплой после пересоздания контейнера: unhealthy означает откат на предыдущий образ.
+    # /health отвечает 503 при недоступной БД или Redis, urlopen на этом бросает исключение — проверка не проходит
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
-
-
 
   db:
     logging:
