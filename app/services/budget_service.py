@@ -2,10 +2,10 @@
 
 import hashlib
 import uuid
-from datetime import datetime, timezone
+from datetime import timezone, tzinfo
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.exceptions import ErrorCode, NotFoundException
@@ -13,6 +13,7 @@ from app.models.models import Budget, Category, Transaction, TransactionType, Us
 from app.redis import get_budgets_version_key, get_redis
 from app.schemas.schemas import BudgetCreate, BudgetResponse
 from app.services.currency_service import CurrencyService
+from app.services.period import month_bounds, timezone_key, year_bounds
 from logger.logger import get_logger
 
 logger = get_logger(__name__)
@@ -30,6 +31,7 @@ class BudgetService:
         user_id: uuid.UUID,
         payload: BudgetCreate,
         user_base_currency: str | None = None,
+        tz: tzinfo = timezone.utc,
     ) -> BudgetResponse:
         """Создать новый бюджет или атомарно обновить существующий лимит (Upsert).
 
@@ -67,13 +69,14 @@ class BudgetService:
         await self.db.refresh(budget)
         await self.invalidate_etag(user_id)
         logger.info(f"Сохранён бюджет {budget.id} для пользователя {user_id}")
-        return await self._enrich(budget, user_id, user_base_currency=user_base_currency)
+        return await self._enrich(budget, user_id, user_base_currency=user_base_currency, tz=tz)
 
     async def get_by_id(
         self,
         user_id: uuid.UUID,
         budget_id: uuid.UUID,
         user_base_currency: str | None = None,
+        tz: tzinfo = timezone.utc,
     ) -> BudgetResponse:
         """Получить бюджет по его идентификатору."""
         query = select(Budget).where(Budget.id == budget_id, Budget.user_id == user_id)
@@ -86,7 +89,7 @@ class BudgetService:
                 message="Бюджет не найден",
                 details={"budget_id": str(budget_id)},
             )
-        return await self._enrich(budget, user_id, user_base_currency=user_base_currency)
+        return await self._enrich(budget, user_id, user_base_currency=user_base_currency, tz=tz)
 
     async def get_all(
         self,
@@ -94,6 +97,7 @@ class BudgetService:
         month: int | None,
         year: int | None,
         user_base_currency: str | None = None,
+        tz: tzinfo = timezone.utc,
     ) -> list[BudgetResponse]:
         """Получить список всех бюджетов пользователя с фильтрацией по месяцу и году."""
         query = select(Budget).where(Budget.user_id == user_id)
@@ -105,7 +109,7 @@ class BudgetService:
         result = await self.db.execute(query)
         budgets = list(result.scalars().all())
         logger.debug(f"Получено {len(budgets)} бюджетов для пользователя {user_id} с фильтром месяц={month}, год={year}")
-        return await self.enrich_multiple(budgets, user_id, user_base_currency=user_base_currency)
+        return await self.enrich_multiple(budgets, user_id, user_base_currency=user_base_currency, tz=tz)
 
     async def delete(self, user_id: uuid.UUID, budget_id: uuid.UUID) -> None:
         """Удалить бюджет по его идентификатору."""
@@ -160,8 +164,9 @@ class BudgetService:
         month: int | None = None,
         year: int | None = None,
         base_currency: str | None = None,
+        tz: tzinfo = timezone.utc,
     ) -> str:
-        """Быстрый расчет ETag с учетом лимитов бюджетов, расходов и базовой валюты пользователя."""
+        """Быстрый расчет ETag с учетом лимитов бюджетов, расходов, базовой валюты и часового пояса клиента."""
         if not base_currency:
             user_res = await self.db.execute(select(User.base_currency).where(User.id == user_id))
             base_currency = (user_res.scalar_one_or_none() or "USD").strip().upper()
@@ -185,29 +190,24 @@ class BudgetService:
         t_query = select(
             func.count(Transaction.id),
             func.coalesce(func.sum(Transaction.base_amount), Decimal("0.00")),
-            func.max(Transaction.created_at),
+            func.max(Transaction.updated_at),
         ).where(
             Transaction.user_id == user_id,
             Transaction.type == TransactionType.expense,
         )
 
         if month and year:
-            start_date = datetime(year, month, 1, tzinfo=timezone.utc)
-            end_date = (
-                datetime(year + 1, 1, 1, tzinfo=timezone.utc)
-                if month == 12
-                else datetime(year, month + 1, 1, tzinfo=timezone.utc)
-            )
+            start_date, end_date = month_bounds(year, month, tz)
             t_query = t_query.where(Transaction.date >= start_date, Transaction.date < end_date)
         elif year:
-            start_date = datetime(year, 1, 1, tzinfo=timezone.utc)
-            end_date = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+            start_date, end_date = year_bounds(year, tz)
             t_query = t_query.where(Transaction.date >= start_date, Transaction.date < end_date)
         elif month:
+            # Месяц без года — по UTC: фильтр без года клиенты не используют
             t_query = t_query.where(func.extract("month", Transaction.date) == month)
 
         t_res = await self.db.execute(t_query)
-        t_count, t_sum_spent, t_max_created = t_res.first()
+        t_count, t_sum_spent, t_max_updated = t_res.first()
 
         redis_version = ""
         try:
@@ -219,8 +219,9 @@ class BudgetService:
             pass
 
         raw_str = (
-            f"{user_id}:{base_currency}:{b_count}:{b_sum_limits}:{b_max_created.isoformat() if b_max_created else ''}:"
-            f"{t_count}:{t_sum_spent}:{t_max_created.isoformat() if t_max_created else ''}:{redis_version}"
+            f"{user_id}:{base_currency}:{timezone_key(tz)}:"
+            f"{b_count}:{b_sum_limits}:{b_max_created.isoformat() if b_max_created else ''}:"
+            f"{t_count}:{t_sum_spent}:{t_max_updated.isoformat() if t_max_updated else ''}:{redis_version}"
         )
         return hashlib.md5(raw_str.encode(), usedforsecurity=False).hexdigest()
 
@@ -229,6 +230,7 @@ class BudgetService:
         budgets: list[Budget],
         user_id: uuid.UUID,
         user_base_currency: str | None = None,
+        tz: tzinfo = timezone.utc,
     ) -> list[BudgetResponse]:
         """Обогатить список бюджетов агрегированными данными о расходах напрямую из БД.
 
@@ -250,21 +252,22 @@ class BudgetService:
         periods = {(b.month, b.year) for b in budgets}
         categories = {b.category for b in budgets}
 
-        # Диапазонные условия по датам для использования составного индекса (user_id, type, date)
-        date_conditions = []
-        for m, y in periods:
-            start_date = datetime(y, m, 1, tzinfo=timezone.utc)
-            end_date = datetime(y + 1, 1, 1, tzinfo=timezone.utc) if m == 12 else datetime(y, m + 1, 1, tzinfo=timezone.utc)
-            date_conditions.append(and_(Transaction.date >= start_date, Transaction.date < end_date))
-
-        month_expr = func.extract("month", Transaction.date)
-        year_expr = func.extract("year", Transaction.date)
+        # Месяц бюджета — по часам клиента: диапазоны дат в его поясе, переведённые в UTC. Период операции
+        # определяется попаданием в диапазон, а не EXTRACT(month) от даты в UTC: иначе для UTC+5 траты
+        # 1-го числа до 05:00 уходили в прошлый месяц. Диапазоны же используют индекс (user_id, type, date)
+        period_ranges = {(m, y): month_bounds(y, m, tz) for m, y in periods}
+        date_conditions = [and_(Transaction.date >= start, Transaction.date < end) for start, end in period_ranges.values()]
+        period_expr = case(
+            *[
+                (and_(Transaction.date >= start, Transaction.date < end), literal(f"{y}-{m}"))
+                for (m, y), (start, end) in period_ranges.items()
+            ]
+        )
 
         tx_query = (
             select(
                 Transaction.category,
-                month_expr.label("month"),
-                year_expr.label("year"),
+                period_expr.label("period"),
                 Transaction.currency,
                 func.coalesce(func.sum(Transaction.amount), Decimal("0.00")).label("amount"),
                 func.coalesce(func.sum(Transaction.base_amount), Decimal("0.00")).label("base_amount"),
@@ -275,14 +278,15 @@ class BudgetService:
                 Transaction.category.in_(categories),
                 or_(*date_conditions),
             )
-            .group_by(Transaction.category, month_expr, year_expr, Transaction.currency)
+            .group_by(Transaction.category, period_expr, Transaction.currency)
         )
 
         result = await self.db.execute(tx_query)
         # (категория, месяц, год) -> [(валюта операций, сумма в валюте чека, сумма в базовой валюте)]
         groups: dict[tuple[Category, int, int], list[tuple[str, Decimal, Decimal]]] = {}
         for rec in result.all():
-            key = (rec.category, int(rec.month), int(rec.year))
+            period_year, period_month = (int(part) for part in rec.period.split("-"))
+            key = (rec.category, period_month, period_year)
             groups.setdefault(key, []).append(
                 (str(rec.currency).strip().upper(), Decimal(str(rec.amount)), Decimal(str(rec.base_amount)))
             )
@@ -332,7 +336,8 @@ class BudgetService:
         budget: Budget,
         user_id: uuid.UUID,
         user_base_currency: str | None = None,
+        tz: tzinfo = timezone.utc,
     ) -> BudgetResponse:
         """Обогатить объект бюджета агрегированными данными о фактических расходах."""
-        enriched_list = await self.enrich_multiple([budget], user_id, user_base_currency=user_base_currency)
+        enriched_list = await self.enrich_multiple([budget], user_id, user_base_currency=user_base_currency, tz=tz)
         return enriched_list[0]
