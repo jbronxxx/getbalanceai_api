@@ -36,7 +36,6 @@ class TestUnitOfWork:
                 id=user_id,
                 email="uow_commit_test@example.com",
                 name="UoW Commit User",
-                hashed_password="hashed_pwd",
             )
             session.add(user)
 
@@ -58,7 +57,6 @@ class TestUnitOfWork:
                     id=user_id,
                     email="uow_rollback_test@example.com",
                     name="UoW Rollback User",
-                    hashed_password="hashed_pwd",
                 )
                 session.add(user)
                 await session.flush()
@@ -79,7 +77,6 @@ class TestUnitOfWork:
                 id=user_id,
                 email="atomic_user@example.com",
                 name="Atomic User",
-                hashed_password="hashed_pwd",
             )
             session.add(user)
             await session.flush()

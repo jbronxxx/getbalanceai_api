@@ -677,7 +677,6 @@ class TestSyncEndpointIntegration:
             id=alien_user_id,
             email=f"alien_{alien_user_id.hex[:6]}@example.com",
             name="Alien",
-            hashed_password="pwd",
         )
         db_session.add(alien_user)
 
