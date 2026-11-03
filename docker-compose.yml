@@ -97,17 +97,23 @@ services:
     command: -config.file=/etc/loki/local-config.yaml
     restart: unless-stopped
 
-  promtail:
+  # Сборщик логов контейнеров (замена promtail, у которого закончилась поддержка). Позиции чтения хранятся в томе
+  # alloy_data: после перезапуска логи дочитываются с места остановки, без дублей и пропусков
+  alloy:
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-    image: grafana/promtail:3.0.0
+    image: grafana/alloy:v1.20.1
     volumes:
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - ./promtail:/etc/promtail
-    command: -config.file=/etc/promtail/config.yml
+      - ./alloy:/etc/alloy:ro
+      - alloy_data:/var/lib/alloy/data
+    command:
+      - run
+      - --storage.path=/var/lib/alloy/data
+      - --disable-reporting
+      - /etc/alloy/config.alloy
     # default — отправка в Loki, docker-api — обнаружение контейнеров через прокси вместо docker.sock
     networks:
       - default
@@ -117,7 +123,7 @@ services:
       - loki
       - docker-socket-proxy
 
-  # Docker API только на чтение для promtail и cadvisor: контейнеры, сети, сведения о демоне. Сокет с :ro всё равно
+  # Docker API только на чтение для alloy и cadvisor: контейнеры, сети, сведения о демоне. Сокет с :ro всё равно
   # даёт полный API (запуск контейнеров, exec) — прокси пропускает лишь разрешённые GET-эндпоинты, POST запрещён
   docker-socket-proxy:
     logging:
@@ -207,7 +213,7 @@ services:
     depends_on:
       - docker-socket-proxy
 networks:
-  # Изолированная сеть без выхода наружу: прокси Docker API доступен только promtail и cadvisor
+  # Изолированная сеть без выхода наружу: прокси Docker API доступен только alloy и cadvisor
   docker-api:
     internal: true
 
@@ -216,4 +222,5 @@ volumes:
   redis_data:
   prometheus_data:
   grafana_data:
+  alloy_data:
 
