@@ -11,7 +11,24 @@ on:
 jobs:
   test-and-lint:
     runs-on: ubuntu-latest
-    
+
+    # Тесты и миграции гоняются на той же СУБД, что и прод: SQLite не проверяет длину строк,
+    # точность Numeric и приведение типов параметров asyncpg
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: tests
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d tests"
+          --health-interval 3s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -36,6 +53,18 @@ jobs:
         run: |
           flake8 .
 
+      - name: Check migrations (upgrade, model drift, downgrade, upgrade)
+        run: |
+          PGPASSWORD=ci psql -h localhost -U ci -d tests -c "CREATE DATABASE migrations"
+          alembic upgrade head
+          alembic check
+          alembic downgrade base
+          alembic upgrade head
+        env:
+          APP_DEBUG: "true"
+          SECRET_KEY: "test_secret_key"
+          DATABASE_URL: "postgresql://ci:ci@localhost:5432/migrations"
+
       - name: Test with pytest and coverage
         run: |
           pytest -v --cov=app --cov-report=term-missing
@@ -44,6 +73,7 @@ jobs:
           APP_HOST: "0.0.0.0"
           APP_PORT: "8000"
           DATABASE_URL: "sqlite+aiosqlite:///:memory:"
+          TEST_DATABASE_URL: "postgresql+asyncpg://ci:ci@localhost:5432/tests"
           SECRET_KEY: "test_secret_key"
           AUTH_ALGORITHM: "HS256"
           ACCESS_TOKEN_EXPIRE_MINUTES: "60"
