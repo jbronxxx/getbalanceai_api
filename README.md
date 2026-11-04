@@ -295,6 +295,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000 --timeout-keep-alive 75
     ```
 * **Loki + Grafana Alloy** — автоматический сбор всех логов контейнеров (конфиг `alloy/config.alloy`).
 * **Prometheus + cAdvisor** — сбор системных метрик контейнеров (CPU, RAM) и метрик самого приложения FastAPI (`/metrics`).
+* **node-exporter, postgres-exporter, redis-exporter** — метрики хоста, Postgres и Redis; вместе с остальными собраны на дашборде **Load Testing** для нагрузочных тестов.
 
 Базовые дашборды для метрик и логов уже преднастроены и доступны в Grafana сразу после запуска контейнеров!
 
