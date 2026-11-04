@@ -21,3 +21,7 @@ htmlcov/
 .idea/
 .vscode/
 .DS_Store
+
+# Сценарии нагрузочного теста запускаются с отдельной машины
+loadtest/
+loadtest_tokens*.json

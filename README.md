@@ -372,6 +372,19 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml exec api python 
 ```
 Скрипт ищет пользователя без учёта регистра, просит повторно ввести email (флаг `--yes` пропускает подтверждение) и удаляет аккаунт теми же шагами, что и `DELETE /api/v1/auth/me`. Коды возврата: `0` — удалён, `1` — не найден, `2` — найдено несколько пользователей, `3` — отменено.
 
+## 📈 Нагрузочное тестирование
+
+Сценарии Locust, профили нагрузки, критерии успеха и порядок прогона — в [loadtest/README.md](loadtest/README.md). Данные и токены готовит скрипт на сервере:
+```bash
+# Пользователи loadtest+u-NNNNN@getbalanceai.test с историей за год и токенами (JSON для Locust)
+# и фоновые loadtest+bg-NNNNN@getbalanceai.test без токенов — объём таблиц, близкий к реальному
+docker compose -f docker-compose.yml -f docker-compose.prod.yml exec api python scripts/issue_load_test_tokens.py issue --users 150 --background-users 3000 --out /tmp/loadtest_tokens.json
+
+# Каскадное удаление всех тестовых пользователей и их ключей в Redis
+docker compose -f docker-compose.yml -f docker-compose.prod.yml exec api python scripts/issue_load_test_tokens.py cleanup
+```
+`issue` отказывает (код `1`), если тестовые пользователи уже есть. Файл токенов создаётся с правами `600` и в репозиторий не попадает (`.gitignore`).
+
 
 ---
 

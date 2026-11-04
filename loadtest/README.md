@@ -1,0 +1,136 @@
+# Нагрузочное тестирование (Locust)
+
+Сценарии нагрузки на прод-API. Данные и токены готовит `scripts/issue_load_test_tokens.py` на сервере, Locust запускается с отдельной машины (Mac). Папка не попадает в Docker-образ (`.dockerignore`), зависимости — отдельные от бэкенда.
+
+## Целевая нагрузка и критерии успеха
+
+Ожидаемый пик первого года — около 5 RPS (2–2.5 тыс. DAU, 2–3 сессии в день, 5–8 запросов на сессию, вечерний пик и всплески ×3–5). **Целевая нагрузка — 50 RPS** (десятикратный запас). `MobileUser` ждёт 5–15 с между действиями, поэтому 500 виртуальных пользователей ≈ 50 RPS.
+
+| Метрика | Порог на 50 RPS | При всплеске |
+|---|---|---|
+| Доля ошибок (5xx, таймауты, неожиданные статусы) | < 0.1% | < 1% |
+| p95 обычных запросов | < 500 мс (GET — ориентир < 200 мс по Grafana) | возврат к фону ≤ 60 с после пика |
+| p95 `/sync` с батчем 200–500 записей | < 2 с | — |
+| Ответы 429 | 0 | 0 |
+| CPU сервера | < 70% | — |
+| RAM / своп | своп не растёт, нет OOM-kill и перезапусков воркеров | то же |
+| Пул БД | нет `QueuePool limit … timed out` в логах | то же |
+| Soak | p95 и память контейнера `api` стабильны 40 минут | — |
+
+Доля ошибок, 429 и p95 по каждому эндпоинту проверяются автоматически в конце прогона: при нарушении Locust завершается с кодом 1 и печатает список нарушений. p95 проверяется только у эндпоинтов, по которым набралось не меньше 100 запросов. Пороги переопределяются переменными `LOADTEST_MAX_FAIL_RATIO`, `LOADTEST_P95_MS`, `LOADTEST_OFFLINE_P95_MS`; для всплесков — `LOADTEST_MAX_FAIL_RATIO=0.01`.
+
+Латентность Locust включает сеть до сервера. Источник правды по латентности — дашборд **FastAPI** в Grafana (P99, Requests In Progress), по ресурсам — **cAdvisor** и **Postgres**.
+
+## Сценарии
+
+| Сценарий | Пользователь | Вес |
+|---|---|---|
+| Первая страница транзакций с `If-None-Match`, иногда следующая страница | `MobileUser` | 25 |
+| Бюджеты текущего месяца с `If-None-Match` | `MobileUser` | 20 |
+| `/sync`: 5–20 операций и 0–2 бюджета | `MobileUser` | 30 |
+| Создание операции | `MobileUser` | 15 |
+| Курсы валют | `MobileUser` | 5 |
+| Удаление созданной операции | `MobileUser` | 5 |
+| `/sync`: 200–500 операций (клиент после работы без сети) | `OfflineSyncUser` | 2% пользователей |
+
+AI-инсайты в нагрузку не входят: каждый запрос — платный вызов Gemini. Обновление токенов тоже: лимит `/auth/refresh` считается по IP, и с одной машины тест проверял бы только лимитер.
+
+Профили (`LOADTEST_SHAPE`, файл `shapes.py`):
+
+| Профиль | Что делает | Длительность |
+|---|---|---|
+| `steps` | 10 → 25 → 50 RPS по 5 минут | 15 мин |
+| `soak` | 50 RPS | 40 мин |
+| `spike` | фон 5 RPS → 50 RPS за 5 секунд на 3 минуты → фон | 8 мин |
+| `double_spike` | два всплеска с паузой в минуту | 10 мин |
+| `stress` | 50 → 100 → 150 → 200 → 300 RPS по 3 минуты | 15 мин |
+
+## Токены и лимиты
+
+Лимиты API считаются на пользователя (`/sync` — 60 в минуту, создание операции — 120 в минуту). Несколько виртуальных пользователей делят один токен: при 150 токенах запаса хватает до 3000 виртуальных пользователей (≈ 300 RPS, профиль `stress`). Для нагрузки выше — больше токенов (`--users 400`). Ответы 429 считаются нарушением: значит, токенов мало, а не сервер не справился.
+
+Access-токены живут 60 минут (`ACCESS_TOKEN_EXPIRE_MINUTES`): токены выпускаются непосредственно перед прогоном, `soak` укладывается в этот срок.
+
+## Порядок прогона
+
+### 1. Подготовка сервера
+
+```bash
+cd /opt/getbalanceai_api
+# Алиас действует в текущей сессии shell; в новой сессии — объявить заново
+alias dc='docker compose -f docker-compose.yml -f docker-compose.prod.yml'
+
+./scripts/backup_db.sh
+df -h / && free -m
+
+# 150 пользователей с токенами (по 1000 операций за год) + 3000 фоновых (~1 млн операций), затем ANALYZE.
+# Занимает несколько минут; повторный запуск без cleanup отказывает (код 1)
+dc exec api python scripts/issue_load_test_tokens.py issue --users 150 --background-users 3000 --out /tmp/loadtest_tokens.json
+dc cp api:/tmp/loadtest_tokens.json ./loadtest_tokens.json && dc exec api rm /tmp/loadtest_tokens.json
+```
+
+### 2. Mac: окружение и токены
+
+```bash
+cd getbalanceai_api
+python3 -m venv loadtest/.venv && source loadtest/.venv/bin/activate
+pip install -r loadtest/requirements.txt
+
+scp <server>:/opt/getbalanceai_api/loadtest_tokens.json loadtest/ && ssh <server> rm /opt/getbalanceai_api/loadtest_tokens.json
+cd loadtest
+```
+
+Файл токенов (`loadtest_tokens*.json`) в `.gitignore`; он даёт доступ к тестовым аккаунтам до cleanup.
+
+### 3. Прогоны
+
+```bash
+HOST=https://api.getbalanceai.app
+
+# Smoke: 2 пользователя, минута — все запросы должны быть успешными
+locust -f locustfile.py --host $HOST --headless -u 2 -r 1 -t 1m --only-summary
+
+# Ступени, затем длительная нагрузка
+LOADTEST_SHAPE=steps locust -f locustfile.py --host $HOST --headless --processes 4 --only-summary
+LOADTEST_SHAPE=soak  locust -f locustfile.py --host $HOST --headless --processes 4 --only-summary
+
+# Гидроудар
+LOADTEST_SHAPE=spike        LOADTEST_MAX_FAIL_RATIO=0.01 locust -f locustfile.py --host $HOST --headless --processes 4 --only-summary
+LOADTEST_SHAPE=double_spike LOADTEST_MAX_FAIL_RATIO=0.01 locust -f locustfile.py --host $HOST --headless --processes 4 --only-summary
+
+# Массовая оффлайн-синхронизация: только тяжёлые батчи
+locust -f locustfile.py --host $HOST --headless --processes 4 -u 50 -r 10 -t 5m --only-summary OfflineSyncUser
+```
+
+**Холодный старт после деплоя** — тот же `spike`, запущенный сразу после перезапуска API со сброшенным кэшем курсов (резервная копия `currency_rates:last_successful:USD` остаётся):
+
+```bash
+# На сервере
+dc restart api && dc exec redis redis-cli DEL currency_rates:USD
+# Сразу после healthy — на Mac
+LOADTEST_SHAPE=spike LOADTEST_MAX_FAIL_RATIO=0.01 locust -f locustfile.py --host $HOST --headless --processes 4 --only-summary
+```
+Проверка stampede: в логах API за время теста не больше одного запроса к API курсов на воркер (4 воркера gunicorn).
+
+**Стресс до отказа** — вне рабочих часов (300+ RPS заметны в офисной сети):
+```bash
+LOADTEST_SHAPE=stress LOADTEST_MAX_FAIL_RATIO=1 locust -f locustfile.py --host $HOST --headless --processes 4 --only-summary --csv stress
+```
+Цель — найти ступень, на которой появляются ошибки, и узкое место (CPU воркеров, пул БД 4 × (5 + 10) = 60 соединений, RAM).
+
+Во время прогонов на сервере: `vmstat 5` (столбцы `si`/`so` — обращения к свопу) и `dc logs -f api | grep -E "QueuePool|ERROR"`.
+
+### 4. Очистка
+
+```bash
+# На сервере: каскадно удаляет всех пользователей loadtest+...@getbalanceai.test и их ключи в Redis, затем ANALYZE
+dc exec api python scripts/issue_load_test_tokens.py cleanup
+dc exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT count(*) FROM users WHERE email LIKE '"'"'loadtest+%'"'"'"'
+df -h /
+```
+Ожидается `0`. Освобождённое место Postgres переиспользует под новые строки после autovacuum, но операционной системе не отдаёт; вернуть его на диск — `VACUUM FULL transactions, budgets, tokens, users;` в psql (таблицы блокируются на время выполнения).
+
+```bash
+# На Mac
+rm loadtest/loadtest_tokens.json
+```
