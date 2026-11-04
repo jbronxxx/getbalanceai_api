@@ -172,7 +172,7 @@ getbalanceai_api/
 │   │   ├── dependencies.py     # Общие зависимости: часовой пояс клиента (X-Timezone-Offset)
 │   │   ├── insights.py         # AI-аналитика расходов (/api/v1/insights)
 │   │   ├── public.py           # Публичные HTML-страницы (/privacy, /terms, /delete-account)
-│   │   ├── sync.py             # Пакетная офлайн-синхронизация
+│   │   ├── sync.py             # Пакетная офлайн-синхронизация (HTTP, логика в SyncService)
 │   │   └── transactions.py     # CRUD транзакций и расчет ETag
 │   ├── schemas/                # Pydantic v2 DTO
 │   │   └── schemas.py          # ApiResponse[T], ErrorResponse, схемы сущностей
@@ -184,6 +184,7 @@ getbalanceai_api/
 │   │   ├── currency_service.py # Получение и кэширование котировок валют (Redis, fallback)
 │   │   ├── legal_pages.py      # Выбор языка и HTML-рендеринг публичных страниц
 │   │   ├── period.py           # Границы месяцев в часовом поясе клиента
+│   │   ├── sync_service.py     # Пакетная офлайн-синхронизация: upsert, удаления, rejected, откат батча
 │   │   └── transaction_service.py # Операции с транзакциями и генерация ETag
 │   ├── tasks/                  # Фоновые и регламентные процессы
 │   │   └── token_cleanup.py    # Регламентная очистка устаревших токенов
@@ -221,6 +222,7 @@ getbalanceai_api/
 │   ├── test_oauth_verification.py # Проверка ID-токенов Google/Apple на реальной RSA-подписи (aud, iss, email_verified)
 │   ├── test_security.py        # Тесты CORS, Rate Limiting, ключа лимитера, удалённых эндпоинтов входа по паролю и prod-настроек
 │   ├── test_sync.py            # Интеграционные тесты офлайн-синхронизации
+│   ├── test_sync_service.py    # Unit-тесты SyncService: итог, дубли в батче, откат при ошибке БД
 │   ├── test_transaction_service.py # Тесты сервиса транзакций
 │   ├── test_transactions.py    # Тесты транзакций и кэширования инсайтов
 │   └── test_unit_of_work_and_cleanup.py # Тесты Unit of Work и регламентной очистки токенов

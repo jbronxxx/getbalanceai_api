@@ -587,7 +587,7 @@ class TestSyncEndpointIntegration:
         from unittest.mock import patch
 
         payload = {"transactions": [], "budgets": []}
-        with patch("app.routers.sync.BudgetService.enrich_multiple", side_effect=RuntimeError("Unexpected crash")):
+        with patch("app.services.sync_service.BudgetService.enrich_multiple", side_effect=RuntimeError("Unexpected crash")):
             response = await client.post("/api/v1/sync/", json=payload, headers=auth_headers)
             assert response.status_code == 500
             data = response.json()
