@@ -216,6 +216,54 @@ services:
     restart: unless-stopped
     depends_on:
       - docker-socket-proxy
+  # Метрики хоста (CPU, RAM, своп, load, диск): cAdvisor с docker_only видит только контейнеры.
+  # Корневая ФС хоста — только на чтение; порт не публикуется, Prometheus читает его по сети Docker
+  node-exporter:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    image: prom/node-exporter:v1.12.1
+    command:
+      - --path.rootfs=/host
+    pid: host
+    volumes:
+      - /:/host:ro
+    restart: unless-stopped
+
+  # Метрики Postgres изнутри: соединения по состояниям, транзакции, блокировки, попадания в кэш
+  postgres-exporter:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    image: prometheuscommunity/postgres-exporter:v0.20.1
+    environment:
+      DATA_SOURCE_URI: db:5432/${POSTGRES_DB:-finance_db}?sslmode=disable
+      DATA_SOURCE_USER: ${POSTGRES_USER:-finance_user}
+      DATA_SOURCE_PASS: ${POSTGRES_PASSWORD:-finance_pass}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Метрики Redis: память относительно maxmemory (при noeviction заполнение ломает запись), команды, клиенты
+  redis-exporter:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    image: oliver006/redis_exporter:v1.95.0
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
 networks:
   # Изолированная сеть без выхода наружу: прокси Docker API доступен только alloy и cadvisor
   docker-api:
