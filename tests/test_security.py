@@ -19,19 +19,11 @@ from starlette.requests import Request
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.exceptions import ErrorCode
-from app.limiter import get_user_id_or_ip, limiter
+from app.limiter import get_user_id_or_ip
 from config_reader.config_reader import Settings, config
 from main import app
 
 PRODUCTION_SECRET = "super-secret-production-random-key-1234567890"
-
-
-@pytest.fixture(autouse=True)
-def reset_rate_limiter():
-    """Сбрасывает внутреннее состояние rate limiter перед каждым тестом."""
-    limiter.reset()
-    yield
-    limiter.reset()
 
 
 class TestCorsMiddleware:
@@ -101,6 +93,36 @@ class TestRateLimiting:
         response = await client.post("/api/v1/auth/apple", json=payload)
         assert response.status_code == 429
         assert response.json()["code"] == ErrorCode.RATE_LIMIT_EXCEEDED
+
+    @pytest.mark.asyncio
+    async def test_refresh_rate_limiting_exceeded(self, client: AsyncClient):
+        """Проверяет ограничение частоты обновления токенов с одного IP (лимит 30/мин)."""
+        payload = {"refresh_token": "invalid-refresh-token"}
+
+        for _ in range(30):
+            res = await client.post("/api/v1/auth/refresh", json=payload)
+            assert res.status_code == 401
+
+        response = await client.post("/api/v1/auth/refresh", json=payload)
+        assert response.status_code == 429
+        data = response.json()
+        assert data["status"] == "error"
+        assert data["code"] == ErrorCode.RATE_LIMIT_EXCEEDED
+
+    @pytest.mark.asyncio
+    async def test_refresh_rate_limit_counted_per_ip(self, client: AsyncClient):
+        """Исчерпанный лимит одного IP не блокирует обновление токенов с другого IP за прокси."""
+        payload = {"refresh_token": "invalid-refresh-token"}
+        transport = ASGITransport(app=ProxyHeadersMiddleware(app, trusted_hosts="*"))
+        async with AsyncClient(transport=transport, base_url="http://test") as proxied:
+            for _ in range(30):
+                await proxied.post("/api/v1/auth/refresh", json=payload, headers={"X-Forwarded-For": "203.0.113.10"})
+
+            blocked = await proxied.post("/api/v1/auth/refresh", json=payload, headers={"X-Forwarded-For": "203.0.113.10"})
+            other = await proxied.post("/api/v1/auth/refresh", json=payload, headers={"X-Forwarded-For": "203.0.113.20"})
+
+        assert blocked.status_code == 429
+        assert other.status_code == 401
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("path", ["/api/v1/auth/register", "/api/v1/auth/login"])

@@ -75,8 +75,15 @@ async def apple_login(
     response_model=ApiResponse[TokenResponse],
     summary="Обновление access_token с использованием refresh_token",
 )
-async def refresh_tokens(payload: RefreshTokenRequest, db: AsyncSession = Depends(get_db)) -> dict[str, str | TokenResponse]:
-    """Обновить access_token и получить новую пару токенов по действующему refresh_token."""
+@limiter.limit("30/minute")
+async def refresh_tokens(
+    request: Request, payload: RefreshTokenRequest, db: AsyncSession = Depends(get_db)
+) -> dict[str, str | TokenResponse]:
+    """Обновить access_token и получить новую пару токенов по действующему refresh_token.
+
+    Лимит считается по IP: access-токен к этому моменту обычно истёк. Устройство обновляет токены
+    примерно раз в час, поэтому 30/мин с запасом покрывает общий NAT, а клиент на 429 сессию не завершает.
+    """
     service = AuthService(db)
     tokens = await service.refresh_tokens(payload.refresh_token)
     return {"status": "success", "data": tokens}
