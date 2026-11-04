@@ -86,7 +86,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-Instrumentator().instrument(app).expose(app)
+# Gauge http_requests_inprogress (метки method, handler) — запросы в обработке; в multiprocess-режиме
+# суммируется по живым воркерам (livesum), метрики завершившегося воркера убирает child_exit в gunicorn.conf.py
+Instrumentator(should_instrument_requests_inprogress=True, inprogress_labels=True).instrument(app).expose(app)
 
 
 app.state.limiter = limiter
