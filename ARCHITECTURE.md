@@ -204,7 +204,7 @@ getbalanceai_api/
 │   ├── cleanup_tokens.py       # Запуск регламентной очистки токенов через cron/CLI
 │   ├── delete_user_by_email.py # Административное удаление аккаунта по email (запросы без входа в приложение)
 │   └── issue_load_test_tokens.py # Тестовые пользователи с историей и токенами для нагрузочного теста; cleanup
-├── loadtest/                   # Сценарии Locust и профили нагрузки (не входит в Docker-образ, свои зависимости)
+├── loadtest/                   # Сценарии Locust, профили нагрузки и run.sh (отчёты — в reports/<время>_<сценарий>/); не входит в Docker-образ
 ├── tests/                      # Набор тестов Pytest
 │   ├── conftest.py             # Фикстуры тестов
 │   ├── test_ai_service.py      # Модульные тесты AIService

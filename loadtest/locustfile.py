@@ -46,6 +46,8 @@ FOREIGN_CURRENCIES = ("USD", "EUR", "KZT", "UZS")
 # Смещения часовых поясов ожидаемой аудитории в минутах: Ташкент, Алматы, Москва, Берлин
 TIMEZONE_OFFSETS = ("300", "300", "300", "180", "60")
 CREATED_IDS_LIMIT = 200
+# Повторы одной и той же ошибки печатаются выборочно: при массовом отказе лог иначе забивает терминал
+FAILURE_LOG_EVERY = 100
 
 if os.environ.get("LOADTEST_SHAPE"):
     # Locust берёт профиль из классов-наследников LoadTestShape в модуле locustfile
@@ -222,6 +224,21 @@ class OfflineSyncUser(ApiUser):
     def offline_sync(self) -> None:
         """Батч 200–500 операций (максимум схемы — 500) и бюджеты на месяц."""
         self._sync(random.randint(200, 500), random.randint(3, 7), "/api/v1/sync/" + OFFLINE_SUFFIX)
+
+
+_failure_counts: dict[tuple[str, str, str], int] = {}
+
+
+@events.request.add_listener
+def log_failure(request_type: str, name: str, exception: BaseException | None, **_kwargs: Any) -> None:
+    """Печатать ошибки запросов по ходу теста: первую каждого вида и затем каждую FAILURE_LOG_EVERY-ю."""
+    if exception is None:
+        return
+    key = (request_type, name, str(exception))
+    count = _failure_counts.get(key, 0) + 1
+    _failure_counts[key] = count
+    if count == 1 or count % FAILURE_LOG_EVERY == 0:
+        logger.warning("Ошибка %s %s: %s (всего таких: %d)", request_type, name, exception, count)
 
 
 @events.quitting.add_listener
