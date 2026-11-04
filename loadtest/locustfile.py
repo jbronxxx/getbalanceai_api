@@ -2,7 +2,8 @@
 
 MobileUser повторяет поведение мобильного клиента: списки транзакций и бюджетов с If-None-Match,
 синхронизация небольших батчей, создание и удаление операций, редкий запрос курсов.
-OfflineSyncUser — клиент после долгой работы без сети: редкие, но тяжёлые батчи /sync до 500 записей.
+OfflineSyncUser — клиент после долгой работы без сети: редкие батчи /sync. В смешанных профилях это 0.5% пользователей
+с батчами 50–150 записей; сценарий offline в run.sh задаёт батчи 200–500 (максимум схемы).
 AI-инсайты не вызываются: каждый запрос — платный вызов Gemini.
 
 Переменные окружения:
@@ -11,8 +12,9 @@ AI-инсайты не вызываются: каждый запрос — пл�
                                без него число пользователей задаётся флагами -u/-r или в веб-интерфейсе;
     LOADTEST_MAX_FAIL_RATIO  — допустимая доля ошибок (по умолчанию 0.001);
     LOADTEST_P95_MS          — допустимый p95 обычных запросов в мс (по умолчанию 500);
-    LOADTEST_OFFLINE_P95_MS  — допустимый p95 тяжёлых батчей OfflineSyncUser в мс (по умолчанию 2000).
-При нарушении порогов Locust завершается с кодом 1.
+    LOADTEST_OFFLINE_P95_MS  — допустимый p95 тяжёлых батчей OfflineSyncUser в мс (по умолчанию 2000);
+    LOADTEST_OFFLINE_BATCH   — размер батча OfflineSyncUser «от-до» (по умолчанию 50-150).
+Код завершения: 0 — критерии выполнены (единичные ошибки в пределах порога допустимы), 1 — нарушены.
 """
 
 import itertools
@@ -35,6 +37,7 @@ MAX_FAIL_RATIO = float(os.environ.get("LOADTEST_MAX_FAIL_RATIO", "0.001"))
 P95_MS = int(os.environ.get("LOADTEST_P95_MS", "500"))
 OFFLINE_P95_MS = int(os.environ.get("LOADTEST_OFFLINE_P95_MS", "2000"))
 OFFLINE_SUFFIX = " [offline]"
+OFFLINE_BATCH_MIN, OFFLINE_BATCH_MAX = (int(v) for v in os.environ.get("LOADTEST_OFFLINE_BATCH", "50-150").split("-"))
 # На малой выборке p95 определяется единичными запросами (например, первым промахом кэша курсов)
 MIN_REQUESTS_FOR_P95 = 100
 
@@ -123,7 +126,9 @@ class ApiUser(FastHttpUser):
             method, path, name=name, headers={**self.headers, **(headers or {})}, catch_response=True, **kwargs
         ) as response:
             if response.status_code not in expected:
-                response.failure(f"HTTP {response.status_code}")
+                # Статус 0 — ответа не было: в ошибку попадает причина (таймаут, сброс соединения, DNS)
+                reason = f"HTTP {response.status_code}" if response.status_code else f"нет ответа: {response.error!r}"
+                response.failure(reason)
             return response
 
     def _sync(self, transactions: int, budgets: int, name: str) -> None:
@@ -146,7 +151,7 @@ class ApiUser(FastHttpUser):
 class MobileUser(ApiUser):
     """Обычный пользователь мобильного приложения."""
 
-    weight = 50
+    weight = 200
     wait_time = between(5, 15)
 
     def on_start(self) -> None:
@@ -222,8 +227,10 @@ class OfflineSyncUser(ApiUser):
 
     @task
     def offline_sync(self) -> None:
-        """Батч 200–500 операций (максимум схемы — 500) и бюджеты на месяц."""
-        self._sync(random.randint(200, 500), random.randint(3, 7), "/api/v1/sync/" + OFFLINE_SUFFIX)
+        """Батч операций размера LOADTEST_OFFLINE_BATCH и бюджеты на месяц."""
+        self._sync(
+            random.randint(OFFLINE_BATCH_MIN, OFFLINE_BATCH_MAX), random.randint(3, 7), "/api/v1/sync/" + OFFLINE_SUFFIX
+        )
 
 
 _failure_counts: dict[tuple[str, str, str], int] = {}
@@ -264,4 +271,6 @@ def check_thresholds(environment: Environment, **_kwargs: Any) -> None:
         environment.process_exit_code = 1
         logger.error("Критерии успеха не выполнены:\n  %s", "\n  ".join(violations))
     else:
+        # Без явного кода Locust завершается с кодом 1 при любой ошибке, даже в пределах допустимой доли
+        environment.process_exit_code = 0
         logger.info("Критерии успеха выполнены")

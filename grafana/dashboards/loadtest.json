@@ -8,7 +8,7 @@
   "timezone": "browser",
   "editable": true,
   "graphTooltip": 1,
-  "refresh": "10s",
+  "refresh": "30s",
   "time": {
     "from": "now-30m",
     "to": "now"
@@ -23,7 +23,7 @@
     ]
   },
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "templating": {
     "list": []
   },
@@ -200,7 +200,7 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{job=\"fastapi_app\", handler!=\"/metrics\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_highr_seconds_bucket{job=\"fastapi_app\"}[$__rate_interval])))",
           "refId": "A",
           "legendFormat": "",
           "range": true,
@@ -270,7 +270,7 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{job=\"fastapi_app\", handler!=\"/metrics\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_highr_seconds_bucket{job=\"fastapi_app\"}[$__rate_interval])))",
           "refId": "A",
           "legendFormat": "",
           "range": true,
@@ -1099,12 +1099,12 @@
     },
     {
       "type": "stat",
-      "title": "Ошибки в логах",
+      "title": "Idle in transaction",
       "id": 17,
-      "description": "Строки ERROR/CRITICAL/FATAL, QueuePool, WORKER TIMEOUT, Traceback в логах api, db, nginx, redis за период",
+      "description": "Соединения Postgres с открытой транзакцией без запроса. Рост вместе с соединениями — воркеры API не успевают, пул БД заполняется",
       "datasource": {
-        "type": "loki",
-        "uid": "Loki"
+        "type": "prometheus",
+        "uid": "Prometheus"
       },
       "gridPos": {
         "h": 4,
@@ -1115,13 +1115,14 @@
       "targets": [
         {
           "datasource": {
-            "type": "loki",
-            "uid": "Loki"
+            "type": "prometheus",
+            "uid": "Prometheus"
           },
-          "expr": "sum(count_over_time({service=~\"api|db|nginx|redis\"} |~ `\\| (ERROR|CRITICAL) \\||\\[(ERROR|CRITICAL)\\]|ERROR:|FATAL:|PANIC:|\\[(error|crit|alert|emerg)\\]|QueuePool|WORKER TIMEOUT|Traceback|deadlock|Out of memory` [$__range]))",
+          "expr": "sum(pg_stat_activity_count{state=~\"idle in transaction.*\"})",
           "refId": "A",
           "legendFormat": "",
-          "queryType": "instant"
+          "range": true,
+          "instant": false
         }
       ],
       "fieldConfig": {
@@ -1136,11 +1137,11 @@
               },
               {
                 "color": "orange",
-                "value": 1
+                "value": 10
               },
               {
                 "color": "red",
-                "value": 20
+                "value": 30
               }
             ]
           },
@@ -1379,7 +1380,7 @@
       "type": "timeseries",
       "title": "p95 по эндпоинтам",
       "id": 21,
-      "description": "Пунктир — 200 мс (GET) и 500 мс (остальные)",
+      "description": "Пунктир — 200 мс (GET) и 500 мс (остальные). Границы гистограммы: 0.05–30 с",
       "datasource": {
         "type": "prometheus",
         "uid": "Prometheus"
@@ -1463,7 +1464,7 @@
       "type": "timeseries",
       "title": "Перцентили по всем запросам",
       "id": 22,
-      "description": "",
+      "description": "По гистограмме с границами до 60 с (включая редкие запросы Prometheus к /metrics)",
       "datasource": {
         "type": "prometheus",
         "uid": "Prometheus"
@@ -1480,7 +1481,7 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket{job=\"fastapi_app\", handler!=\"/metrics\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(http_request_duration_highr_seconds_bucket{job=\"fastapi_app\"}[$__rate_interval])))",
           "refId": "A",
           "legendFormat": "p50",
           "range": true,
@@ -1491,7 +1492,7 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{job=\"fastapi_app\", handler!=\"/metrics\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_highr_seconds_bucket{job=\"fastapi_app\"}[$__rate_interval])))",
           "refId": "B",
           "legendFormat": "p95",
           "range": true,
@@ -1502,7 +1503,7 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{job=\"fastapi_app\", handler!=\"/metrics\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_highr_seconds_bucket{job=\"fastapi_app\"}[$__rate_interval])))",
           "refId": "C",
           "legendFormat": "p99",
           "range": true,
@@ -3369,116 +3370,117 @@
     },
     {
       "type": "row",
-      "title": "Логи",
+      "title": "Логи (запросы к Loki нагружают CPU сервера — раскрывать после прогона)",
       "id": 49,
-      "collapsed": false,
+      "collapsed": true,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 94
       },
-      "panels": []
-    },
-    {
-      "type": "timeseries",
-      "title": "Ошибки в логах по сервисам",
-      "id": 50,
-      "description": "Строк с ошибками в минуту",
-      "datasource": {
-        "type": "loki",
-        "uid": "Loki"
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 24,
-        "x": 0,
-        "y": 95
-      },
-      "targets": [
+      "panels": [
         {
+          "type": "timeseries",
+          "title": "Ошибки в логах по сервисам",
+          "id": 50,
+          "description": "Строк с ошибками в минуту",
           "datasource": {
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "sum by (service) (count_over_time({service=~\"api|db|nginx|redis\"} |~ `\\| (ERROR|CRITICAL) \\||\\[(ERROR|CRITICAL)\\]|ERROR:|FATAL:|PANIC:|\\[(error|crit|alert|emerg)\\]|QueuePool|WORKER TIMEOUT|Traceback|deadlock|Out of memory` [1m]))",
-          "refId": "A",
-          "legendFormat": "{{service}}",
-          "queryType": "range"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 1,
-            "fillOpacity": 25,
-            "showPoints": "never",
-            "spanNulls": true,
-            "stacking": {
-              "mode": "normal",
-              "group": "A"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
+          "gridPos": {
+            "h": 6,
+            "w": 24,
+            "x": 0,
+            "y": 95
           },
-          "color": {
-            "mode": "palette-classic"
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "Loki"
+              },
+              "expr": "sum by (service) (count_over_time({service=~\"api|db|nginx|redis\"} |~ `\\| (ERROR|CRITICAL) \\||\\[(ERROR|CRITICAL)\\]|ERROR:|FATAL:|PANIC:|\\[(error|crit|alert|emerg)\\]|QueuePool|WORKER TIMEOUT|Traceback|deadlock|Out of memory` [1m]))",
+              "refId": "A",
+              "legendFormat": "{{service}}",
+              "queryType": "range"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 25,
+                "showPoints": "never",
+                "spanNulls": true,
+                "stacking": {
+                  "mode": "normal",
+                  "group": "A"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "color": {
+                "mode": "palette-classic"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "right",
+              "calcs": [
+                "max",
+                "lastNotNull"
+              ],
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
           }
         },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "calcs": [
-            "max",
-            "lastNotNull"
-          ],
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "type": "logs",
-      "title": "Логи ошибок: ERROR/CRITICAL/FATAL, QueuePool, WORKER TIMEOUT, Traceback, deadlock",
-      "id": 51,
-      "datasource": {
-        "type": "loki",
-        "uid": "Loki"
-      },
-      "gridPos": {
-        "h": 12,
-        "w": 24,
-        "x": 0,
-        "y": 101
-      },
-      "targets": [
         {
+          "type": "logs",
+          "title": "Логи ошибок: ERROR/CRITICAL/FATAL, QueuePool, WORKER TIMEOUT, Traceback, deadlock",
+          "id": 51,
           "datasource": {
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "{service=~\"api|db|nginx|redis\"} |~ `\\| (ERROR|CRITICAL) \\||\\[(ERROR|CRITICAL)\\]|ERROR:|FATAL:|PANIC:|\\[(error|crit|alert|emerg)\\]|QueuePool|WORKER TIMEOUT|Traceback|deadlock|Out of memory`",
-          "refId": "A",
-          "legendFormat": "",
-          "queryType": "range"
+          "gridPos": {
+            "h": 12,
+            "w": 24,
+            "x": 0,
+            "y": 101
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "Loki"
+              },
+              "expr": "{service=~\"api|db|nginx|redis\"} |~ `\\| (ERROR|CRITICAL) \\||\\[(ERROR|CRITICAL)\\]|ERROR:|FATAL:|PANIC:|\\[(error|crit|alert|emerg)\\]|QueuePool|WORKER TIMEOUT|Traceback|deadlock|Out of memory`",
+              "refId": "A",
+              "legendFormat": "",
+              "queryType": "range"
+            }
+          ],
+          "options": {
+            "showTime": true,
+            "wrapLogMessage": true,
+            "sortOrder": "Descending",
+            "enableLogDetails": true,
+            "dedupStrategy": "none"
+          }
         }
-      ],
-      "options": {
-        "showTime": true,
-        "wrapLogMessage": true,
-        "sortOrder": "Descending",
-        "enableLogDetails": true,
-        "dedupStrategy": "none"
-      }
+      ]
     }
   ]
 }

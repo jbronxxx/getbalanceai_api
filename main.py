@@ -88,7 +88,12 @@ app = FastAPI(
 
 # Gauge http_requests_inprogress (метки method, handler) — запросы в обработке; в multiprocess-режиме
 # суммируется по живым воркерам (livesum), метрики завершившегося воркера убирает child_exit в gunicorn.conf.py
-Instrumentator(should_instrument_requests_inprogress=True, inprogress_labels=True).instrument(app).expose(app)
+# Границы гистограммы с метками handler/method: по умолчанию (0.1, 0.5, 1) p95 по эндпоинтам не различал
+# 1 с и 20 с — все долгие ответы попадали в +Inf. Каждая граница — отдельная серия на пару эндпоинт × метод
+LATENCY_BUCKETS_SECONDS = (0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30)
+Instrumentator(should_instrument_requests_inprogress=True, inprogress_labels=True).instrument(
+    app, latency_lowr_buckets=LATENCY_BUCKETS_SECONDS
+).expose(app)
 
 
 app.state.limiter = limiter

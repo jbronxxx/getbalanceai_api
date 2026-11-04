@@ -43,6 +43,7 @@ case "$SCENARIO" in
     offline)
         # Без --processes: в Locust 2.46 выбор класса пользователя вместе с --processes роняет воркеры (KeyError),
         # а 50 пользователей с паузой 30–60 с одному процессу по силам
+        export LOADTEST_OFFLINE_BATCH="${LOADTEST_OFFLINE_BATCH:-200-500}"
         ARGS=(-u 50 -r 10 -t 5m OfflineSyncUser)
         ;;
     stress)
@@ -69,8 +70,13 @@ echo "Сценарий: $SCENARIO, хост: $HOST, отчёты: loadtest/$REPO
 
 # Без буферизации вывод Python через tee доходит до терминала сразу, а не пачками
 export PYTHONUNBUFFERED=1
+# На macOS прогон держит систему без сна: заснувший Mac останавливает Locust, и тест обрывается
+KEEP_AWAKE=()
+if command -v caffeinate >/dev/null 2>&1; then
+    KEEP_AWAKE=(caffeinate -dims)
+fi
 set +e
-"$LOCUST_BIN" -f locustfile.py --host "$HOST" --headless "${ARGS[@]}" "$@" \
+${KEEP_AWAKE[@]+"${KEEP_AWAKE[@]}"} "$LOCUST_BIN" -f locustfile.py --host "$HOST" --headless "${ARGS[@]}" "$@" \
     --html "$REPORT_DIR/report.html" \
     --csv "$REPORT_DIR/stats" --csv-full-history \
     2>&1 | tee "$REPORT_DIR/console.log"

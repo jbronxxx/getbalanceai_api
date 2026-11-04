@@ -20,7 +20,7 @@ from logger.logger import (
     reset_request_id,
     set_request_id,
 )
-from main import app
+from main import LATENCY_BUCKETS_SECONDS, app
 
 
 class TestHealthCheck:
@@ -75,6 +75,19 @@ class TestPrometheusMetrics:
         assert "# TYPE http_requests_inprogress gauge" in response.text
         assert 'http_requests_inprogress{handler="/metrics",method="GET"} 1.0' in response.text
         assert 'http_requests_total{handler="/health",method="GET",status="2xx"}' in response.text
+
+    @pytest.mark.asyncio
+    async def test_duration_histogram_buckets_cover_long_responses(self, client: AsyncClient):
+        """Гистограмма длительности по эндпоинтам различает ответы до 30 с: p95 под нагрузкой не упирается в 1 с."""
+        await client.get("/health")
+
+        response = await client.get("/metrics")
+
+        for le in LATENCY_BUCKETS_SECONDS:
+            assert (
+                f'http_request_duration_seconds_bucket{{handler="/health",le="{float(le)}",method="GET"}}' in response.text
+            )
+        assert 'http_request_duration_highr_seconds_bucket{le="60.0"}' in response.text
 
 
 class TestCorrelationId:
