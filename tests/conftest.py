@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool, StaticPool
 
 from app.database import Base, get_db
+from app.limiter import limiter
 from app.models.models import User
 from app.services.auth_service import AuthService
 from config_reader.config_reader import config
@@ -57,6 +58,15 @@ def reset_jwks_clients(monkeypatch: pytest.MonkeyPatch) -> None:
     """Клиенты JWKS кэшируются на уровне класса; сбрасываем, чтобы мок из одного теста не попал в другой."""
     monkeypatch.setattr(AuthService, "_google_jwks_client", None)
     monkeypatch.setattr(AuthService, "_apple_jwks_client", None)
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """Счётчики лимитера в памяти общие на весь прогон: без сброса тесты одного клиента копили бы запросы
+    и получали 429 в зависимости от порядка запуска."""
+    limiter.reset()
+    yield
+    limiter.reset()
 
 
 @pytest.fixture(autouse=True)
