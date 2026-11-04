@@ -78,3 +78,8 @@ refactor_tests.py
 
 # Резервные копии БД (scripts/backup_db.sh)
 backups/
+
+# Нагрузочное тестирование: токены тестовых пользователей и отчёты Locust
+loadtest_tokens*.json
+loadtest/*.csv
+loadtest/*.html

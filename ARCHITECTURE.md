@@ -202,7 +202,9 @@ getbalanceai_api/
 │   └── script.py.mako
 ├── scripts/                    # CLI-скрипты и утилиты
 │   ├── cleanup_tokens.py       # Запуск регламентной очистки токенов через cron/CLI
-│   └── delete_user_by_email.py # Административное удаление аккаунта по email (запросы без входа в приложение)
+│   ├── delete_user_by_email.py # Административное удаление аккаунта по email (запросы без входа в приложение)
+│   └── issue_load_test_tokens.py # Тестовые пользователи с историей и токенами для нагрузочного теста; cleanup
+├── loadtest/                   # Сценарии Locust и профили нагрузки (не входит в Docker-образ, свои зависимости)
 ├── tests/                      # Набор тестов Pytest
 │   ├── conftest.py             # Фикстуры тестов
 │   ├── test_ai_service.py      # Модульные тесты AIService
@@ -210,6 +212,7 @@ getbalanceai_api/
 │   ├── test_auth.py            # Интеграционные тесты профиля пользователя и базовой валюты
 │   ├── test_auth_service.py    # Модульные и интеграционные тесты аутентификации
 │   ├── test_delete_user_by_email.py # Тесты CLI-скрипта удаления пользователя по email
+│   ├── test_issue_load_test_tokens.py # Тесты подготовки и очистки данных нагрузочного теста
 │   ├── test_budget_service.py  # Модульные тесты сервиса бюджетов
 │   ├── test_budgets.py         # Интеграционные тесты эндпоинтов бюджетов
 │   ├── test_errors.py          # Тесты контрактов ошибок
@@ -311,6 +314,7 @@ getbalanceai_api/
    * Nginx проксирует пути на API, кроме закрытого `/metrics` и `/docs`, `/redoc`, `/openapi.json` за basic auth (см. раздел 7). Для `/privacy`, `/terms`, `/delete-account` в `nginx/conf.d/default.conf` действует лимит `5r/s` на IP (`limit_req_zone` по ключу из `map $uri`, `burst=20 nodelay`, при превышении — `429`); остальные пути лимитом Nginx не затрагиваются.
    * Сроки хранения, указанные в текстах, должны совпадать с настройками: резервные копии БД — 7 последних файлов `scripts/backup_db.sh` при ежедневном cron (≈7 суток) и не более 3 копий перед деплоем (`predeploy`, не дольше 7 суток); зашифрованные копии в Cloudflare R2 удаляются lifecycle-правилом бакета через 7 дней, логи Loki — 30 дней. При изменении настроек обновляйте `app/legal/`.
    * Запросы на удаление по email выполняются администратором скриптом `scripts/delete_user_by_email.py`: он вызывает `AuthService.delete_account` (те же шаги, что у `DELETE /auth/me`: каскадное удаление в БД и очистка ключей Redis).
+   * Нагрузочное тестирование прода: `scripts/issue_load_test_tokens.py` создаёт пользователей только с email `loadtest+…@getbalanceai.test` (зарезервированный домен), вставляет их историю пачками напрямую в БД (без API и его лимитов) и выдаёт токены через `AuthService._issue_token_pair`; `cleanup` удаляет их по этому шаблону каскадом, реальные пользователи не затрагиваются. Входа по паролю для тестов нет. Сценарии и критерии — `loadtest/README.md`.
 
 
 ---
