@@ -113,8 +113,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "exemplar": true,
-          "expr": "sum(http_requests_total{job=\"$app_name\", handler!=\"/metrics\"})",
+          "expr": "sum(increase(http_requests_total{job=\"$app_name\", handler!=\"/metrics\"}[$__range]))",
           "instant": true,
           "interval": "",
           "legendFormat": "",
@@ -123,7 +122,7 @@
         }
       ],
       "timeFrom": "24h",
-      "title": "Total Requests",
+      "title": "Total Requests (24h)",
       "transformations": [
         {
           "id": "seriesToRows",
@@ -196,8 +195,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "exemplar": true,
-          "expr": "http_requests_total{job=\"$app_name\", handler!=\"/metrics\"}",
+          "expr": "sum by (method, handler) (increase(http_requests_total{job=\"$app_name\", handler!=\"/metrics\"}[$__range]))",
           "instant": true,
           "interval": "",
           "legendFormat": "{{method}} {{handler}}",
@@ -206,7 +204,7 @@
         }
       ],
       "timeFrom": "24h",
-      "title": "Requests Count",
+      "title": "Requests Count (24h)",
       "transformations": [
         {
           "id": "seriesToRows",
@@ -295,15 +293,14 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "exemplar": true,
-          "expr": "http_request_duration_seconds_sum{job=\"$app_name\"} / http_request_duration_seconds_count{job=\"$app_name\"}",
+          "expr": "sum by (method, handler) (increase(http_request_duration_seconds_sum{job=\"$app_name\", handler!=\"/metrics\"}[$__range])) / sum by (method, handler) (increase(http_request_duration_seconds_count{job=\"$app_name\", handler!=\"/metrics\"}[$__range]))",
           "interval": "",
           "legendFormat": "{{method}} {{handler}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Requests Average Duration",
+      "title": "Requests Average Duration (за период)",
       "type": "bargauge"
     },
     {
@@ -394,8 +391,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "exemplar": true,
-          "expr": "sum by(handler) (http_requests_total{job=\"$app_name\", status=~\"2.*\", handler!=\"/metrics\"}) / sum by(handler) (http_requests_total{job=\"$app_name\", handler!=\"/metrics\"})",
+          "expr": "sum by (handler) (rate(http_requests_total{job=\"$app_name\", handler!=\"/metrics\", status=~\"2..\"}[$__rate_interval])) / sum by (handler) (rate(http_requests_total{job=\"$app_name\", handler!=\"/metrics\"}[$__rate_interval]))",
           "interval": "",
           "legendFormat": "{{handler}}",
           "range": true,
@@ -493,8 +489,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "exemplar": true,
-          "expr": "sum by(handler) (http_requests_total{job=\"$app_name\", status=~\"5.*\", handler!=\"/metrics\"}) / sum by(handler) (http_requests_total{job=\"$app_name\", handler!=\"/metrics\"})",
+          "expr": "sum by (handler) (rate(http_requests_total{job=\"$app_name\", handler!=\"/metrics\", status=~\"5..\"}[$__rate_interval])) / sum by (handler) (rate(http_requests_total{job=\"$app_name\", handler!=\"/metrics\"}[$__rate_interval]))",
           "interval": "",
           "legendFormat": "{{handler}}",
           "range": true,
@@ -591,15 +586,14 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "exemplar": true,
-          "expr": "histogram_quantile(.99, sum by (handler, le) (rate(http_request_duration_seconds_bucket{job=\"$app_name\", handler!=\"/metrics\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (handler, le) (rate(http_request_duration_seconds_bucket{job=\"$app_name\", handler!=\"/metrics\"}[$__rate_interval])))",
           "interval": "",
           "legendFormat": "{{handler}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "PR 99 Requests Duration",
+      "title": "P99 Requests Duration",
       "type": "timeseries"
     },
     {
@@ -658,34 +652,10 @@
                 "value": 80
               }
             ]
-          }
+          },
+          "unit": "short"
         },
-        "overrides": [
-          {
-            "__systemRef": "hideSeriesFrom",
-            "matcher": {
-              "id": "byNames",
-              "options": {
-                "mode": "exclude",
-                "names": [
-                  "/api/image/{image_id}"
-                ],
-                "prefix": "All except:",
-                "readOnly": true
-              }
-            },
-            "properties": [
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": true
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
         "h": 8,
@@ -712,28 +682,15 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "exemplar": true,
-          "expr": "fastapi_requests_in_progress{app_name=\"$app_name\", path!=\"/metrics\"}",
-          "hide": true,
-          "interval": "",
-          "legendFormat": "{{path}}",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "Prometheus"
-          },
           "editorMode": "code",
-          "expr": "http_request_duration_seconds_sum{job=\"$app_name\"} / http_request_duration_seconds_count{job=\"$app_name\"}",
-          "hide": false,
+          "expr": "sum by (handler) (http_requests_inprogress{job=\"$app_name\", handler!=\"/metrics\"})",
           "instant": false,
           "legendFormat": "{{handler}}",
           "range": true,
-          "refId": "B"
+          "refId": "A"
         }
       ],
-      "title": "Request time",
+      "title": "Requests In Progress",
       "type": "timeseries"
     },
     {
@@ -795,32 +752,7 @@
           },
           "unit": "reqps"
         },
-        "overrides": [
-          {
-            "__systemRef": "hideSeriesFrom",
-            "matcher": {
-              "id": "byNames",
-              "options": {
-                "mode": "exclude",
-                "names": [
-                  "/api/image/{image_id}"
-                ],
-                "prefix": "All except:",
-                "readOnly": true
-              }
-            },
-            "properties": [
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": true
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
         "h": 8,
@@ -848,19 +780,18 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "exemplar": true,
-          "expr": "rate(http_requests_total{job=\"$app_name\"}[1m])",
+          "expr": "sum by (handler) (rate(http_requests_total{job=\"$app_name\", handler!=\"/metrics\"}[$__rate_interval]))",
           "interval": "",
           "legendFormat": "{{handler}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Request Per Sec",
+      "title": "Requests Per Sec",
       "type": "timeseries"
     }
   ],
-  "refresh": "5s",
+  "refresh": "30s",
   "schemaVersion": 39,
   "tags": [],
   "templating": {
@@ -899,7 +830,7 @@
   "timezone": "",
   "title": "FastAPI Observability",
   "uid": "fastapi-observability",
-  "version": 9,
+  "version": 10,
   "weekStart": "",
   "description": "FastAPI dashboard for programs using FastAPI instrumented via prometheus_fastapi_instrumentator"
 }

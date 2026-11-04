@@ -1,4 +1,4 @@
-"""Модуль тестов для проверки наблюдаемости (Observability): healthcheck и Correlation ID."""
+"""Модуль тестов для проверки наблюдаемости (Observability): healthcheck, метрики Prometheus и Correlation ID."""
 
 import logging
 import uuid
@@ -59,6 +59,22 @@ class TestHealthCheck:
             assert data["details"]["redis"] == "healthy"
         finally:
             app.dependency_overrides.pop(get_db, None)
+
+
+class TestPrometheusMetrics:
+    """Метрики /metrics, на которых построен дашборд FastAPI в Grafana."""
+
+    @pytest.mark.asyncio
+    async def test_metrics_expose_requests_in_progress_by_handler(self, client: AsyncClient):
+        """Gauge http_requests_inprogress отдаётся с метками method и handler — на них построена панель дашборда."""
+        await client.get("/health")
+
+        response = await client.get("/metrics")
+
+        assert response.status_code == 200
+        assert "# TYPE http_requests_inprogress gauge" in response.text
+        assert 'http_requests_inprogress{handler="/metrics",method="GET"} 1.0' in response.text
+        assert 'http_requests_total{handler="/health",method="GET",status="2xx"}' in response.text
 
 
 class TestCorrelationId:
