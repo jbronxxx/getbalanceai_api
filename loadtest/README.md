@@ -17,7 +17,7 @@
 | Пул БД | нет `QueuePool limit … timed out` в логах | то же |
 | Soak | p95 и память контейнера `api` стабильны 40 минут | — |
 
-Доля ошибок, 429 и p95 по каждому эндпоинту проверяются автоматически в конце прогона: при нарушении Locust завершается с кодом 1 и печатает список нарушений. p95 проверяется только у эндпоинтов, по которым набралось не меньше 100 запросов. Пороги переопределяются переменными `LOADTEST_MAX_FAIL_RATIO`, `LOADTEST_P95_MS`, `LOADTEST_OFFLINE_P95_MS`; для всплесков — `LOADTEST_MAX_FAIL_RATIO=0.01`.
+Доля ошибок, 429 и p95 по каждому эндпоинту проверяются автоматически в конце прогона: при нарушении Locust завершается с кодом 1 и печатает список нарушений. p95 проверяется только у эндпоинтов, по которым набралось не меньше 100 запросов. Пороги переопределяются переменными `LOADTEST_MAX_FAIL_RATIO`, `LOADTEST_P95_MS`, `LOADTEST_OFFLINE_P95_MS`; `run.sh` сам ставит `LOADTEST_MAX_FAIL_RATIO=0.01` для всплесков и `1` для стресса.
 
 Латентность Locust включает сеть до сервера. Источник правды по латентности — дашборд **FastAPI** в Grafana (P99, Requests In Progress), по ресурсам — **cAdvisor** и **Postgres**.
 
@@ -49,7 +49,7 @@ AI-инсайты в нагрузку не входят: каждый запро
 
 Лимиты API считаются на пользователя (`/sync` — 60 в минуту, создание операции — 120 в минуту). Несколько виртуальных пользователей делят один токен: при 150 токенах запаса хватает до 3000 виртуальных пользователей (≈ 300 RPS, профиль `stress`). Для нагрузки выше — больше токенов (`--users 400`). Ответы 429 считаются нарушением: значит, токенов мало, а не сервер не справился.
 
-Access-токены живут 60 минут (`ACCESS_TOKEN_EXPIRE_MINUTES`): токены выпускаются непосредственно перед прогоном, `soak` укладывается в этот срок.
+Access-токены живут 60 минут (`ACCESS_TOKEN_EXPIRE_MINUTES`): токены выпускаются непосредственно перед прогоном, `soak` укладывается в этот срок. Серия прогонов дольше часа — с перевыпуском токенов (шаг 4); признак истёкших токенов — ошибки `HTTP 401` в выводе.
 
 ## Порядок прогона
 
@@ -84,53 +84,93 @@ cd loadtest
 
 ### 3. Прогоны
 
+Каждый сценарий запускается скриптом `run.sh` из папки `loadtest/` (venv подхватывается сам, `--host` по умолчанию — прод, другой — через переменную `HOST`):
+
 ```bash
-HOST=https://api.getbalanceai.app
-
-# Smoke: 2 пользователя, минута — все запросы должны быть успешными
-locust -f locustfile.py --host $HOST --headless -u 2 -r 1 -t 1m --only-summary
-
-# Ступени, затем длительная нагрузка
-LOADTEST_SHAPE=steps locust -f locustfile.py --host $HOST --headless --processes 4 --only-summary
-LOADTEST_SHAPE=soak  locust -f locustfile.py --host $HOST --headless --processes 4 --only-summary
-
-# Гидроудар
-LOADTEST_SHAPE=spike        LOADTEST_MAX_FAIL_RATIO=0.01 locust -f locustfile.py --host $HOST --headless --processes 4 --only-summary
-LOADTEST_SHAPE=double_spike LOADTEST_MAX_FAIL_RATIO=0.01 locust -f locustfile.py --host $HOST --headless --processes 4 --only-summary
-
-# Массовая оффлайн-синхронизация: только тяжёлые батчи
-locust -f locustfile.py --host $HOST --headless --processes 4 -u 50 -r 10 -t 5m --only-summary OfflineSyncUser
+./run.sh <сценарий> [дополнительные флаги locust]
 ```
 
-**Холодный старт после деплоя** — тот же `spike`, запущенный сразу после перезапуска API со сброшенным кэшем курсов (резервная копия `currency_rates:last_successful:USD` остаётся):
+| Сценарий | Что запускает | Длительность |
+|---|---|---|
+| `smoke` | 2 пользователя — все запросы должны быть успешными | 1 мин |
+| `steps` | профиль `steps`, 4 процесса | 15 мин |
+| `soak` | профиль `soak`, 4 процесса | 40 мин |
+| `spike` / `double_spike` | всплески, допустимая доля ошибок 1% | 8 / 10 мин |
+| `offline` | 50 `OfflineSyncUser` с батчами 200–500 записей | 5 мин |
+| `cold_start` | `spike` сразу после перезапуска API (см. ниже) | 8 мин |
+| `stress` | рост до 300 RPS; ошибки не считаются нарушением — ищем точку отказа | 15 мин |
+
+**Вывод в терминале.** Каждые 2 секунды печатается таблица по эндпоинтам (запросы, ошибки, среднее/медиана/максимум, RPS), плюс события запуска пользователей и смены ступеней профиля. Ошибки запросов печатаются по ходу теста строкой `WARNING/loadtest: Ошибка <метод> <эндпоинт>: HTTP <код> (всего таких: N)` — первая ошибка каждого вида и затем каждая сотая. В конце — итоговая таблица с перцентилями, результат проверки критериев успеха и путь к отчёту. Ctrl+C останавливает тест досрочно, отчёт при этом сохраняется.
+
+**Отчёты.** Каждый запуск создаёт свою папку `loadtest/reports/<дата_время>_<сценарий>/` (в `.gitignore`), повторные прогоны предыдущие не перезаписывают:
+
+| Файл | Содержимое |
+|---|---|
+| `report.html` | графики RPS, времени ответа и числа пользователей по времени, таблицы перцентилей и ошибок — открыть в браузере |
+| `console.log` | полный вывод терминала |
+| `stats_stats.csv` | итог по эндпоинтам с перцентилями |
+| `stats_stats_history.csv` | статистика по эндпоинтам каждые несколько секунд за весь прогон |
+| `stats_failures.csv`, `stats_exceptions.csv` | ошибки по видам |
+
+Код завершения `run.sh` — код Locust: `0` — критерии успеха выполнены, `1` — нарушены (список — в конце вывода).
+
+Порядок прогонов:
+
+```bash
+./run.sh smoke
+./run.sh steps
+./run.sh soak
+# Перед гидроударом — перевыпуск токенов (шаг 4): после smoke, steps и soak прошло больше часа
+./run.sh spike
+./run.sh double_spike
+./run.sh offline
+```
+
+**Холодный старт после деплоя** — `spike` сразу после перезапуска API со сброшенным кэшем курсов (резервная копия `currency_rates:last_successful:USD` остаётся):
 
 ```bash
 # На сервере
 dc restart api && dc exec redis redis-cli DEL currency_rates:USD
-# Сразу после healthy — на Mac
-LOADTEST_SHAPE=spike LOADTEST_MAX_FAIL_RATIO=0.01 locust -f locustfile.py --host $HOST --headless --processes 4 --only-summary
+dc ps api   # дождаться (healthy)
+# Сразу после этого — на Mac
+./run.sh cold_start
 ```
 Проверка stampede: в логах API за время теста не больше одного запроса к API курсов на воркер (4 воркера gunicorn).
 
 **Стресс до отказа** — вне рабочих часов (300+ RPS заметны в офисной сети):
 ```bash
-LOADTEST_SHAPE=stress LOADTEST_MAX_FAIL_RATIO=1 locust -f locustfile.py --host $HOST --headless --processes 4 --only-summary --csv stress
+./run.sh stress
 ```
-Цель — найти ступень, на которой появляются ошибки, и узкое место (CPU воркеров, пул БД 4 × (5 + 10) = 60 соединений, RAM).
+Цель — найти ступень, на которой появляются ошибки, и узкое место (CPU воркеров, пул БД 4 × (5 + 10) = 60 соединений, RAM). Ступень с ошибками видна в `report.html` и `stats_stats_history.csv`.
 
-Во время прогонов на сервере: `vmstat 5` (столбцы `si`/`so` — обращения к свопу) и `dc logs -f api | grep -E "QueuePool|ERROR"`.
+Во время прогонов на сервере, в отдельных окнах: `vmstat 5` (столбцы `si`/`so` — обращения к свопу) и `dc logs -f api | grep -E "QueuePool|ERROR"`. Скриншоты дашбордов Grafana (FastAPI, cAdvisor, Postgres) за время прогона стоит сохранить в папку отчёта — `report.html` показывает картину со стороны клиента.
 
-### 4. Очистка
+### 4. Перевыпуск токенов посреди серии
+
+```bash
+# На сервере
+dc exec api python scripts/issue_load_test_tokens.py cleanup
+dc exec api python scripts/issue_load_test_tokens.py issue --users 150 --background-users 3000 --out /tmp/loadtest_tokens.json
+dc cp api:/tmp/loadtest_tokens.json ./loadtest_tokens.json && dc exec api rm /tmp/loadtest_tokens.json
+
+# На Mac, из loadtest/
+scp <server>:/opt/getbalanceai_api/loadtest_tokens.json . && ssh <server> rm /opt/getbalanceai_api/loadtest_tokens.json
+```
+
+### 5. Очистка
 
 ```bash
 # На сервере: каскадно удаляет всех пользователей loadtest+...@getbalanceai.test и их ключи в Redis, затем ANALYZE
 dc exec api python scripts/issue_load_test_tokens.py cleanup
-dc exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT count(*) FROM users WHERE email LIKE '"'"'loadtest+%'"'"'"'
+dc exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA' <<< "SELECT count(*) FROM users WHERE email LIKE 'loadtest+%';"
 df -h /
 ```
-Ожидается `0`. Освобождённое место Postgres переиспользует под новые строки после autovacuum, но операционной системе не отдаёт; вернуть его на диск — `VACUUM FULL transactions, budgets, tokens, users;` в psql (таблицы блокируются на время выполнения).
+Ожидается `0`. Освобождённое место Postgres переиспользует под новые строки после autovacuum, но операционной системе не отдаёт; вернуть его на диск (таблицы блокируются на время выполнения):
+```bash
+dc exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<< "VACUUM FULL transactions, budgets, tokens, users;"
+```
 
 ```bash
-# На Mac
-rm loadtest/loadtest_tokens.json
+# На Mac, из loadtest/
+rm loadtest_tokens.json
 ```

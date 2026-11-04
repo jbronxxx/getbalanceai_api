@@ -82,4 +82,5 @@ backups/
 # Нагрузочное тестирование: токены тестовых пользователей и отчёты Locust
 loadtest_tokens*.json
 loadtest/*.csv
+loadtest/reports/
 loadtest/*.html
