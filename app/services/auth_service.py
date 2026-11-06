@@ -363,13 +363,14 @@ class AuthService:
 
         await AIService.invalidate_cache(user_id)
 
-    async def _issue_token_pair(self, user_id: uuid.UUID) -> tuple[str, str]:
+    async def _issue_token_pair(self, user_id: uuid.UUID, session_id: uuid.UUID | None = None) -> tuple[str, str]:
         """Выдать связанную пару access и refresh токенов одной сессии.
 
-        id строки refresh-токена в БД попадает в access-токен как claim sid: по нему logout
-        отзывает refresh-токен именно этого устройства, не затрагивая другие сессии пользователя.
+        id строки refresh-токена в БД (session_id, при ротации — заранее записанный в replaced_by_id
+        прежнего токена) попадает в access-токен как claim sid: по нему logout отзывает refresh-токен
+        именно этого устройства, не затрагивая другие сессии пользователя.
         """
-        session_id = uuid.uuid4()
+        session_id = session_id or uuid.uuid4()
         refresh_token = await self.create_refresh_token(user_id, session_id=session_id)
         access_token = self.create_access_token(user_id, session_id=session_id)
         return access_token, refresh_token
@@ -459,6 +460,7 @@ class AuthService:
         # первый, остальные не найдут активную строку. Иначе каждый получил бы свою живую сессию
         hashed_token = hashlib.sha256(refresh_token_string.encode()).hexdigest()
         now = datetime.now(timezone.utc)
+        session_id = uuid.uuid4()
         rotated = await self.db.execute(
             update(Token)
             .where(
@@ -467,11 +469,11 @@ class AuthService:
                 Token.expires_at > now,
                 Token.user_id == user_uuid,
             )
-            .values(status="revoked", revoked_at=now)
+            .values(status="revoked", revoked_at=now, replaced_by_id=session_id)
             .returning(Token.id)
         )
         if rotated.scalar_one_or_none() is None:
-            await self._reject_refresh(hashed_token, now)
+            await self._replay_rotation(hashed_token, user_uuid, session_id, now)
 
         user_query = select(User).where(User.id == user_uuid)
         user_result = await self.db.execute(user_query)
@@ -485,7 +487,7 @@ class AuthService:
             )
 
         # Генерируем новую пару токенов
-        new_access_token, new_refresh_token = await self._issue_token_pair(user.id)
+        new_access_token, new_refresh_token = await self._issue_token_pair(user.id, session_id)
 
         logger.info(f"Успешная ротация токенов для пользователя {user.id}")
         return TokenResponse(
@@ -494,16 +496,57 @@ class AuthService:
             token_type="bearer",
         )
 
-    async def _reject_refresh(self, hashed_token: str, now: datetime) -> NoReturn:
+    async def _replay_rotation(self, hashed_token: str, user_id: uuid.UUID, session_id: uuid.UUID, now: datetime) -> None:
+        """Повторить ротацию, ответ на которую не дошёл до клиента, иначе отклонить токен.
+
+        Клиент, не получивший новую пару (обрыв, таймаут, уход в фон), предъявляет прежний токен ещё раз.
+        В пределах REFRESH_REUSE_GRACE после ротации выданная тогда пара, если ею ещё не воспользовались,
+        отзывается, а прежний токен связывается с новой парой session_id: у цепочки остаётся одна живая сессия.
+        Пару, которую уже ротировали или отозвали при выходе, повтор не возвращает — токен отклоняется
+        по правилам _reject_refresh.
+        """
+        db_token = (await self.db.execute(select(Token).where(Token.token_hash == hashed_token))).scalar_one_or_none()
+
+        if (
+            db_token is not None
+            and db_token.status == "revoked"
+            and db_token.user_id == user_id
+            and db_token.replaced_by_id is not None
+            and self._within_reuse_grace(db_token, now)
+        ):
+            superseded = await self.db.execute(
+                update(Token)
+                .where(Token.id == db_token.replaced_by_id, Token.status == "active")
+                .values(status="revoked", revoked_at=now)
+                .returning(Token.id)
+            )
+            if superseded.scalar_one_or_none() is not None:
+                db_token.replaced_by_id = session_id
+                await self.db.flush()
+                logger.info(f"Повтор ротации refresh-токена пользователя {user_id}: невостребованная пара заменена")
+                return
+
+        await self._reject_refresh(db_token, now)
+
+    @staticmethod
+    def _within_reuse_grace(db_token: Token, now: datetime) -> bool:
+        """Отозван ли токен не раньше REFRESH_REUSE_GRACE назад (токены вышедших до миграции сессий — без времени)."""
+        revoked_at = db_token.revoked_at
+        if revoked_at is None:
+            return False
+        if revoked_at.tzinfo is None:
+            revoked_at = revoked_at.replace(tzinfo=timezone.utc)
+        return now - revoked_at <= REFRESH_REUSE_GRACE
+
+    async def _reject_refresh(self, db_token: Token | None, now: datetime) -> NoReturn:
         """Отклонить refresh-токен, который нельзя ротировать, и выявить его повторное использование.
 
         Отозванный токен, предъявленный позже REFRESH_REUSE_GRACE после отзыва, считается украденным:
         легитимный клиент после ротации пользуется новой парой. Тогда отзываются все активные сессии
         владельца, и отзыв фиксируется commit до ответа 401 — иначе откат транзакции запроса его бы отменил.
-        Повтор в пределах окна (клиент не получил ответ на ротацию) отклоняется без отзыва остальных сессий.
+        Повтор в пределах окна, который не удалось обработать как повтор ротации, отклоняется без отзыва
+        остальных сессий.
         """
-        db_token = (await self.db.execute(select(Token).where(Token.token_hash == hashed_token))).scalar_one_or_none()
-
         if db_token is not None and db_token.status == "active":
             expires_at = db_token.expires_at
             if expires_at.tzinfo is None:
@@ -515,22 +558,18 @@ class AuthService:
             logger.warning(f"Несоответствие владельца refresh-токена в БД ({db_token.user_id}) и claim sub")
             raise UnauthorizedException(code=ErrorCode.INVALID_TOKEN, message="Недействительный refresh токен")
 
-        if db_token is not None and db_token.status == "revoked":
-            revoked_at = db_token.revoked_at
-            if revoked_at is not None and revoked_at.tzinfo is None:
-                revoked_at = revoked_at.replace(tzinfo=timezone.utc)
-            if revoked_at is None or now - revoked_at > REFRESH_REUSE_GRACE:
-                owner_id = db_token.user_id
-                await self.db.execute(
-                    update(Token)
-                    .where(Token.user_id == owner_id, Token.status == "active")
-                    .values(status="revoked", revoked_at=now)
-                )
-                await self.db.commit()
-                logger.warning(
-                    f"Повторное использование отозванного refresh-токена пользователя {owner_id}: "
-                    "все активные сессии отозваны"
-                )
+        if db_token is not None and db_token.status == "revoked" and not self._within_reuse_grace(db_token, now):
+            owner_id = db_token.user_id
+            await self.db.execute(
+                update(Token)
+                .where(Token.user_id == owner_id, Token.status == "active")
+                .values(status="revoked", revoked_at=now)
+            )
+            await self.db.commit()
+            logger.warning(
+                f"Повторное использование отозванного refresh-токена пользователя {owner_id}: "
+                "все активные сессии отозваны"
+            )
 
         logger.warning("Refresh-токен отсутствует в базе данных либо неактивен")
         raise UnauthorizedException(code=ErrorCode.TOKEN_REVOKED, message="Refresh токен недействителен или отозван")

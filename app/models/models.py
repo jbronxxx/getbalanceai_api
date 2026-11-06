@@ -139,6 +139,7 @@ class Token(Base):
         expires_at (datetime): Срок действия токена.
         status (str): active, revoked или expired.
         revoked_at (datetime | None): Момент отзыва (ротация или выход).
+        replaced_by_id (uuid.UUID | None): id токена, выданного при ротации этого.
         user (User): Связанный объект пользователя.
     """
 
@@ -152,6 +153,10 @@ class Token(Base):
     status: Mapped[str] = mapped_column(String(20), default="active")  # Статус токена (active, revoked, expired)
     # Момент отзыва: отличает повтор сразу после ротации от предъявления давно отозванного (украденного) токена
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Преемник по ротации: повтор токена, ответ на ротацию которого не дошёл до клиента, заменяет ещё не
+    # использованного преемника новой парой. Без внешнего ключа: очистка токенов удаляет строки пачками,
+    # и ON DELETE по неиндексированной ссылке сканировал бы таблицу на каждую удалённую строку
+    replaced_by_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
 
     # Связь с пользователем
     user: Mapped["User"] = relationship(back_populates="tokens")

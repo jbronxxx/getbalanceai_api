@@ -734,31 +734,90 @@ class TestRefreshRotationAtomicity:
         assert row.revoked_at is not None
 
     @pytest.mark.asyncio
-    async def test_second_use_of_same_token_gets_no_new_session(self, db_session: AsyncSession, test_user: User):
-        """Из двух запросов с одним токеном новую пару получает только первый (проигравший гонку — 401)."""
+    async def test_retry_within_grace_replaces_unclaimed_pair(self, db_session: AsyncSession, test_user: User):
+        """Повтор сразу после ротации (ответ не дошёл) получает новую пару, а недошедшая отзывается."""
         service = AuthService(db_session)
         _, refresh_token = await service._issue_token_pair(test_user.id)
+        lost = await service.refresh_tokens(refresh_token)
 
-        await service.refresh_tokens(refresh_token)
-        with pytest.raises(UnauthorizedException) as exc_info:
-            await service.refresh_tokens(refresh_token)
+        retried = await service.refresh_tokens(refresh_token)
 
-        assert exc_info.value.code == "TOKEN_REVOKED"
+        assert retried.refresh_token != lost.refresh_token
+        assert (await self._token_row(db_session, lost.refresh_token)).status == "revoked"
+        assert (await self._token_row(db_session, retried.refresh_token)).status == "active"
         assert await self._active_sessions(db_session, test_user.id) == 1
 
     @pytest.mark.asyncio
+    async def test_retried_pair_is_linked_session(self, db_session: AsyncSession, test_user: User):
+        """Пара из повтора — обычная сессия: sid access-токена указывает на её refresh-токен, его можно ротировать."""
+        service = AuthService(db_session)
+        _, refresh_token = await service._issue_token_pair(test_user.id)
+        await service.refresh_tokens(refresh_token)
+
+        retried = await service.refresh_tokens(refresh_token)
+
+        claims = jwt.decode(retried.access_token, config.secret_key, algorithms=[config.algorithm])
+        assert claims["sid"] == str((await self._token_row(db_session, retried.refresh_token)).id)
+        assert (await self._token_row(db_session, refresh_token)).replaced_by_id == uuid.UUID(claims["sid"])
+        assert (await service.refresh_tokens(retried.refresh_token)).refresh_token is not None
+
+    @pytest.mark.asyncio
     async def test_retry_within_grace_keeps_other_sessions(self, db_session: AsyncSession, test_user: User):
-        """Повтор сразу после ротации (ответ не дошёл) не отзывает сессии на других устройствах."""
+        """Повтор сразу после ротации не отзывает сессии на других устройствах."""
         service = AuthService(db_session)
         _, other_device_refresh = await service._issue_token_pair(test_user.id)
         _, refresh_token = await service._issue_token_pair(test_user.id)
         await service.refresh_tokens(refresh_token)
 
-        with pytest.raises(UnauthorizedException):
-            await service.refresh_tokens(refresh_token)
+        await service.refresh_tokens(refresh_token)
 
         assert (await self._token_row(db_session, other_device_refresh)).status == "active"
         assert await self._active_sessions(db_session, test_user.id) == 2
+
+    @pytest.mark.asyncio
+    async def test_retry_after_new_pair_was_used_rejected(self, db_session: AsyncSession, test_user: User):
+        """Если новой парой уже воспользовались (ротировали), повтор прежнего токена её не отнимает."""
+        service = AuthService(db_session)
+        _, refresh_token = await service._issue_token_pair(test_user.id)
+        claimed = await service.refresh_tokens(refresh_token)
+        current = await service.refresh_tokens(claimed.refresh_token)
+
+        with pytest.raises(UnauthorizedException) as exc_info:
+            await service.refresh_tokens(refresh_token)
+
+        assert exc_info.value.code == "TOKEN_REVOKED"
+        assert (await self._token_row(db_session, current.refresh_token)).status == "active"
+        assert await self._active_sessions(db_session, test_user.id) == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_after_logout_of_new_pair_rejected(self, db_session: AsyncSession, test_user: User):
+        """Повтор не воскрешает сессию, из которой вышли по новой паре."""
+        service = AuthService(db_session)
+        _, refresh_token = await service._issue_token_pair(test_user.id)
+        claimed = await service.refresh_tokens(refresh_token)
+        await service.logout(test_user.id, claimed.access_token)
+
+        with pytest.raises(UnauthorizedException) as exc_info:
+            await service.refresh_tokens(refresh_token)
+
+        assert exc_info.value.code == "TOKEN_REVOKED"
+        assert await self._active_sessions(db_session, test_user.id) == 0
+
+    @pytest.mark.asyncio
+    async def test_retry_of_token_rotated_before_migration_rejected(self, db_session: AsyncSession, test_user: User):
+        """Преемник токена, ротированного до появления replaced_by_id, неизвестен: повтор в окне — 401 без отзыва сессий."""
+        service = AuthService(db_session)
+        _, refresh_token = await service._issue_token_pair(test_user.id)
+        await service.refresh_tokens(refresh_token)
+        row = await self._token_row(db_session, refresh_token)
+        row.replaced_by_id = None
+        await db_session.flush()
+
+        with pytest.raises(UnauthorizedException) as exc_info:
+            await service.refresh_tokens(refresh_token)
+
+        assert exc_info.value.code == "TOKEN_REVOKED"
+        assert await self._active_sessions(db_session, test_user.id) == 1
 
     @pytest.mark.asyncio
     async def test_reuse_after_grace_revokes_all_sessions(self, db_session: AsyncSession, test_user: User):
@@ -852,6 +911,23 @@ class TestRefreshRotationAtomicity:
         assert reuse.status_code == 401
         assert reuse.json()["code"] == "TOKEN_REVOKED"
         assert after.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_refresh_endpoint_retry_after_lost_response(self, client: AsyncClient, db_session: AsyncSession):
+        """Через API: клиент не получил ответ на ротацию и повторил запрос — сессия продолжается по второй паре."""
+        user = await _create_user(db_session, f"retry_{uuid.uuid4().hex[:6]}@example.com")
+        _, refresh_token = await AuthService(db_session)._issue_token_pair(user.id)
+        await db_session.commit()
+
+        lost = await client.post("/api/v1/auth/refresh", json={"refresh_token": refresh_token})
+        retried = await client.post("/api/v1/auth/refresh", json={"refresh_token": refresh_token})
+        assert lost.status_code == 200
+        assert retried.status_code == 200
+
+        stale = await client.post("/api/v1/auth/refresh", json={"refresh_token": lost.json()["data"]["refresh_token"]})
+        current = await client.post("/api/v1/auth/refresh", json={"refresh_token": retried.json()["data"]["refresh_token"]})
+        assert stale.status_code == 401
+        assert current.status_code == 200
 
 
 class TestOAuthEmailCaseInsensitive:
