@@ -55,6 +55,7 @@ erDiagram
     users ||--o{ transactions : "has"
     users ||--o{ budgets : "has"
     users ||--o{ tokens : "has"
+    users ||--o{ transaction_deletions : "has"
 
     users {
         uuid id PK
@@ -86,6 +87,13 @@ erDiagram
         enum type
         datetime date
         datetime created_at
+        datetime updated_at
+    }
+
+    transaction_deletions {
+        uuid transaction_id PK
+        uuid user_id FK
+        datetime deleted_at
     }
 
     budgets {
@@ -102,9 +110,10 @@ erDiagram
 
 ### Таблицы:
 * `users`: Пользователи системы (email в нижнем регистре — один адрес в разном регистре даёт один аккаунт; имя, аватар `avatar_url`, базовая расчетная валюта `base_currency`)
-* Внешние ключи `transactions`, `budgets`, `tokens` → `users` — `ON DELETE CASCADE` (миграция `m01201201201`); связи `User` с `passive_deletes=True`: удаление аккаунта — один `DELETE` пользователя, без загрузки его данных в память
+* Внешние ключи `transactions`, `budgets`, `tokens`, `transaction_deletions` → `users` — `ON DELETE CASCADE` (миграция `m01201201201`); связи `User` с `passive_deletes=True`: удаление аккаунта — один `DELETE` пользователя, без загрузки его данных в память
 * `tokens`: refresh-токены сессий пользователей (SHA-256 хеш) со статусом (`active`, `revoked`, `expired`), временем отзыва `revoked_at` и преемником по ротации `replaced_by_id` (без внешнего ключа: пакетная очистка токенов не сканирует таблицу на каждую удалённую строку)
-* `transactions`: Финансовые операции (доход/расход с категорией, датой и мультивалютными полями стандарта `NUMERIC(18, 2)` и `NUMERIC(18, 6)`: `amount`, `currency`, `exchange_rate`, `base_amount`; `updated_at` — время последней правки для ETag списка)
+* `transactions`: Финансовые операции (доход/расход с категорией, датой и мультивалютными полями стандарта `NUMERIC(18, 2)` и `NUMERIC(18, 6)`: `amount`, `currency`, `exchange_rate`, `base_amount`; `updated_at` — время последней правки для ETag списка и выборки `GET /sync/changes`, индекс `(user_id, updated_at)`)
+* `transaction_deletions`: Журнал удалённых транзакций (`transaction_id` — PK, `deleted_at`, индекс `(user_id, deleted_at)`). Удаление не оставляет следа в `transactions`, поэтому другие устройства узнают о нём только отсюда. Пишется при `DELETE /transactions/{id}` и `deleted_transaction_ids` в `/sync` (только для реально удалённых строк пользователя); запись снимается, если транзакция создана заново с тем же id. Хранится бессрочно
 * `budgets`: Лимиты расходов по категориям (по месяцам и годам, поле `limit_amount` типа `NUMERIC(18, 2)` в валюте лимита `currency`, CHECK `ck_budgets_currency`)
 * `alembic_version`: Служебная таблица для отслеживания миграций
 
@@ -150,6 +159,7 @@ erDiagram
    - Идемпотентный UPSERT бюджетов по ID или составному ключу `(category, month, year)` с дедупликацией элементов.
    - Любые мутации бюджетов или транзакций (создание, удаление, синхронизация) автоматически инвалидируют ETag бюджетов пользователя (`BudgetService.invalidate_etag`).
    - ETag списка транзакций считается по `count` и `max(transactions.updated_at)`: `updated_at` обновляется через `onupdate` и при ORM-правке в `/sync`, и при пакетном `UPDATE` пересчёта валюты, поэтому правка с другого устройства не даёт 304.
+   - Инкрементальная загрузка (`GET /api/v1/sync/changes`): клиент передаёт `since` — `server_time` первой страницы прошлой синхронизации — и получает транзакции с `updated_at` позже и id из `transaction_deletions` позже. Окно расширяется на `CHANGES_OVERLAP` (1 мин) назад: строка видна после коммита, а `updated_at` ставится при записи. Страницы по `(updated_at, id)`, удалённые — только на первой странице. Без `since` — все транзакции (первая синхронизация устройства). Время отметки берётся с сервера, часы телефона не участвуют.
 
 **Правила валидации:**
 1. При создании или синхронизации транзакций категория строго сопоставляется с типом операции: доходы не могут быть отнесены к сугубо расходным статьям, а расходы — к доходным источникам.
@@ -172,7 +182,7 @@ getbalanceai_api/
 │   │   ├── dependencies.py     # Общие зависимости: часовой пояс клиента (X-Timezone-Offset)
 │   │   ├── insights.py         # AI-аналитика расходов (/api/v1/insights)
 │   │   ├── public.py           # Публичные HTML-страницы (/privacy, /terms, /delete-account)
-│   │   ├── sync.py             # Пакетная офлайн-синхронизация (HTTP, логика в SyncService)
+│   │   ├── sync.py             # Пакетная офлайн-синхронизация и выборка изменений (HTTP, логика в SyncService)
 │   │   └── transactions.py     # CRUD транзакций и расчет ETag
 │   ├── schemas/                # Pydantic v2 DTO
 │   │   └── schemas.py          # ApiResponse[T], ErrorResponse, схемы сущностей
@@ -184,7 +194,8 @@ getbalanceai_api/
 │   │   ├── currency_service.py # Получение и кэширование котировок валют (Redis, fallback)
 │   │   ├── legal_pages.py      # Выбор языка и HTML-рендеринг публичных страниц
 │   │   ├── period.py           # Границы месяцев в часовом поясе клиента
-│   │   ├── sync_service.py     # Пакетная офлайн-синхронизация: upsert, удаления, rejected, откат батча
+│   │   ├── sync_service.py     # Пакетная офлайн-синхронизация: upsert, удаления, rejected, откат батча; выборка изменений
+│   │   ├── transaction_deletion_log.py # Журнал удалённых транзакций для GET /sync/changes
 │   │   └── transaction_service.py # Операции с транзакциями и генерация ETag
 │   ├── tasks/                  # Фоновые и регламентные процессы
 │   │   └── token_cleanup.py    # Регламентная очистка устаревших токенов
@@ -225,6 +236,7 @@ getbalanceai_api/
 │   ├── test_oauth_verification.py # Проверка ID-токенов Google/Apple на реальной RSA-подписи (aud, iss, email_verified)
 │   ├── test_security.py        # Тесты CORS, Rate Limiting, ключа лимитера, удалённых эндпоинтов входа по паролю и prod-настроек
 │   ├── test_sync.py            # Интеграционные тесты офлайн-синхронизации
+│   ├── test_sync_changes.py    # GET /sync/changes: since, удалённые, повторное создание, страницы, чужие данные
 │   ├── test_sync_service.py    # Unit-тесты SyncService: итог, дубли в батче, откат при ошибке БД
 │   ├── test_transaction_service.py # Тесты сервиса транзакций
 │   ├── test_transactions.py    # Тесты транзакций и кэширования инсайтов
@@ -289,7 +301,7 @@ getbalanceai_api/
 
 4. **Безопасность и ограничение частоты запросов (Security & Rate Limiting)**:
    * **CORS Middleware**: Подключен `CORSMiddleware` с параметризацией разрешенных ориджинов, методов и заголовков через `app_config.yaml` и переменные окружения (`CORS_ORIGINS`, `CORS_ALLOW_METHODS`, `CORS_ALLOW_HEADERS`). `CORS_ALLOW_CREDENTIALS` по умолчанию `false`: клиенты авторизуются Bearer-токеном, cookie не используются.
-   * **Rate Limiting**: Используется `slowapi` для защиты критичных эндпоинтов авторизации (`/google`, `/apple` — 5 запросов/мин) ресурсоемких AI-инсайтов (`/insights` — 10 запросов/мин), `POST /sync` (60/мин) и `POST /transactions` (120/мин) — по пользователю, `/refresh` — 30/мин по IP (access-токен к моменту обновления обычно истёк; устройство обновляет токены примерно раз в час, так что лимит с запасом покрывает клиентов за общим NAT). Клиент завершает сессию только на 401 от `/refresh`, на 429 повторяет позже. При превышении возвращается стандартизированный `ErrorResponse` с HTTP 429 и кодом `RATE_LIMIT_EXCEEDED`.
+   * **Rate Limiting**: Используется `slowapi` для защиты критичных эндпоинтов авторизации (`/google`, `/apple` — 5 запросов/мин) ресурсоемких AI-инсайтов (`/insights` — 10 запросов/мин), `POST /sync` (60/мин), `GET /sync/changes` (120/мин) и `POST /transactions` (120/мин) — по пользователю, `/refresh` — 30/мин по IP (access-токен к моменту обновления обычно истёк; устройство обновляет токены примерно раз в час, так что лимит с запасом покрывает клиентов за общим NAT). Клиент завершает сессию только на 401 от `/refresh`, на 429 повторяет позже. При превышении возвращается стандартизированный `ErrorResponse` с HTTP 429 и кодом `RATE_LIMIT_EXCEEDED`.
      * Ключ лимита — `user:<sub>` только из access-токена с проверенной подписью и сроком (`app/limiter.py`), иначе IP клиента: поддельный `sub` не даёт отдельного счётчика.
      * IP клиента за nginx: nginx перезаписывает `X-Forwarded-For` значением `$remote_addr`, gunicorn запущен с `--forwarded-allow-ips "*"` (gunicorn 23 не принимает подсеть CIDR; порт 8000 доступен только из сети Docker и с хоста).
      * Счётчики хранятся в `RATE_LIMIT_STORAGE_URI` (в docker-compose — Redis, общий для 4 воркеров gunicorn; по умолчанию `memory://`, например в тестах). При недоступности Redis лимиты временно считаются в памяти воркера (`in_memory_fallback_enabled`), запросы не падают.

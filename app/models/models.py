@@ -188,6 +188,8 @@ class Transaction(Base):
         Index("ix_transactions_user_id_date", "user_id", "date"),
         Index("ix_transactions_user_id_created_at", "user_id", "created_at"),
         Index("ix_transactions_user_id_type_date", "user_id", "type", "date"),
+        # Выборка изменений с момента прошлой синхронизации (GET /sync/changes)
+        Index("ix_transactions_user_id_updated_at", "user_id", "updated_at"),
         CheckConstraint(
             f"currency IN {SUPPORTED_CURRENCIES}",
             name="ck_transactions_currency",
@@ -220,6 +222,34 @@ class Transaction(Base):
 
     # Связь с пользователем
     user: Mapped["User"] = relationship(back_populates="transactions")
+
+
+class TransactionDeletion(Base):
+    """ORM-модель записи об удалённой транзакции.
+
+    Таблица: transaction_deletions
+
+    Удаление транзакции не оставляет следа в transactions, поэтому другие устройства пользователя
+    узнают о нём только отсюда (GET /sync/changes). Ключ — id удалённой транзакции: при повторном
+    создании транзакции с тем же id запись удаляется. Хранится бессрочно, удаляется вместе с пользователем.
+
+    Поля:
+        transaction_id (uuid.UUID): Идентификатор удалённой транзакции (Primary Key).
+        user_id (uuid.UUID): Внешний ключ на владельца транзакции (users.id).
+        deleted_at (datetime): Момент удаления.
+    """
+
+    __tablename__ = "transaction_deletions"
+    __table_args__ = (Index("ix_transaction_deletions_user_id_deleted_at", "user_id", "deleted_at"),)
+
+    transaction_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    deleted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+        nullable=False,
+    )
 
 
 class Budget(Base):

@@ -576,6 +576,23 @@ class SyncResponse(BaseModel):
     )
 
 
+class SyncChangesResponse(BaseModel):
+    """Изменения транзакций с прошлой синхронизации устройства (GET /sync/changes)."""
+
+    transactions: List[TransactionResponse] = Field(
+        ..., description="Транзакции, созданные или изменённые после since, по возрастанию времени изменения"
+    )
+    deleted_transaction_ids: List[uuid.UUID] = Field(
+        default_factory=list,
+        description="ID транзакций, удалённых после since; только на первой странице",
+    )
+    has_more: bool = Field(..., description="Есть ли следующая страница")
+    next_cursor: Optional[str] = Field(default=None, description="Курсор следующей страницы")
+    server_time: datetime = Field(
+        ..., description="Время сервера на момент запроса; since следующей синхронизации — значение с первой страницы"
+    )
+
+
 # ============================================================================
 # Схемы AI-инсайтов
 # ============================================================================

@@ -15,6 +15,7 @@ from app.models.models import Transaction, User
 from app.schemas.schemas import TransactionCreate
 from app.services.budget_service import BudgetService
 from app.services.currency_service import CurrencyService
+from app.services.transaction_deletion_log import TransactionDeletionLog
 from logger.logger import get_logger
 
 logger = get_logger(__name__)
@@ -145,6 +146,7 @@ class TransactionService:
                 details={"transaction_id": str(transaction_id)},
             )
         await self.db.delete(tx)
+        await TransactionDeletionLog(self.db).record(user_id, [tx.id])
         await self.db.flush()
         await BudgetService.invalidate_etag(user_id)
         logger.info(f"Транзакция {tx.id} удалена пользователем {user_id}")

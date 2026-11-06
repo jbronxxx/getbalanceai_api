@@ -1,18 +1,21 @@
 """Сервис пакетной синхронизации оффлайн-данных клиента: транзакций и бюджетов."""
 
+import base64
+import json
 import uuid
-from datetime import datetime, timezone, tzinfo
+from datetime import datetime, timedelta, timezone, tzinfo
 from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import status
-from sqlalchemy import delete, or_, select, tuple_
+from sqlalchemy import and_, delete, or_, select, tuple_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.exceptions import AppException, ErrorCode
-from app.models.models import Budget, Category, Transaction, User
+from app.exceptions import AppException, BadRequestException, ErrorCode
+from app.models.models import Budget, Category, Transaction, TransactionDeletion, User
 from app.schemas.schemas import (
     BudgetSyncItem,
+    SyncChangesResponse,
     SyncPayload,
     SyncRejectedItem,
     SyncResponse,
@@ -21,11 +24,15 @@ from app.schemas.schemas import (
 )
 from app.services.budget_service import BudgetService
 from app.services.currency_service import CurrencyService
+from app.services.transaction_deletion_log import TransactionDeletionLog
 from logger.logger import get_logger
 
 logger = get_logger(__name__)
 
 BudgetKey = tuple[Category, int, int]
+
+# Насколько расширять окно since назад: запас на транзакции, закоммиченные после отметки прошлой синхронизации
+CHANGES_OVERLAP = timedelta(minutes=1)
 
 
 class SyncService:
@@ -125,6 +132,96 @@ class SyncService:
             rejected=rejected,
         )
 
+    async def get_changes(
+        self,
+        user_id: uuid.UUID,
+        since: datetime | None,
+        cursor: str | None,
+        limit: int,
+    ) -> SyncChangesResponse:
+        """Транзакции, изменённые после since, и id удалённых после since.
+
+        Без since — все транзакции пользователя (первая синхронизация устройства), удалённых нет.
+        Порядок — по (updated_at, id), курсор продолжает с последней записи страницы. Удалённые
+        отдаются только с первой страницей (без курсора).
+
+        Окно since расширяется на CHANGES_OVERLAP назад: updated_at ставится при записи, а видна
+        строка после коммита, и транзакция, закоммиченная чуть позже прошлой отметки, иначе
+        потерялась бы. Повторно отданные записи клиент применяет идемпотентно.
+
+        Аргументы:
+            user_id (uuid.UUID): Владелец данных.
+            since (datetime | None): server_time первой страницы прошлой синхронизации.
+            cursor (str | None): next_cursor предыдущей страницы.
+            limit (int): Размер страницы.
+
+        Исключения:
+            BadRequestException: INVALID_CURSOR при повреждённом курсоре.
+        """
+        server_time = datetime.now(timezone.utc)
+        lower_bound: datetime | None = None
+        if since is not None:
+            if since.tzinfo is None:
+                since = since.replace(tzinfo=timezone.utc)
+            lower_bound = since - CHANGES_OVERLAP
+
+        query = select(Transaction).where(Transaction.user_id == user_id)
+        if lower_bound is not None:
+            query = query.where(Transaction.updated_at > lower_bound)
+        if cursor:
+            cursor_updated_at, cursor_id = self._decode_changes_cursor(cursor, user_id)
+            query = query.where(
+                or_(
+                    Transaction.updated_at > cursor_updated_at,
+                    and_(Transaction.updated_at == cursor_updated_at, Transaction.id > cursor_id),
+                )
+            )
+        query = query.order_by(Transaction.updated_at.asc(), Transaction.id.asc()).limit(limit + 1)
+
+        result = await self.db.execute(query)
+        items = list(result.scalars().all())
+        has_more = len(items) > limit
+        if has_more:
+            items = items[:limit]
+        next_cursor = self._encode_changes_cursor(items[-1]) if has_more else None
+
+        deleted_ids: list[uuid.UUID] = []
+        if lower_bound is not None and not cursor:
+            deleted_result = await self.db.execute(
+                select(TransactionDeletion.transaction_id).where(
+                    TransactionDeletion.user_id == user_id,
+                    TransactionDeletion.deleted_at > lower_bound,
+                )
+            )
+            deleted_ids = list(deleted_result.scalars().all())
+
+        return SyncChangesResponse(
+            transactions=[TransactionResponse.model_validate(t) for t in items],
+            deleted_transaction_ids=deleted_ids,
+            has_more=has_more,
+            next_cursor=next_cursor,
+            server_time=server_time,
+        )
+
+    @staticmethod
+    def _encode_changes_cursor(transaction: Transaction) -> str:
+        """Курсор следующей страницы изменений: (updated_at, id) последней записи."""
+        data = {"u": transaction.updated_at.isoformat(), "i": str(transaction.id)}
+        return base64.urlsafe_b64encode(json.dumps(data).encode("utf-8")).decode("ascii")
+
+    @staticmethod
+    def _decode_changes_cursor(cursor: str, user_id: uuid.UUID) -> tuple[datetime, uuid.UUID]:
+        """Разобрать курсор изменений; повреждённый курсор — ошибка, а не первая страница заново."""
+        try:
+            data = json.loads(base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8"))
+            updated_at = datetime.fromisoformat(data["u"])
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            return updated_at, uuid.UUID(data["i"])
+        except (ValueError, KeyError, TypeError) as e:
+            logger.warning("Некорректный курсор изменений от пользователя %s: %s", user_id, type(e).__name__)
+            raise BadRequestException(code=ErrorCode.INVALID_CURSOR, message="Некорректный курсор пагинации")
+
     async def _upsert_transactions(
         self,
         user_id: uuid.UUID,
@@ -151,6 +248,7 @@ class SyncService:
 
         synced: list[Transaction] = []
         seen_ids: set[uuid.UUID] = set()
+        created_ids: set[uuid.UUID] = set()
         for item in items:
             tx_id = item.id or uuid.uuid4()
             if tx_id in seen_ids:
@@ -207,17 +305,28 @@ class SyncService:
                 )
                 self.db.add(transaction)
                 existing[tx_id] = transaction
+                created_ids.add(tx_id)
 
             seen_ids.add(tx_id)
             synced.append(transaction)
+
+        # Транзакция, созданная заново с id удалённой, больше не удалена для других устройств
+        await TransactionDeletionLog(self.db).forget(user_id, created_ids)
         return synced
 
     async def _delete_transactions(self, user_id: uuid.UUID, ids: list[uuid.UUID]) -> None:
-        """Удалить транзакции пользователя одним запросом; чужие и несуществующие ID игнорируются."""
+        """Удалить транзакции пользователя и записать удаления в журнал; чужие и несуществующие ID игнорируются."""
         if not ids:
             return
-        logger.debug("Пакетное удаление транзакций: IDs=%s", len(set(ids)))
-        await self.db.execute(delete(Transaction).where(Transaction.user_id == user_id, Transaction.id.in_(set(ids))))
+        result = await self.db.execute(
+            select(Transaction.id).where(Transaction.user_id == user_id, Transaction.id.in_(set(ids)))
+        )
+        existing_ids = set(result.scalars().all())
+        if not existing_ids:
+            return
+        logger.debug("Пакетное удаление транзакций: IDs=%s", len(existing_ids))
+        await self.db.execute(delete(Transaction).where(Transaction.user_id == user_id, Transaction.id.in_(existing_ids)))
+        await TransactionDeletionLog(self.db).record(user_id, existing_ids)
 
     async def _delete_budgets(self, user_id: uuid.UUID, payload: SyncPayload, marked_deleted: list[BudgetSyncItem]) -> None:
         """Удалить бюджеты пользователя по ID и по ключу (category, month, year) одним запросом."""
