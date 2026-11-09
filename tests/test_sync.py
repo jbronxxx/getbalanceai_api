@@ -3,13 +3,16 @@
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.exceptions import InvalidCurrencyException
 from app.models.models import Budget, Category, Transaction, TransactionType, User
+from app.services.currency_service import CurrencyService
 
 
 class TestSyncEndpointIntegration:
@@ -385,10 +388,6 @@ class TestSyncEndpointIntegration:
         auth_headers: dict[str, str],
     ):
         """Синхронизация не обращается к курсам валют, если все транзакции в базовой валюте."""
-        from unittest.mock import AsyncMock, patch
-
-        from app.services.currency_service import CurrencyService
-
         with patch.object(CurrencyService, "get_rates", new_callable=AsyncMock) as mock_get_rates:
             payload = {
                 "transactions": [
@@ -586,8 +585,6 @@ class TestSyncEndpointIntegration:
         auth_headers: dict[str, str],
     ):
         """Непредвиденная системная ошибка возвращает 500 SYNC_FAILED, а не 400 (TASK-13)."""
-        from unittest.mock import patch
-
         payload = {"transactions": [], "budgets": []}
         with patch("app.services.sync_service.BudgetService.enrich_multiple", side_effect=RuntimeError("Unexpected crash")):
             response = await client.post("/api/v1/sync/", json=payload, headers=auth_headers)
@@ -838,23 +835,31 @@ class TestSyncInputLimits:
         assert stored is None
 
     @pytest.mark.asyncio
-    async def test_sync_unsupported_currency_rejected_with_code(
+    async def test_sync_currency_without_rate_rejected_with_code(
         self, client: AsyncClient, auth_headers: dict[str, str], db_session: AsyncSession
     ):
-        """Неподдерживаемая валюта операции уходит в rejected с кодом INVALID_CURRENCY, остальные записи сохраняются."""
-        unsupported = self._tx(currency="XYZ")
+        """Валюта, для которой нет курса, уходит в rejected с кодом INVALID_CURRENCY, остальные записи сохраняются.
+
+        Неподдерживаемый код валюты отсекает схема запроса (422 на весь батч), поэтому сюда попадает только
+        поддерживаемая валюта, курс которой сервер определить не смог.
+        """
+        no_rate = self._tx(currency="EUR")
         valid = self._tx(currency="USD")
-        response = await client.post("/api/v1/sync/", json={"transactions": [unsupported, valid]}, headers=auth_headers)
+        with patch.object(
+            CurrencyService,
+            "calculate_cross_rate",
+            side_effect=InvalidCurrencyException("Не удалось определить курс для валюты 'EUR'"),
+        ):
+            response = await client.post("/api/v1/sync/", json={"transactions": [no_rate, valid]}, headers=auth_headers)
 
         assert response.status_code == 200
         data = response.json()["data"]
         assert [t["id"] for t in data["synced_transactions"]] == [valid["id"]]
         assert len(data["rejected"]) == 1
-        assert data["rejected"][0]["id"] == unsupported["id"]
+        assert data["rejected"][0]["id"] == no_rate["id"]
         assert data["rejected"][0]["code"] == "INVALID_CURRENCY"
-        assert "XYZ" in data["rejected"][0]["reason"]
         stored = (
-            await db_session.execute(select(Transaction).where(Transaction.id == uuid.UUID(unsupported["id"])))
+            await db_session.execute(select(Transaction).where(Transaction.id == uuid.UUID(no_rate["id"])))
         ).scalar_one_or_none()
         assert stored is None
 
