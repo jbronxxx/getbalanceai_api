@@ -26,13 +26,23 @@ class TestInvalidCursor:
 class TestValidationFieldPaths:
     @pytest.mark.asyncio
     async def test_sync_error_points_to_record_index(self, client: AsyncClient, auth_headers: dict[str, str]):
-        """В пакете /sync ошибка указывает номер записи: transactions.1.amount."""
+        """В пакете /sync причина отказа записи указывает её номер: transactions.1.amount."""
         valid = {"amount": 1, "description": "a", "category": "food", "type": "expense", "date": "2026-10-10T00:00:00Z"}
         invalid = {**valid, "amount": -5}
         response = await client.post("/api/v1/sync/", json={"transactions": [valid, invalid]}, headers=auth_headers)
 
+        assert response.status_code == 200
+        rejected = response.json()["data"]["rejected"]
+        assert [r["code"] for r in rejected] == ["INVALID_AMOUNT"]
+        assert rejected[0]["reason"].startswith("transactions.1.amount:")
+
+    @pytest.mark.asyncio
+    async def test_sync_structure_error_points_to_field(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Ошибка структуры батча (не отдельной записи) — по-прежнему 422 с путём поля."""
+        response = await client.post("/api/v1/sync/", json={"deleted_transaction_ids": ["не-uuid"]}, headers=auth_headers)
+
         assert response.status_code == 422
-        assert list(response.json()["details"]["fields"]) == ["transactions.1.amount"]
+        assert list(response.json()["details"]["fields"]) == ["deleted_transaction_ids.0"]
 
     @pytest.mark.asyncio
     async def test_flat_body_keeps_plain_field_names(self, client: AsyncClient, auth_headers: dict[str, str]):

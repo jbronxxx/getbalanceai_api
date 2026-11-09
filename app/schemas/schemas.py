@@ -6,8 +6,18 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Generic, List, Optional, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+from pydantic.json_schema import SkipJsonSchema
+from pydantic_core import PydanticCustomError
 
+from app.exceptions import ErrorCode
 from app.models.models import (
     EXPENSE_CATEGORIES,
     INCOME_CATEGORIES,
@@ -463,16 +473,18 @@ class TransactionSyncItem(BaseModel):
 
     @model_validator(mode="after")
     def validate_category_type_compatibility(self) -> "TransactionSyncItem":
-        """Проверить совместимость выбранной категории с типом транзакции."""
+        """Проверить совместимость выбранной категории с типом транзакции (тип ошибки invalid_category)."""
         if self.type == TransactionType.income and self.category not in INCOME_CATEGORIES:
             allowed = ", ".join(sorted(c.value for c in INCOME_CATEGORIES))
-            raise ValueError(
-                f"Категория '{self.category.value}' недопустима для доходных операций. " f"Допустимые категории: {allowed}."
+            raise PydanticCustomError(
+                "invalid_category",
+                f"Категория '{self.category.value}' недопустима для доходных операций. Допустимые категории: {allowed}.",
             )
         if self.type == TransactionType.expense and self.category not in EXPENSE_CATEGORIES:
             allowed = ", ".join(sorted(c.value for c in EXPENSE_CATEGORIES))
-            raise ValueError(
-                f"Категория '{self.category.value}' недопустима для расходных операций. " f"Допустимые категории: {allowed}."
+            raise PydanticCustomError(
+                "invalid_category",
+                f"Категория '{self.category.value}' недопустима для расходных операций. Допустимые категории: {allowed}.",
             )
         return self
 
@@ -511,12 +523,13 @@ class BudgetSyncItem(BaseModel):
 
     @model_validator(mode="after")
     def validate_expense_category(self) -> "BudgetSyncItem":
-        """Проверить, что категория относится к допустимым категориям расходов."""
+        """Проверить, что категория относится к допустимым категориям расходов (тип ошибки invalid_category)."""
         if self.category not in EXPENSE_CATEGORIES:
             allowed = ", ".join(sorted(c.value for c in EXPENSE_CATEGORIES))
-            raise ValueError(
+            raise PydanticCustomError(
+                "invalid_category",
                 f"Категория '{self.category.value}' недопустима для бюджета. "
-                f"Бюджет может быть установлен только для расходных категорий: {allowed}."
+                f"Бюджет может быть установлен только для расходных категорий: {allowed}.",
             )
         return self
 
@@ -528,45 +541,112 @@ class BudgetSyncItem(BaseModel):
         return self.is_deleted
 
 
-class SyncPayload(BaseModel):
-    """Схема пакета данных для синхронизации."""
-
-    transactions: List[TransactionSyncItem] = Field(
-        default_factory=list,
-        max_length=500,
-        description="Список транзакций (максимум 500 элементов)",
-    )
-    budgets: List[BudgetSyncItem] = Field(
-        default_factory=list,
-        max_length=500,
-        description="Список бюджетов (максимум 500 элементов)",
-    )
-    deleted_budget_ids: List[uuid.UUID] = Field(
-        default_factory=list,
-        max_length=500,
-        description="Список ID бюджетов для удаления (максимум 500 элементов)",
-    )
-    deleted_transaction_ids: List[uuid.UUID] = Field(
-        default_factory=list,
-        max_length=500,
-        description="Список ID транзакций для удаления (максимум 500 элементов)",
-    )
-    deleted_budgets: List[BudgetSyncItem] = Field(
-        default_factory=list,
-        max_length=500,
-        description="Список объектов бюджетов для удаления по категории и периоду (максимум 500 элементов)",
-    )
-
-
 class SyncRejectedItem(BaseModel):
     """Схема элемента, отклоненного при пакетной синхронизации."""
 
     id: Optional[uuid.UUID] = Field(default=None, description="Идентификатор отклоненного элемента")
     code: str = Field(
         ...,
-        description="Машиночитаемый код причины: ID_CONFLICT, INVALID_CURRENCY, INVALID_TRANSACTION_AMOUNT",
+        description=(
+            "Машиночитаемый код причины: ID_CONFLICT, INVALID_CURRENCY, INVALID_TRANSACTION_AMOUNT, "
+            "INVALID_CATEGORY, INVALID_AMOUNT, INVALID_SYNC_ITEM"
+        ),
     )
     reason: str = Field(..., description="Причина отклонения элемента")
+
+
+# Поля сумм: ошибка в них — код INVALID_AMOUNT
+_SYNC_AMOUNT_FIELDS = {"amount", "limit_amount", "base_amount", "exchange_rate"}
+# Сколько записей в списке проверяется по одной; длиннее — 422 на весь запрос (max_length)
+SYNC_LIST_MAX_LENGTH = 500
+
+
+def _invalid_sync_item(raw: Any, error: ValidationError, path: str) -> SyncRejectedItem:
+    """Запись батча, не прошедшая схему, — в rejected с кодом причины.
+
+    Текст причины — номер записи (path: transactions.1), поле и описание ошибки, без присланных значений (суммы и описания —
+    персональные финансовые данные).
+    """
+    item_id = None
+    if isinstance(raw, dict):
+        try:
+            item_id = uuid.UUID(str(raw.get("id")))
+        except ValueError:
+            item_id = None
+
+    errors = error.errors(include_input=False, include_url=False)
+    # Отсутствующее поле — ошибка формата записи (INVALID_SYNC_ITEM), а не неверное значение
+    fields = {str(err["loc"][0]) for err in errors if err["loc"] and err["type"] != "missing"}
+    if any(err["type"] == "invalid_category" for err in errors) or "category" in fields:
+        code = ErrorCode.INVALID_CATEGORY
+    elif "currency" in fields:
+        code = ErrorCode.INVALID_CURRENCY
+    elif fields & _SYNC_AMOUNT_FIELDS:
+        code = ErrorCode.INVALID_AMOUNT
+    else:
+        code = ErrorCode.INVALID_SYNC_ITEM
+    first = errors[0]
+    field = ".".join([path, *(str(part) for part in first["loc"])])
+    reason = f"{field}: {first['msg']}"
+    return SyncRejectedItem(id=item_id, code=code, reason=reason)
+
+
+class SyncPayload(BaseModel):
+    """Схема пакета данных для синхронизации."""
+
+    transactions: List[TransactionSyncItem] = Field(
+        default_factory=list,
+        max_length=SYNC_LIST_MAX_LENGTH,
+        description="Список транзакций (максимум 500 элементов)",
+    )
+    budgets: List[BudgetSyncItem] = Field(
+        default_factory=list,
+        max_length=SYNC_LIST_MAX_LENGTH,
+        description="Список бюджетов (максимум 500 элементов)",
+    )
+    deleted_budget_ids: List[uuid.UUID] = Field(
+        default_factory=list,
+        max_length=SYNC_LIST_MAX_LENGTH,
+        description="Список ID бюджетов для удаления (максимум 500 элементов)",
+    )
+    deleted_transaction_ids: List[uuid.UUID] = Field(
+        default_factory=list,
+        max_length=SYNC_LIST_MAX_LENGTH,
+        description="Список ID транзакций для удаления (максимум 500 элементов)",
+    )
+    deleted_budgets: List[BudgetSyncItem] = Field(
+        default_factory=list,
+        max_length=SYNC_LIST_MAX_LENGTH,
+        description="Список объектов бюджетов для удаления по категории и периоду (максимум 500 элементов)",
+    )
+    # Заполняется валидатором: записи transactions и budgets, не прошедшие схему. Клиент это поле не передаёт
+    invalid_items: SkipJsonSchema[List[SyncRejectedItem]] = Field(default_factory=list, exclude=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def split_invalid_items(cls, data: Any) -> Any:
+        """Проверить transactions и budgets по одной записи; невалидные — в invalid_items.
+
+        Одна запись с неизвестной категорией или суммой вне диапазона не должна ронять весь батч 422:
+        оффлайн-очередь клиента повторяла бы его бесконечно, а пользователь видел бы только общую ошибку.
+        """
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        invalid: list[SyncRejectedItem] = []
+        for key, model in (("transactions", TransactionSyncItem), ("budgets", BudgetSyncItem)):
+            items = data.get(key)
+            if not isinstance(items, list) or len(items) > SYNC_LIST_MAX_LENGTH:
+                continue
+            valid = []
+            for index, raw in enumerate(items):
+                try:
+                    valid.append(model.model_validate(raw))
+                except ValidationError as err:
+                    invalid.append(_invalid_sync_item(raw, err, f"{key}.{index}"))
+            data[key] = valid
+        data["invalid_items"] = invalid
+        return data
 
 
 class SyncResponse(BaseModel):
