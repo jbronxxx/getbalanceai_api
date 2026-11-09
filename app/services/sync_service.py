@@ -257,7 +257,11 @@ class SyncService:
             if item.id and item.id in foreign_ids:
                 logger.warning("Конфликт ID транзакции %s: принадлежит другому пользователю", item.id)
                 rejected.append(
-                    SyncRejectedItem(id=item.id, reason="Идентификатор транзакции отклонен (конфликт идентификатора)")
+                    SyncRejectedItem(
+                        id=item.id,
+                        code=ErrorCode.ID_CONFLICT,
+                        reason="Идентификатор транзакции отклонен (конфликт идентификатора)",
+                    )
                 )
                 continue
 
@@ -276,7 +280,7 @@ class SyncService:
                 )
             except AppException as err:
                 logger.warning("Транзакция %s отклонена при синхронизации: %s", tx_id, err.code)
-                rejected.append(SyncRejectedItem(id=item.id, reason=err.message))
+                rejected.append(SyncRejectedItem(id=item.id, code=err.code, reason=err.message))
                 continue
 
             amount = item.amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -385,7 +389,11 @@ class SyncService:
             if item.id and item.id in foreign_ids:
                 logger.warning("Конфликт ID бюджета %s: принадлежит другому пользователю", item.id)
                 rejected.append(
-                    SyncRejectedItem(id=item.id, reason="Идентификатор бюджета отклонен (конфликт идентификатора)")
+                    SyncRejectedItem(
+                        id=item.id,
+                        code=ErrorCode.ID_CONFLICT,
+                        reason="Идентификатор бюджета отклонен (конфликт идентификатора)",
+                    )
                 )
                 continue
 
