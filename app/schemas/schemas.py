@@ -194,6 +194,16 @@ class UserUpdateRequest(BaseModel):
     avatar_url: Optional[str] = Field(default=None, max_length=500, description="URL аватара")
     base_currency: Optional[str] = Field(default=None, max_length=10, description="Основная валюта учета")
 
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: Optional[str]) -> Optional[str]:
+        """Имя без пробелов по краям; пустое имя не сохраняется — в профиле осталось бы пустое место."""
+        if v is not None:
+            v = v.strip()
+            if not v:
+                raise ValueError("Имя не может быть пустым")
+        return v
+
     @field_validator("base_currency")
     @classmethod
     def validate_base_currency(cls, v: Optional[str]) -> Optional[str]:

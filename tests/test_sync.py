@@ -832,6 +832,25 @@ class TestSyncInputLimits:
         assert [(r["id"], r["code"]) for r in data["rejected"]] == [(too_big["id"], "INVALID_AMOUNT")]
 
     @pytest.mark.asyncio
+    async def test_sync_accepts_new_expense_categories(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Новые категории расходов (USAB-03) принимаются и в операциях, и в лимитах."""
+        new = ["housing", "communication", "education", "family", "car", "gifts", "travel", "beauty"]
+        transactions = [{**self._tx(), "category": category} for category in new]
+        budgets = [
+            {"id": str(uuid.uuid4()), "category": category, "limit_amount": 100, "month": 10, "year": 2026}
+            for category in new
+        ]
+        response = await client.post(
+            "/api/v1/sync/", json={"transactions": transactions, "budgets": budgets}, headers=auth_headers
+        )
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["rejected"] == []
+        assert sorted(t["category"] for t in data["synced_transactions"]) == sorted(new)
+        assert sorted(b["category"] for b in data["synced_budgets"]) == sorted(new)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("changes", "code"),
         [

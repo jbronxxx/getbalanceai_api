@@ -3,7 +3,12 @@
 from decimal import Decimal
 
 from app.models.models import Category
-from app.services.insights_formatting import category_name, format_money, lang_of
+from app.services.insights_formatting import (
+    CATEGORY_NAMES,
+    category_name,
+    format_money,
+    lang_of,
+)
 
 
 class TestInsightsFormatting:
@@ -15,6 +20,13 @@ class TestInsightsFormatting:
         assert category_name("food", "en") == "Food"
         assert category_name(Category.food, "kk") == "Тамақтану"
         assert category_name(Category.food, "uz_UZ") == "Oziq-ovqat"
+
+    def test_every_category_has_name_in_every_language(self):
+        """Новая категория без подписи попала бы в отчёт кодом («housing») — у каждой есть название на 4 языках."""
+        for lang, names in CATEGORY_NAMES.items():
+            assert set(names) == set(Category), lang
+        assert category_name(Category.housing, "ru") == "Жильё и ЖКХ"
+        assert category_name("communication", "en") == "Phone & internet"
 
     def test_unknown_category_and_locale_fallbacks(self):
         """Неизвестная локаль — русский; неизвестная категория — как есть."""
