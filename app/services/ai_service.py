@@ -37,6 +37,10 @@ redis_client = get_redis()
 # Redis запущен с AOF (appendonly), поэтому записи переживают перезапуск.
 INSIGHTS_CACHE_TTL_SECONDS = 400 * 86400
 
+# Меньше операций за месяц — советы ИИ получаются пустыми, а генерация тратит суточную квоту.
+# Такое же значение в мобильном приложении (карточка «нужно хотя бы 7 операций»).
+MIN_TRANSACTIONS_FOR_INSIGHTS = 7
+
 
 @dataclass(frozen=True)
 class MonthFingerprint:
@@ -210,7 +214,8 @@ class AIService:
     ) -> InsightResponse:
         """Вернуть AI-отчёт за месяц, по возможности без вызова LLM.
 
-        LLM не вызывается для будущего месяца и месяца без операций (`no_data`), при совпадении
+        LLM не вызывается для будущего месяца и месяца без операций (`no_data`), при числе операций
+        меньше `MIN_TRANSACTIONS_FOR_INSIGHTS` (`not_enough_data`), при совпадении
         данных периода с сохранённым отчётом и при `generate=False` (`not_generated`, если
         отчёта нет). Отчёты хранятся в Redis вместе с отпечатком данных месяца.
         """
@@ -240,6 +245,9 @@ class AIService:
         fingerprint = await self._month_fingerprint(user_id, target_month, target_year, tz)
         if fingerprint.tx_count == 0:
             return InsightResponse(insights=[], generated_at=now, state=InsightState.no_data)
+        if fingerprint.tx_count < MIN_TRANSACTIONS_FOR_INSIGHTS:
+            # Сохранённый отчёт (сделан, когда операций было больше) тоже не отдаём: он про другие данные
+            return InsightResponse(insights=[], generated_at=now, state=InsightState.not_enough_data)
 
         cache_key = get_insights_cache_key(user_id, locale, currency, month=target_month, year=target_year)
 

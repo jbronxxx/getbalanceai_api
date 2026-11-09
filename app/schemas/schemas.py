@@ -608,6 +608,8 @@ class InsightState(str, enum.Enum):
     ready = "ready"  # Отчёт есть (сгенерирован сейчас или взят из кэша)
     not_generated = "not_generated"  # Отчёта нет, генерация не запрашивалась (generate=false)
     no_data = "no_data"  # Анализировать нечего: будущий месяц или нет операций за период
+    # Операций за период меньше MIN_TRANSACTIONS_FOR_INSIGHTS: отчёт не формируется и не отдаётся
+    not_enough_data = "not_enough_data"
     # Суточная квота генераций исчерпана: отчёта за период нет (insights — сообщение о лимите)
     # или он устарел (insights — сохранённый отчёт, is_outdated=true)
     quota_exceeded = "quota_exceeded"

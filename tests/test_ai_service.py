@@ -14,10 +14,14 @@ from google import genai
 
 from app.models.models import Budget, Category, Transaction, TransactionType, User
 from app.schemas.schemas import BudgetResponse, InsightResponse, InsightState
-from app.services.ai_service import AIService, MonthFingerprint
+from app.services.ai_service import (
+    MIN_TRANSACTIONS_FOR_INSIGHTS,
+    AIService,
+    MonthFingerprint,
+)
 
 
-def _patch_fingerprint(tx_count: int = 5, signature: str = "sig"):
+def _patch_fingerprint(tx_count: int = MIN_TRANSACTIONS_FOR_INSIGHTS, signature: str = "sig"):
     """Подменить отпечаток месяца, чтобы тесты не зависели от агрегирующих запросов к БД."""
     return patch.object(
         AIService,
@@ -542,7 +546,7 @@ class TestAIService:
         mock_client.aio.models.generate_content = AsyncMock(side_effect=Exception("API failure"))
         service_error = AIService(db=mock_db, client=mock_client)
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint(tx_count=2):
+        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
             with patch("app.services.ai_service.redis_client.get", AsyncMock(return_value=None)):
                 res_err = await service_error.get_insights(uuid.uuid4(), locale="kk")
                 assert "Өкінішке қарай" in res_err.insights[0]
@@ -592,7 +596,7 @@ class TestAIService:
 
         with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
             with patch("app.services.budget_service.BudgetService.get_all", AsyncMock(return_value=[budget_nov])):
-                with _patch_fingerprint(tx_count=1, signature="nov-sig"):
+                with _patch_fingerprint(tx_count=8, signature="nov-sig"):
                     mock_db.execute = AsyncMock(side_effect=[mock_txs])
                     result = await service.get_insights(
                         user_id,
@@ -609,7 +613,7 @@ class TestAIService:
         cached_data = json.loads(cached_val)
         assert "Ноябрьский совет" in cached_data["insights"]
         assert cached_data["signature"] == "nov-sig"
-        assert cached_data["tx_count"] == 1
+        assert cached_data["tx_count"] == 8
 
     # =========================================================================
     # TASK-AI-QUOTA: Тестирование защиты суточного лимита
@@ -847,17 +851,84 @@ class TestAIService:
 
         user_id = uuid.uuid4()
         now = datetime.now(timezone.utc)
-        await redis_client.set(f"insights_cache:{user_id}:ru:UZS:{now.month}:{now.year}", self._cached("old", 3))
+        await redis_client.set(f"insights_cache:{user_id}:ru:UZS:{now.month}:{now.year}", self._cached("old", 7))
         client = self._llm_client()
         service = AIService(db=self._db_with_month_data(), client=client)
 
         with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
-            with _patch_fingerprint(tx_count=4, signature="new"):
+            with _patch_fingerprint(tx_count=8, signature="new"):
                 result = await service.get_insights(user_id, currency="UZS")
 
         assert result.insights == ["Новый совет"]
         assert result.is_outdated is False
         client.aio.models.generate_content.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("generate", [True, False])
+    async def test_not_enough_transactions_without_llm_and_saved_report(self, generate: bool):
+        """Операций меньше порога: not_enough_data без LLM и квоты; сохранённый отчёт не отдаётся."""
+        from app.services.ai_service import redis_client
+
+        user_id = uuid.uuid4()
+        now = datetime.now(timezone.utc)
+        await redis_client.set(f"insights_cache:{user_id}:ru:UZS:{now.month}:{now.year}", self._cached("old", 9))
+        client = self._llm_client()
+        db = MagicMock(commit=AsyncMock(), execute=AsyncMock())
+        service = AIService(db=db, client=client)
+
+        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
+            with _patch_fingerprint(tx_count=MIN_TRANSACTIONS_FOR_INSIGHTS - 1, signature="new"):
+                result = await service.get_insights(user_id, currency="UZS", generate=generate)
+
+        assert result.state == InsightState.not_enough_data
+        assert result.insights == []
+        assert result.is_outdated is False
+        client.aio.models.generate_content.assert_not_called()
+        db.execute.assert_not_called()
+        assert await redis_client.keys("insights_daily_calls:*") == []
+
+    @pytest.mark.asyncio
+    async def test_insights_endpoint_requires_min_transactions(
+        self, client, auth_headers: dict[str, str], db_session, test_user: User
+    ):
+        """GET /insights: до порога операций — not_enough_data без LLM, с порога — отчёт."""
+        now = datetime.now(timezone.utc)
+        # После commit атрибуты пользователя истекают, а ленивая подгрузка в синхронном коде недоступна
+        user_id = test_user.id
+
+        def add_expense() -> None:
+            db_session.add(
+                Transaction(
+                    user_id=user_id,
+                    amount=Decimal("10.00"),
+                    base_amount=Decimal("10.00"),
+                    currency="USD",
+                    description="Кофе",
+                    category=Category.food,
+                    type=TransactionType.expense,
+                    date=now,
+                )
+            )
+
+        for _ in range(MIN_TRANSACTIONS_FOR_INSIGHTS - 1):
+            add_expense()
+        await db_session.commit()
+
+        with (
+            patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"),
+            patch.object(AIService, "_call_gemini", new_callable=AsyncMock, return_value=["Совет"]) as llm,
+        ):
+            short = await client.get("/api/v1/insights/?currency=USD", headers=auth_headers)
+            add_expense()
+            await db_session.commit()
+            enough = await client.get("/api/v1/insights/?currency=USD", headers=auth_headers)
+
+        assert short.status_code == 200
+        assert short.json()["data"]["state"] == "not_enough_data"
+        assert short.json()["data"]["insights"] == []
+        assert enough.json()["data"]["state"] == "ready"
+        assert enough.json()["data"]["insights"] == ["Совет"]
+        llm.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_month_fingerprint_counts_only_period_and_tracks_changes(self, db_session, test_user: User):
