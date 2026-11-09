@@ -791,21 +791,105 @@ class TestSyncInputLimits:
         assert len(stored.description) == 255
 
     @pytest.mark.asyncio
-    async def test_sync_amount_above_limit_returns_422(self, client: AsyncClient, auth_headers: dict[str, str]):
-        """Сумма больше 10^12 отклоняется валидацией 422, а не ошибкой переполнения Numeric (500)."""
-        item = self._tx(amount="1000000000000.01")
-        response = await client.post("/api/v1/sync/", json={"transactions": [item]}, headers=auth_headers)
+    async def test_sync_amount_above_limit_rejected_without_failing_batch(
+        self, client: AsyncClient, auth_headers: dict[str, str], db_session: AsyncSession
+    ):
+        """Сумма больше 10^12 — запись в rejected с кодом INVALID_AMOUNT, остальные записи сохраняются (SYNC-03)."""
+        too_big = self._tx(amount="1000000000000.01")
+        valid = self._tx()
+        response = await client.post("/api/v1/sync/", json={"transactions": [too_big, valid]}, headers=auth_headers)
 
-        assert response.status_code == 422
-        assert response.json()["code"] == "VALIDATION_ERROR"
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert [t["id"] for t in data["synced_transactions"]] == [valid["id"]]
+        assert data["rejected"] == [{"id": too_big["id"], "code": "INVALID_AMOUNT", "reason": data["rejected"][0]["reason"]}]
+        assert data["rejected"][0]["reason"].startswith("transactions.0.amount:")
+        # В причине нет присланной суммы — только поле и описание ошибки
+        assert "1000000000000.01" not in data["rejected"][0]["reason"]
+        stored = (
+            await db_session.execute(select(Transaction).where(Transaction.id == uuid.UUID(too_big["id"])))
+        ).scalar_one_or_none()
+        assert stored is None
 
     @pytest.mark.asyncio
-    async def test_sync_budget_limit_above_limit_returns_422(self, client: AsyncClient, auth_headers: dict[str, str]):
-        """Лимит бюджета больше 10^12 отклоняется валидацией 422."""
-        budget = {"category": "food", "limit_amount": "1000000000000.01", "month": 10, "year": 2026}
-        response = await client.post("/api/v1/sync/", json={"budgets": [budget]}, headers=auth_headers)
+    async def test_sync_budget_limit_above_limit_rejected_without_failing_batch(
+        self, client: AsyncClient, auth_headers: dict[str, str]
+    ):
+        """Лимит бюджета больше 10^12 — в rejected с кодом INVALID_AMOUNT, соседний лимит сохраняется."""
+        too_big = {
+            "id": str(uuid.uuid4()),
+            "category": "food",
+            "limit_amount": "1000000000000.01",
+            "month": 10,
+            "year": 2026,
+        }
+        valid = {"id": str(uuid.uuid4()), "category": "transport", "limit_amount": 100, "month": 10, "year": 2026}
+        response = await client.post("/api/v1/sync/", json={"budgets": [too_big, valid]}, headers=auth_headers)
 
-        assert response.status_code == 422
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert [b["id"] for b in data["synced_budgets"]] == [valid["id"]]
+        assert [(r["id"], r["code"]) for r in data["rejected"]] == [(too_big["id"], "INVALID_AMOUNT")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("changes", "code"),
+        [
+            ({"category": "pets"}, "INVALID_CATEGORY"),  # категории нет на сервере (новое приложение, старый бэк)
+            ({"category": "salary"}, "INVALID_CATEGORY"),  # доходная категория у расхода
+            ({"currency": "RUB"}, "INVALID_CURRENCY"),
+            ({"amount": 0}, "INVALID_AMOUNT"),
+            ({"date": "не дата"}, "INVALID_SYNC_ITEM"),
+            ({"type": "transfer"}, "INVALID_SYNC_ITEM"),
+            ({"category": ...}, "INVALID_SYNC_ITEM"),  # обязательное поле не передано (... — убрать поле)
+        ],
+    )
+    async def test_sync_invalid_transaction_rejected_with_code(
+        self, client: AsyncClient, auth_headers: dict[str, str], changes: dict, code: str
+    ):
+        """Запись, не прошедшая схему, уходит в rejected со своим кодом; батч не падает 422 (SYNC-03)."""
+        invalid = {key: value for key, value in {**self._tx(), **changes}.items() if value is not ...}
+        valid = self._tx()
+        response = await client.post("/api/v1/sync/", json={"transactions": [invalid, valid]}, headers=auth_headers)
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert [t["id"] for t in data["synced_transactions"]] == [valid["id"]]
+        assert [(r["id"], r["code"]) for r in data["rejected"]] == [(invalid["id"], code)]
+
+    @pytest.mark.asyncio
+    async def test_sync_invalid_budget_category_rejected_with_code(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Лимит на доходную категорию — в rejected с кодом INVALID_CATEGORY."""
+        invalid = {"id": str(uuid.uuid4()), "category": "salary", "limit_amount": 100, "month": 10, "year": 2026}
+        response = await client.post("/api/v1/sync/", json={"budgets": [invalid]}, headers=auth_headers)
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["synced_budgets"] == []
+        assert [(r["id"], r["code"]) for r in data["rejected"]] == [(invalid["id"], "INVALID_CATEGORY")]
+
+    @pytest.mark.asyncio
+    async def test_sync_invalid_item_without_valid_id_rejected_with_null_id(
+        self, client: AsyncClient, auth_headers: dict[str, str]
+    ):
+        """Запись с некорректным id тоже не роняет батч: в rejected с id = null."""
+        invalid = {**self._tx(), "id": "не-uuid"}
+        response = await client.post("/api/v1/sync/", json={"transactions": [invalid, "не объект"]}, headers=auth_headers)
+
+        assert response.status_code == 200
+        rejected = response.json()["data"]["rejected"]
+        assert [(r["id"], r["code"]) for r in rejected] == [(None, "INVALID_SYNC_ITEM"), (None, "INVALID_SYNC_ITEM")]
+
+    @pytest.mark.asyncio
+    async def test_sync_client_cannot_pass_invalid_items(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Служебное поле invalid_items заполняет только сервер: присланное клиентом игнорируется."""
+        fake = {"id": str(uuid.uuid4()), "code": "ID_CONFLICT", "reason": "x"}
+        response = await client.post(
+            "/api/v1/sync/", json={"transactions": [self._tx()], "invalid_items": [fake]}, headers=auth_headers
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["rejected"] == []
 
     @pytest.mark.asyncio
     async def test_sync_base_amount_overflow_rejected_without_failing_batch(
@@ -840,7 +924,7 @@ class TestSyncInputLimits:
     ):
         """Валюта, для которой нет курса, уходит в rejected с кодом INVALID_CURRENCY, остальные записи сохраняются.
 
-        Неподдерживаемый код валюты отсекает схема запроса (422 на весь батч), поэтому сюда попадает только
+        Неподдерживаемый код валюты отсекает схема записи (тот же код INVALID_CURRENCY), поэтому здесь —
         поддерживаемая валюта, курс которой сервер определить не смог.
         """
         no_rate = self._tx(currency="EUR")

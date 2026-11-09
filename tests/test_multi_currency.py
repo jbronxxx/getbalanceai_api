@@ -330,8 +330,8 @@ class TestMultiCurrencyBackend:
             assert response.status_code == 422, f"Ожидался код 422 для валюты {bad_curr}"
 
     @pytest.mark.asyncio
-    async def test_unknown_currency_code_in_sync_returns_422(self, client: AsyncClient, auth_headers: dict[str, str]):
-        """Неизвестный код валюты в элементе списка POST /api/v1/sync/ отклоняется с 422."""
+    async def test_unknown_currency_code_in_sync_rejected(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Неизвестный код валюты в элементе POST /api/v1/sync/ — запись в rejected с INVALID_CURRENCY (SYNC-03)."""
         payload = {
             "transactions": [
                 {
@@ -346,7 +346,10 @@ class TestMultiCurrencyBackend:
             "budgets": [],
         }
         response = await client.post("/api/v1/sync/", json=payload, headers=auth_headers)
-        assert response.status_code == 422
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["synced_transactions"] == []
+        assert [r["code"] for r in data["rejected"]] == ["INVALID_CURRENCY"]
 
     def test_calculate_cross_rate_raises_on_unsupported_currency(self):
         """calculate_cross_rate бросает InvalidCurrencyException для неизвестной валюты."""

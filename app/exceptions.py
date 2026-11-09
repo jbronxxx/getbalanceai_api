@@ -44,6 +44,10 @@ class ErrorCode(StrEnum):
     SYNC_FAILED = "SYNC_FAILED"
     INVALID_CURSOR = "INVALID_CURSOR"
     ID_CONFLICT = "ID_CONFLICT"
+    # Запись батча /sync не прошла проверку схемы: уходит в rejected, остальные записи сохраняются
+    INVALID_CATEGORY = "INVALID_CATEGORY"
+    INVALID_AMOUNT = "INVALID_AMOUNT"
+    INVALID_SYNC_ITEM = "INVALID_SYNC_ITEM"
 
     # Безопасность и лимиты
     RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED"

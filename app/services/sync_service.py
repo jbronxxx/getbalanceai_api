@@ -74,7 +74,15 @@ class SyncService:
             len(payload.deleted_budget_ids),
             len(payload.deleted_budgets),
         )
-        rejected: list[SyncRejectedItem] = []
+        # Записи, не прошедшие схему, уже отклонены валидатором SyncPayload
+        rejected: list[SyncRejectedItem] = list(payload.invalid_items)
+        if payload.invalid_items:
+            logger.warning(
+                "Синхронизация пользователя %s: %s записей не прошли проверку (%s)",
+                user_id,
+                len(payload.invalid_items),
+                ", ".join(sorted({item.code for item in payload.invalid_items})),
+            )
         to_delete_budgets = [item for item in payload.budgets if item.check_deleted]
         to_upsert_budgets = [item for item in payload.budgets if not item.check_deleted]
 
