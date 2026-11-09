@@ -32,6 +32,14 @@ class Category(str, enum.Enum):
     health = "health"  # Здоровье и медицина
     subscriptions = "subscriptions"  # Подписки и сервисы
     shopping = "shopping"  # Покупки и одежда
+    housing = "housing"  # Жильё и ЖКХ
+    communication = "communication"  # Связь: телефон и интернет
+    education = "education"  # Образование
+    family = "family"  # Семья и дети
+    car = "car"  # Автомобиль
+    gifts = "gifts"  # Подарки
+    travel = "travel"  # Путешествия
+    beauty = "beauty"  # Красота и уход
 
     # Доходные категории
     salary = "salary"  # Заработная плата
@@ -62,6 +70,14 @@ EXPENSE_CATEGORIES: set[Category] = {
     Category.health,
     Category.subscriptions,
     Category.shopping,
+    Category.housing,
+    Category.communication,
+    Category.education,
+    Category.family,
+    Category.car,
+    Category.gifts,
+    Category.travel,
+    Category.beauty,
     Category.other,
 }
 

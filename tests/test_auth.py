@@ -71,6 +71,20 @@ class TestUserProfileAndBaseCurrency:
         assert data["data"]["base_currency"] == "USD"
 
     @pytest.mark.asyncio
+    async def test_patch_me_name_trimmed_and_empty_rejected(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Имя сохраняется без пробелов по краям; пустое или из одних пробелов — 422, старое имя остаётся."""
+        response = await client.patch("/api/v1/auth/me", json={"name": "  Аня  "}, headers=auth_headers)
+        assert response.status_code == 200
+        assert response.json()["data"]["name"] == "Аня"
+
+        for empty in ("", "   "):
+            response = await client.patch("/api/v1/auth/me", json={"name": empty}, headers=auth_headers)
+            assert response.status_code == 422
+
+        me = await client.get("/api/v1/auth/me", headers=auth_headers)
+        assert me.json()["data"]["name"] == "Аня"
+
+    @pytest.mark.asyncio
     async def test_patch_me_unauthorized_rejected(self, client: AsyncClient):
         """Попытка обновления профиля без авторизации возвращает 403, а с невалидным токеном 401."""
         no_auth = await client.patch("/api/v1/auth/me", json={"base_currency": "USD"})
