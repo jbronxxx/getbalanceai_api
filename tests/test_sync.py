@@ -509,6 +509,7 @@ class TestSyncEndpointIntegration:
         assert "rejected" in data
         assert len(data["rejected"]) == 1
         assert data["rejected"][0]["id"] == str(other_tx_id)
+        assert data["rejected"][0]["code"] == "ID_CONFLICT"
         assert "отклонен" in data["rejected"][0]["reason"].lower() or "конфликт" in data["rejected"][0]["reason"].lower()
 
         # Чужая транзакция в базе осталась неизменной
@@ -576,6 +577,7 @@ class TestSyncEndpointIntegration:
         assert data["synced_budgets"][0]["id"] == my_budget_id
         assert len(data["rejected"]) == 1
         assert data["rejected"][0]["id"] == str(other_budget_id)
+        assert data["rejected"][0]["code"] == "ID_CONFLICT"
 
     @pytest.mark.asyncio
     async def test_sync_unexpected_exception_returns_500_sync_failed(
@@ -829,8 +831,30 @@ class TestSyncInputLimits:
         assert [t["id"] for t in data["synced_transactions"]] == [valid["id"]]
         assert len(data["rejected"]) == 1
         assert data["rejected"][0]["id"] == overflow["id"]
+        assert data["rejected"][0]["code"] == "INVALID_TRANSACTION_AMOUNT"
         stored = (
             await db_session.execute(select(Transaction).where(Transaction.id == uuid.UUID(overflow["id"])))
+        ).scalar_one_or_none()
+        assert stored is None
+
+    @pytest.mark.asyncio
+    async def test_sync_unsupported_currency_rejected_with_code(
+        self, client: AsyncClient, auth_headers: dict[str, str], db_session: AsyncSession
+    ):
+        """Неподдерживаемая валюта операции уходит в rejected с кодом INVALID_CURRENCY, остальные записи сохраняются."""
+        unsupported = self._tx(currency="XYZ")
+        valid = self._tx(currency="USD")
+        response = await client.post("/api/v1/sync/", json={"transactions": [unsupported, valid]}, headers=auth_headers)
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert [t["id"] for t in data["synced_transactions"]] == [valid["id"]]
+        assert len(data["rejected"]) == 1
+        assert data["rejected"][0]["id"] == unsupported["id"]
+        assert data["rejected"][0]["code"] == "INVALID_CURRENCY"
+        assert "XYZ" in data["rejected"][0]["reason"]
+        stored = (
+            await db_session.execute(select(Transaction).where(Transaction.id == uuid.UUID(unsupported["id"])))
         ).scalar_one_or_none()
         assert stored is None
 

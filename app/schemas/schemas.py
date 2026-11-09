@@ -562,6 +562,10 @@ class SyncRejectedItem(BaseModel):
     """Схема элемента, отклоненного при пакетной синхронизации."""
 
     id: Optional[uuid.UUID] = Field(default=None, description="Идентификатор отклоненного элемента")
+    code: str = Field(
+        ...,
+        description="Машиночитаемый код причины: ID_CONFLICT, INVALID_CURRENCY, INVALID_TRANSACTION_AMOUNT",
+    )
     reason: str = Field(..., description="Причина отклонения элемента")
 
 
