@@ -56,6 +56,7 @@ erDiagram
     users ||--o{ budgets : "has"
     users ||--o{ tokens : "has"
     users ||--o{ transaction_deletions : "has"
+    users ||--o{ recurring_payments : "has"
 
     users {
         uuid id PK
@@ -106,15 +107,32 @@ erDiagram
         int year
         datetime created_at
     }
+
+    recurring_payments {
+        uuid id PK
+        uuid user_id FK
+        enum type
+        enum category
+        numeric amount
+        string currency
+        string description
+        int day_of_month
+        date start_date
+        date end_date
+        json skipped_periods
+        datetime created_at
+        datetime updated_at
+    }
 ```
 
 ### Таблицы:
 * `users`: Пользователи системы (email в нижнем регистре — один адрес в разном регистре даёт один аккаунт; имя, аватар `avatar_url`, базовая расчетная валюта `base_currency`)
-* Внешние ключи `transactions`, `budgets`, `tokens`, `transaction_deletions` → `users` — `ON DELETE CASCADE` (миграция `m01201201201`); связи `User` с `passive_deletes=True`: удаление аккаунта — один `DELETE` пользователя, без загрузки его данных в память
+* Внешние ключи `transactions`, `budgets`, `tokens`, `transaction_deletions`, `recurring_payments` → `users` — `ON DELETE CASCADE` (миграция `m01201201201`; `recurring_payments` — `r01701701701`); связи `User` с `passive_deletes=True`: удаление аккаунта — один `DELETE` пользователя, без загрузки его данных в память
 * `tokens`: refresh-токены сессий пользователей (SHA-256 хеш) со статусом (`active`, `revoked`, `expired`), временем отзыва `revoked_at` и преемником по ротации `replaced_by_id` (без внешнего ключа: пакетная очистка токенов не сканирует таблицу на каждую удалённую строку)
 * `transactions`: Финансовые операции (доход/расход с категорией, датой и мультивалютными полями стандарта `NUMERIC(18, 2)` и `NUMERIC(18, 6)`: `amount`, `currency`, `exchange_rate`, `base_amount`; `updated_at` — время последней правки для ETag списка и выборки `GET /sync/changes`, индекс `(user_id, updated_at)`)
 * `transaction_deletions`: Журнал удалённых транзакций (`transaction_id` — PK, `deleted_at`, индекс `(user_id, deleted_at)`). Удаление не оставляет следа в `transactions`, поэтому другие устройства узнают о нём только отсюда. Пишется при `DELETE /transactions/{id}` и `deleted_transaction_ids` в `/sync` (только для реально удалённых строк пользователя); запись снимается, если транзакция создана заново с тем же id. Хранится бессрочно
 * `budgets`: Лимиты расходов по категориям (по месяцам и годам, поле `limit_amount` типа `NUMERIC(18, 2)` в валюте лимита `currency`, CHECK `ck_budgets_currency`)
+* `recurring_payments`: Регулярные платежи и доходы (ЖКХ, кредит, связь, зарплата) — расписание, а не операции. Тип и категория (те же enum, что у `transactions`, совместимость категории с типом проверяется), ожидаемая сумма `NUMERIC(18, 2)` в своей валюте (`ck_recurring_payments_currency`), название `description` (может быть пустым), день месяца `day_of_month` 1–31 (`ck_recurring_payments_day_of_month`; в коротком месяце клиент берёт последний день), `start_date`, `end_date` (null — без срока), пропущенные месяцы `skipped_periods` (JSON-список `YYYY-MM`), `updated_at` для ETag. Записи не создаются сервером: приложение напоминает о платеже, а запись создаёт пользователь («Оплачено») с детерминированным id (платёж + месяц) — оплата с двух устройств не даёт дублей, оплаченный месяц узнаётся по записи. Удаление платежа прошлых записей не трогает
 * `alembic_version`: Служебная таблица для отслеживания миграций
 
 ### Перечисления и типы (Category, TransactionType, CurrencyCode):
@@ -151,12 +169,13 @@ erDiagram
    - Заголовок `ETag` бюджетов пользователя инвалидируется в Redis, а кэш AI-инсайтов пользователя очищается через неблокирующий `scan_iter` и `unlink` (исключая O(N) `KEYS` и опасный `FLUSHDB`).
 7. **Отказоустойчивость, оптимизация синхронизации и предотвращение race conditions**:
    - В `BudgetService.create` создание/обновление лимита выполняется через атомарный `insert().on_conflict_do_update(...)` (совместимый с PostgreSQL и SQLite), предотвращая ошибки параллельного создания лимитов по одной категории.
-   - Ограничение объема запроса: не более 500 элементов на списки транзакций и бюджетов в `POST /api/v1/sync`.
+   - Ограничение объема запроса: не более 500 элементов на списки транзакций, бюджетов и регулярных платежей в `POST /api/v1/sync`.
    - Границы значений: суммы и лимиты не больше `10^12`, описание в `/sync` обрезается до длины колонки (255); запись, чья сумма в базовой валюте не помещается в `Numeric(18, 2)`, уходит в `rejected`. Офлайн-очередь клиента повторяет батч целиком, поэтому одна запись вне границ не должна давать 500 на весь батч.
    - Идемпотентность повтора: клиент присваивает новым записям UUID до отправки; повтор батча после потерянного ответа обновляет те же строки, а не создаёт дубли.
    - Устранение проблемы N+1: пакетное удаление бюджетов объединено в единый SQL-запрос (`or_`, `tuple_().in_()`), выборка существующих бюджетов ограничена ключами пакета, а коммит с `expire_on_commit=False` исключает цикл запросов `refresh()`.
    - Изоляция конфликтов ID: чужие или конфликтующие идентификаторы транзакций и бюджетов не вызывают ошибку целостности (500) и не роняют весь батч, а безопасно возвращаются клиенту в списке `rejected` с кодом причины (`code`: `ID_CONFLICT`, `INVALID_CURRENCY`, `INVALID_TRANSACTION_AMOUNT`, `INVALID_CATEGORY`, `INVALID_AMOUNT`, `INVALID_SYNC_ITEM`) и текстом (`reason`). Записи `transactions` и `budgets` проверяются схемой по одной (`SyncPayload.split_invalid_items`): невалидная запись уходит в `rejected`, а не роняет батч `422`.
    - Идемпотентный UPSERT бюджетов по ID или составному ключу `(category, month, year)` с дедупликацией элементов.
+   - Регулярные платежи (`RecurringPaymentService`): в `/sync` — `recurring_payments` (создание или полная замена по клиентскому id, чужой id — `ID_CONFLICT`) и `deleted_recurring_payment_ids`; загрузка — весь список `GET /api/v1/recurring-payments` (у пользователя их единицы): клиент сверяет его с локальным, отсутствующий платёж удалён на другом устройстве, поэтому журнала удалений нет. ETag — по `count` и `max(updated_at)`. Разбор `If-None-Match` и ответ 304 — общий помощник `not_modified_response` (`app/routers/dependencies.py`) для бюджетов, транзакций и регулярных платежей.
    - Любые мутации бюджетов или транзакций (создание, удаление, синхронизация) автоматически инвалидируют ETag бюджетов пользователя (`BudgetService.invalidate_etag`).
    - ETag списка транзакций считается по `count` и `max(transactions.updated_at)`: `updated_at` обновляется через `onupdate` и при ORM-правке в `/sync`, и при пакетном `UPDATE` пересчёта валюты, поэтому правка с другого устройства не даёт 304.
    - Инкрементальная загрузка (`GET /api/v1/sync/changes`): клиент передаёт `since` — `server_time` первой страницы прошлой синхронизации — и получает транзакции с `updated_at` позже и id из `transaction_deletions` позже. Окно расширяется на `CHANGES_OVERLAP` (1 мин) назад: строка видна после коммита, а `updated_at` ставится при записи. Страницы по `(updated_at, id)`, удалённые — только на первой странице. Без `since` — все транзакции (первая синхронизация устройства). Время отметки берётся с сервера, часы телефона не участвуют.

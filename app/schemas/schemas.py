@@ -1,8 +1,9 @@
 """Модуль Pydantic-схем для валидации входящих запросов и сериализации ответов (DTO)."""
 
 import enum
+import re
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Generic, List, Optional, TypeVar
 
@@ -327,8 +328,8 @@ class TransactionResponse(BaseModel):
 # ============================================================================
 
 
-def _normalize_budget_currency(v: Any) -> Optional[str]:
-    """Код валюты лимита в верхнем регистре; None — валюта не передана (старый клиент)."""
+def _normalize_currency_code(v: Any) -> Optional[str]:
+    """Код валюты в верхнем регистре; None — валюта не передана (например, старым клиентом)."""
     if v is None:
         return None
     if isinstance(v, CurrencyCode):
@@ -369,7 +370,7 @@ class BudgetCreate(BaseModel):
     @classmethod
     def normalize_currency(cls, v: Any) -> Optional[str]:
         """Нормализовать код валюты лимита к верхнему регистру и валидировать по списку поддерживаемых."""
-        return _normalize_budget_currency(v)
+        return _normalize_currency_code(v)
 
     @model_validator(mode="after")
     def validate_expense_category(self) -> "BudgetCreate":
@@ -423,6 +424,33 @@ class BudgetResponse(BaseModel):
 # ============================================================================
 
 
+def _ensure_category_fits_type(category: Category, tx_type: TransactionType) -> None:
+    """Категория должна подходить к типу операции; иначе — ошибка типа invalid_category (код INVALID_CATEGORY в /sync)."""
+    if tx_type == TransactionType.income and category not in INCOME_CATEGORIES:
+        allowed = ", ".join(sorted(c.value for c in INCOME_CATEGORIES))
+        raise PydanticCustomError(
+            "invalid_category",
+            f"Категория '{category.value}' недопустима для доходных операций. Допустимые категории: {allowed}.",
+        )
+    if tx_type == TransactionType.expense and category not in EXPENSE_CATEGORIES:
+        allowed = ", ".join(sorted(c.value for c in EXPENSE_CATEGORIES))
+        raise PydanticCustomError(
+            "invalid_category",
+            f"Категория '{category.value}' недопустима для расходных операций. Допустимые категории: {allowed}.",
+        )
+
+
+def _truncate_description(v: Any) -> Any:
+    """Обрезать описание до длины колонки БД.
+
+    Оффлайн-очередь клиента отправляет один и тот же батч, пока он не примется: отказ из-за
+    длинного описания блокировал бы синхронизацию всех остальных записей пользователя.
+    """
+    if isinstance(v, str) and len(v) > DESCRIPTION_MAX_LENGTH:
+        return v[:DESCRIPTION_MAX_LENGTH]
+    return v
+
+
 class TransactionSyncItem(BaseModel):
     """Схема отдельной транзакции при пакетной синхронизации."""
 
@@ -455,14 +483,8 @@ class TransactionSyncItem(BaseModel):
     @field_validator("description", mode="before")
     @classmethod
     def truncate_description(cls, v: Any) -> Any:
-        """Обрезать описание до длины колонки БД.
-
-        Оффлайн-очередь клиента отправляет один и тот же батч, пока он не примется: отказ из-за
-        длинного описания блокировал бы синхронизацию всех остальных записей пользователя.
-        """
-        if isinstance(v, str) and len(v) > DESCRIPTION_MAX_LENGTH:
-            return v[:DESCRIPTION_MAX_LENGTH]
-        return v
+        """Обрезать описание до длины колонки БД (см. _truncate_description)."""
+        return _truncate_description(v)
 
     @field_validator("currency", mode="before")
     @classmethod
@@ -484,18 +506,7 @@ class TransactionSyncItem(BaseModel):
     @model_validator(mode="after")
     def validate_category_type_compatibility(self) -> "TransactionSyncItem":
         """Проверить совместимость выбранной категории с типом транзакции (тип ошибки invalid_category)."""
-        if self.type == TransactionType.income and self.category not in INCOME_CATEGORIES:
-            allowed = ", ".join(sorted(c.value for c in INCOME_CATEGORIES))
-            raise PydanticCustomError(
-                "invalid_category",
-                f"Категория '{self.category.value}' недопустима для доходных операций. Допустимые категории: {allowed}.",
-            )
-        if self.type == TransactionType.expense and self.category not in EXPENSE_CATEGORIES:
-            allowed = ", ".join(sorted(c.value for c in EXPENSE_CATEGORIES))
-            raise PydanticCustomError(
-                "invalid_category",
-                f"Категория '{self.category.value}' недопустима для расходных операций. Допустимые категории: {allowed}.",
-            )
+        _ensure_category_fits_type(self.category, self.type)
         return self
 
 
@@ -529,7 +540,7 @@ class BudgetSyncItem(BaseModel):
     @classmethod
     def normalize_currency(cls, v: Any) -> Optional[str]:
         """Нормализовать код валюты лимита к верхнему регистру и валидировать по списку поддерживаемых."""
-        return _normalize_budget_currency(v)
+        return _normalize_currency_code(v)
 
     @model_validator(mode="after")
     def validate_expense_category(self) -> "BudgetSyncItem":
@@ -549,6 +560,81 @@ class BudgetSyncItem(BaseModel):
         if self.deleted is not None:
             return self.deleted
         return self.is_deleted
+
+
+# Месяц в списке пропусков регулярного платежа: «2026-11»
+PERIOD_PATTERN = r"^\d{4}-(0[1-9]|1[0-2])$"
+# Пропусков у платежа не больше, чем месяцев в 10 годах
+RECURRING_SKIPPED_MAX = 120
+
+
+class RecurringPaymentSyncItem(BaseModel):
+    """Регулярный платёж или доход в пакетной синхронизации: создание или полная замена по id."""
+
+    id: uuid.UUID = Field(..., description="ID платежа (создаётся на клиенте)")
+    type: TransactionType = Field(..., description="Расход или доход")
+    category: Category = Field(..., description="Категория будущих записей")
+    amount: Decimal = Field(
+        ..., gt=Decimal("0"), le=MAX_MONEY_AMOUNT, description="Ожидаемая сумма в валюте платежа (не больше 10^12)"
+    )
+    currency: str = Field(..., description="Валюта платежа (USD, EUR, KZT, UZS)")
+    description: str = Field(default="", description="Название платежа (длиннее 255 символов обрезается)")
+    day_of_month: int = Field(..., ge=1, le=31, description="День месяца; в коротком месяце — его последний день")
+    start_date: date = Field(..., description="Первый день платежа")
+    end_date: Optional[date] = Field(default=None, description="Последний день платежа; null — без срока")
+    skipped_periods: List[str] = Field(
+        default_factory=list,
+        max_length=RECURRING_SKIPPED_MAX,
+        description="Пропущенные месяцы в формате YYYY-MM",
+    )
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def truncate_description(cls, v: Any) -> Any:
+        """Обрезать описание до длины колонки БД (см. _truncate_description)."""
+        return _truncate_description(v)
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency(cls, v: Any) -> Optional[str]:
+        """Нормализовать код валюты к верхнему регистру и валидировать по списку поддерживаемых."""
+        return _normalize_currency_code(v)
+
+    @field_validator("skipped_periods")
+    @classmethod
+    def validate_skipped_periods(cls, v: List[str]) -> List[str]:
+        """Месяцы в формате YYYY-MM, без повторов, по возрастанию."""
+        pattern = re.compile(PERIOD_PATTERN)
+        for period in v:
+            if not pattern.match(period):
+                raise ValueError(f"Месяц '{period}' должен быть в формате YYYY-MM")
+        return sorted(set(v))
+
+    @model_validator(mode="after")
+    def validate_schedule(self) -> "RecurringPaymentSyncItem":
+        """Категория подходит к типу; срок не раньше начала."""
+        _ensure_category_fits_type(self.category, self.type)
+        if self.end_date is not None and self.end_date < self.start_date:
+            raise ValueError("Дата окончания не может быть раньше даты начала")
+        return self
+
+
+class RecurringPaymentResponse(BaseModel):
+    """Регулярный платёж или доход в ответе сервера."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID = Field(..., description="ID платежа")
+    type: TransactionType = Field(..., description="Расход или доход")
+    category: Category = Field(..., description="Категория будущих записей")
+    amount: Decimal = Field(..., description="Ожидаемая сумма в валюте платежа")
+    currency: str = Field(..., description="Валюта платежа")
+    description: str = Field(..., description="Название платежа")
+    day_of_month: int = Field(..., description="День месяца (1-31)")
+    start_date: date = Field(..., description="Первый день платежа")
+    end_date: Optional[date] = Field(default=None, description="Последний день платежа; null — без срока")
+    skipped_periods: List[str] = Field(default_factory=list, description="Пропущенные месяцы YYYY-MM")
+    updated_at: datetime = Field(..., description="Время последнего изменения")
 
 
 class SyncRejectedItem(BaseModel):
@@ -629,13 +715,24 @@ class SyncPayload(BaseModel):
         max_length=SYNC_LIST_MAX_LENGTH,
         description="Список объектов бюджетов для удаления по категории и периоду (максимум 500 элементов)",
     )
-    # Заполняется валидатором: записи transactions и budgets, не прошедшие схему. Клиент это поле не передаёт
+    recurring_payments: List[RecurringPaymentSyncItem] = Field(
+        default_factory=list,
+        max_length=SYNC_LIST_MAX_LENGTH,
+        description="Регулярные платежи и доходы: создание или замена по id (максимум 500 элементов)",
+    )
+    deleted_recurring_payment_ids: List[uuid.UUID] = Field(
+        default_factory=list,
+        max_length=SYNC_LIST_MAX_LENGTH,
+        description="ID регулярных платежей для удаления (максимум 500 элементов)",
+    )
+    # Заполняется валидатором: записи transactions, budgets и recurring_payments, не прошедшие схему.
+    # Клиент это поле не передаёт
     invalid_items: SkipJsonSchema[List[SyncRejectedItem]] = Field(default_factory=list, exclude=True)
 
     @model_validator(mode="before")
     @classmethod
     def split_invalid_items(cls, data: Any) -> Any:
-        """Проверить transactions и budgets по одной записи; невалидные — в invalid_items.
+        """Проверить transactions, budgets и recurring_payments по одной записи; невалидные — в invalid_items.
 
         Одна запись с неизвестной категорией или суммой вне диапазона не должна ронять весь батч 422:
         оффлайн-очередь клиента повторяла бы его бесконечно, а пользователь видел бы только общую ошибку.
@@ -644,7 +741,12 @@ class SyncPayload(BaseModel):
             return data
         data = dict(data)
         invalid: list[SyncRejectedItem] = []
-        for key, model in (("transactions", TransactionSyncItem), ("budgets", BudgetSyncItem)):
+        models: tuple[tuple[str, type[BaseModel]], ...] = (
+            ("transactions", TransactionSyncItem),
+            ("budgets", BudgetSyncItem),
+            ("recurring_payments", RecurringPaymentSyncItem),
+        )
+        for key, model in models:
             items = data.get(key)
             if not isinstance(items, list) or len(items) > SYNC_LIST_MAX_LENGTH:
                 continue
@@ -664,6 +766,9 @@ class SyncResponse(BaseModel):
 
     synced_transactions: List[TransactionResponse] = Field(..., description="Синхронизированные транзакции")
     synced_budgets: List[BudgetResponse] = Field(..., description="Синхронизированные бюджеты")
+    synced_recurring_payments: List[RecurringPaymentResponse] = Field(
+        default_factory=list, description="Сохранённые регулярные платежи и доходы"
+    )
     rejected: List[SyncRejectedItem] = Field(
         default_factory=list,
         description="Список отклоненных элементов (конфликты ID или чужие записи)",

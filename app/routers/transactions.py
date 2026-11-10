@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.limiter import limiter
 from app.models.models import User
+from app.routers.dependencies import not_modified_response
 from app.schemas.schemas import (
     ApiResponse,
     BaseResponse,
@@ -81,12 +82,9 @@ async def list_transactions(
     if cursor is None:
         current_etag = await service.get_etag(current_user.id, since=since)
 
-        if if_none_match:
-            client_etags = [tag.strip().removeprefix("W/").strip('"') for tag in if_none_match.split(",")]
-            if current_etag in client_etags or "*" in client_etags:
-                not_modified_resp = Response(status_code=status.HTTP_304_NOT_MODIFIED)
-                not_modified_resp.headers["ETag"] = f'"{current_etag}"'
-                return not_modified_resp
+        not_modified = not_modified_response(if_none_match, current_etag)
+        if not_modified is not None:
+            return not_modified
 
         response.headers["ETag"] = f'"{current_etag}"'
 
