@@ -430,4 +430,4 @@ alembic downgrade -1
 
 ## 🤖 Регламент разработки для AI-агентов
 
-Стандарты работы агентов, правила ветвления, слои архитектуры и чек-листы проверок зафиксированы в [GEMINI.md](GEMINI.md) и контекстных файлах слоев (`tests/GEMINI.md`, `app/routers/GEMINI.md`, `app/services/GEMINI.md`, `app/models/GEMINI.md`, `migrations/GEMINI.md`).
+Стандарты работы агентов, правила ветвления, слои архитектуры и чек-листы проверок зафиксированы в [CLAUDE.md](CLAUDE.md) и контекстных файлах слоев (`tests/CLAUDE.md`, `app/routers/CLAUDE.md`, `app/services/CLAUDE.md`, `app/models/CLAUDE.md`, `migrations/CLAUDE.md`).
