@@ -2,11 +2,11 @@
 
 import enum
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, DateTime
+from sqlalchemy import JSON, CheckConstraint, Date, DateTime
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy import ForeignKey, Index, Numeric, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
@@ -111,6 +111,7 @@ class User(Base):
         created_at (datetime): Дата и время регистрации.
         transactions (list[Transaction]): Список связанных транзакций пользователя.
         budgets (list[Budget]): Список связанных бюджетов пользователя.
+        recurring_payments (list[RecurringPayment]): Регулярные платежи и доходы пользователя.
     """
 
     __tablename__ = "users"
@@ -139,6 +140,9 @@ class User(Base):
         back_populates="user", cascade="all, delete-orphan", passive_deletes=True
     )
     budgets: Mapped[list["Budget"]] = relationship(back_populates="user", cascade="all, delete-orphan", passive_deletes=True)
+    recurring_payments: Mapped[list["RecurringPayment"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", passive_deletes=True
+    )
     tokens: Mapped[list["Token"]] = relationship(back_populates="user", cascade="all, delete-orphan", passive_deletes=True)
 
 
@@ -305,3 +309,63 @@ class Budget(Base):
 
     # Связь с пользователем
     user: Mapped["User"] = relationship(back_populates="budgets")
+
+
+class RecurringPayment(Base):
+    """ORM-модель регулярного платежа или дохода (ЖКХ, кредит, связь, зарплата).
+
+    Таблица: recurring_payments
+
+    Расписание, а не операция: в день платежа приложение напоминает о нём, а запись создаёт пользователь
+    («Оплачено»). Запись месяца получает детерминированный id (платёж + месяц) — оплата с двух устройств
+    не создаёт дублей, а оплаченный месяц узнаётся по наличию записи. Удаление платежа прошлые записи
+    не трогает.
+
+    Поля:
+        id (uuid.UUID): Идентификатор (Primary Key), создаётся на клиенте.
+        user_id (uuid.UUID): Внешний ключ на владельца (users.id).
+        type (TransactionType): Расход или доход.
+        category (Category): Категория будущих записей.
+        amount (Decimal): Ожидаемая сумма в валюте платежа (при оплате её можно исправить).
+        currency (str): Валюта платежа (USD, EUR, KZT, UZS).
+        description (str): Название платежа («Интернет»); может быть пустым — тогда показывается категория.
+        day_of_month (int): День месяца 1-31; в коротком месяце — его последний день.
+        start_date (date): Первый день платежа.
+        end_date (date | None): Последний день платежа (кредит на 12 месяцев); None — без срока.
+        skipped_periods (list[str]): Пропущенные месяцы «YYYY-MM» — о них не напоминать.
+        created_at (datetime): Дата создания.
+        updated_at (datetime): Дата последнего изменения (участвует в ETag списка).
+        user (User): Связанный объект пользователя.
+    """
+
+    __tablename__ = "recurring_payments"
+    __table_args__ = (
+        Index("ix_recurring_payments_user_id", "user_id"),
+        CheckConstraint(
+            f"currency IN {SUPPORTED_CURRENCIES}",
+            name="ck_recurring_payments_currency",
+        ),
+        CheckConstraint("day_of_month BETWEEN 1 AND 31", name="ck_recurring_payments_day_of_month"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    type: Mapped[TransactionType] = mapped_column(SAEnum(TransactionType), nullable=False)
+    category: Mapped[Category] = mapped_column(SAEnum(Category), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(precision=18, scale=2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(10), nullable=False)
+    description: Mapped[str] = mapped_column(String(255), default="", server_default="", nullable=False)
+    day_of_month: Mapped[int] = mapped_column(nullable=False)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    skipped_periods: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    user: Mapped["User"] = relationship(back_populates="recurring_payments")

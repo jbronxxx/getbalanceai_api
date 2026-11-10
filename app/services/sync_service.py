@@ -1,4 +1,4 @@
-"""Сервис пакетной синхронизации оффлайн-данных клиента: транзакций и бюджетов."""
+"""Сервис пакетной синхронизации оффлайн-данных клиента: транзакций, бюджетов и регулярных платежей."""
 
 import base64
 import json
@@ -15,6 +15,7 @@ from app.exceptions import AppException, BadRequestException, ErrorCode
 from app.models.models import Budget, Category, Transaction, TransactionDeletion, User
 from app.schemas.schemas import (
     BudgetSyncItem,
+    RecurringPaymentResponse,
     SyncChangesResponse,
     SyncPayload,
     SyncRejectedItem,
@@ -24,6 +25,7 @@ from app.schemas.schemas import (
 )
 from app.services.budget_service import BudgetService
 from app.services.currency_service import CurrencyService
+from app.services.recurring_payment_service import RecurringPaymentService
 from app.services.transaction_deletion_log import TransactionDeletionLog
 from logger.logger import get_logger
 
@@ -65,7 +67,7 @@ class SyncService:
         base_currency = (user.base_currency or "USD").strip().upper()
         logger.info(
             "Начало синхронизации для пользователя %s (валюта %s): "
-            "txs=%s, budgets=%s, del_txs=%s, del_ids=%s, del_budgets=%s",
+            "txs=%s, budgets=%s, del_txs=%s, del_ids=%s, del_budgets=%s, recurring=%s, del_recurring=%s",
             user_id,
             base_currency,
             len(payload.transactions),
@@ -73,6 +75,8 @@ class SyncService:
             len(payload.deleted_transaction_ids),
             len(payload.deleted_budget_ids),
             len(payload.deleted_budgets),
+            len(payload.recurring_payments),
+            len(payload.deleted_recurring_payment_ids),
         )
         # Записи, не прошедшие схему, уже отклонены валидатором SyncPayload
         rejected: list[SyncRejectedItem] = list(payload.invalid_items)
@@ -91,6 +95,9 @@ class SyncService:
             await self._delete_transactions(user_id, payload.deleted_transaction_ids)
             await self._delete_budgets(user_id, payload, to_delete_budgets)
             synced_budgets = await self._upsert_budgets(user_id, base_currency, to_upsert_budgets, rejected)
+            recurring = RecurringPaymentService(self.db)
+            await recurring.delete(user_id, payload.deleted_recurring_payment_ids)
+            synced_recurring = await recurring.upsert(user_id, payload.recurring_payments, rejected)
 
             # flush + commit с expire_on_commit=False: объекты остаются загруженными, ответ собирается без refresh()
             await self.db.flush()
@@ -137,6 +144,7 @@ class SyncService:
         return SyncResponse(
             synced_transactions=[TransactionResponse.model_validate(t) for t in synced_transactions],
             synced_budgets=enriched_budgets,
+            synced_recurring_payments=[RecurringPaymentResponse.model_validate(p) for p in synced_recurring],
             rejected=rejected,
         )
 

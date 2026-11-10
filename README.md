@@ -275,6 +275,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000 --timeout-keep-alive 75
   - `POST /api/v1/transactions/` — добавление транзакции с поддержкой мультивалютности (`currency`, `exchange_rate`, `base_amount`)
   - `GET /api/v1/transactions/` — список транзакций с курсорной пагинацией и ETag
   - `GET /api/v1/budgets/` — лимиты бюджетов и подсчет расходов в базовой валюте
+  - `GET /api/v1/recurring-payments/` — регулярные платежи и доходы (весь список, ETag); создание, правка и удаление — через `/sync`
   - `POST /api/v1/sync/` — пакетная офлайн-синхронизация данных
   - `GET /api/v1/insights/` — финансовая AI-аналитика расходов
 
