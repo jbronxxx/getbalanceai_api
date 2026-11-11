@@ -115,7 +115,7 @@ class TestGoogleTokenVerification:
             await AuthService(db_session).google_login(GoogleSignInRequest(id_token=_google_token(**token_kwargs)))
         assert exc_info.value.code == ErrorCode.INVALID_CREDENTIALS
 
-        result = await db_session.execute(select(User).where(User.email == "google_verified@example.com"))
+        result = await db_session.execute(select(User).where(User.email_matches("google_verified@example.com")))
         assert result.scalar_one_or_none() is None
 
     @pytest.mark.asyncio

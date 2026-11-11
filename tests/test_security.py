@@ -9,6 +9,7 @@
 6. Ключ rate limiting: sub только из подписанного access-токена, IP клиента из X-Forwarded-For от прокси.
 """
 
+import base64
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -20,10 +21,18 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.exceptions import ErrorCode
 from app.limiter import get_user_id_or_ip
-from config_reader.config_reader import Settings, config
+from config_reader.config_reader import (
+    DEV_PII_ENCRYPTION_KEYS,
+    DEV_PII_HMAC_KEY,
+    Settings,
+    config,
+)
 from main import app
 
 PRODUCTION_SECRET = "super-secret-production-random-key-1234567890"
+# Ключи шифрования имени и email для проверок production-настроек (не ключи разработки из config_reader)
+PRODUCTION_PII_KEYS = ["k1:" + base64.b64encode(b"p" * 32).decode()]
+PRODUCTION_PII_HMAC = base64.b64encode(b"h" * 32).decode()
 
 
 class TestCorsMiddleware:
@@ -226,6 +235,8 @@ class TestDefaultSecretsValidation:
             cors_origins=["*"],
             cors_allow_credentials=False,
             google_client_ids=["google-client-id"],
+            pii_encryption_keys=PRODUCTION_PII_KEYS,
+            pii_hmac_key=PRODUCTION_PII_HMAC,
             apple_client_ids=["apple.bundle.id"],
             cors_allow_methods=["*"],
             cors_allow_headers=["*"],
@@ -301,6 +312,8 @@ class TestProductionSettingsValidation:
             "APPLE_CLIENT_ID",
             "CORS_ORIGINS",
             "CORS_ALLOW_CREDENTIALS",
+            "PII_ENCRYPTION_KEYS",
+            "PII_HMAC_KEY",
         ):
             monkeypatch.delenv(name, raising=False)
 
@@ -313,15 +326,45 @@ class TestProductionSettingsValidation:
             "apple_client_ids": ["apple.bundle.id"],
             "cors_origins": ["https://getbalanceai.app"],
             "cors_allow_credentials": True,
+            "pii_encryption_keys": PRODUCTION_PII_KEYS,
+            "pii_hmac_key": PRODUCTION_PII_HMAC,
         }
         values.update(overrides)
         return Settings(_env_file=None, **values)
 
     def test_debug_and_cors_credentials_disabled_by_default(self):
         """Без APP_DEBUG приложение стартует в production режиме, CORS credentials выключены."""
-        settings = Settings(_env_file=None, secret_key=PRODUCTION_SECRET, google_client_ids=["g"], apple_client_ids=["a"])
+        settings = Settings(
+            _env_file=None,
+            secret_key=PRODUCTION_SECRET,
+            google_client_ids=["g"],
+            apple_client_ids=["a"],
+            pii_encryption_keys=PRODUCTION_PII_KEYS,
+            pii_hmac_key=PRODUCTION_PII_HMAC,
+        )
         assert settings.debug is False
         assert settings.cors_allow_credentials is False
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"pii_encryption_keys": DEV_PII_ENCRYPTION_KEYS},
+            {"pii_hmac_key": DEV_PII_HMAC_KEY},
+            {"pii_encryption_keys": PRODUCTION_PII_KEYS + DEV_PII_ENCRYPTION_KEYS},
+            {"pii_encryption_keys": []},
+            {"pii_hmac_key": ""},
+        ],
+    )
+    def test_production_requires_own_pii_keys(self, overrides: dict):
+        """В production нельзя оставить ключи разработки из кода или не задать ключи шифрования имени и email."""
+        with pytest.raises(ValueError, match="PII_ENCRYPTION_KEYS и PII_HMAC_KEY"):
+            self._production_settings(**overrides)
+
+    def test_debug_uses_dev_pii_keys_by_default(self):
+        """В режиме разработки ключи шифрования можно не задавать — берутся ключи разработки."""
+        settings = Settings(_env_file=None, debug=True)
+        assert settings.pii_encryption_keys == DEV_PII_ENCRYPTION_KEYS
+        assert settings.pii_hmac_key == DEV_PII_HMAC_KEY
 
     def test_production_without_secret_key_env_fails_by_default(self):
         """Без APP_DEBUG и SECRET_KEY старт падает: дефолтный режим — production."""

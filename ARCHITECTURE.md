@@ -60,8 +60,9 @@ erDiagram
 
     users {
         uuid id PK
-        string email UK
-        string name
+        text email "зашифрован"
+        string email_hash UK "HMAC email"
+        text name "зашифровано"
         string avatar_url
         string base_currency
         datetime created_at
@@ -126,7 +127,7 @@ erDiagram
 ```
 
 ### Таблицы:
-* `users`: Пользователи системы (email в нижнем регистре — один адрес в разном регистре даёт один аккаунт; имя, аватар `avatar_url`, базовая расчетная валюта `base_currency`)
+* `users`: Пользователи системы (email в нижнем регистре; имя, аватар `avatar_url`, базовая расчетная валюта `base_currency`). `email` и `name` хранятся зашифрованными (`TEXT`, AES-256-GCM, см. «Шифрование имени и email»), поиск — по уникальному слепому индексу `email_hash` (HMAC-SHA256 адреса в нижнем регистре): один адрес в разном регистре даёт один аккаунт
 * Внешние ключи `transactions`, `budgets`, `tokens`, `transaction_deletions`, `recurring_payments` → `users` — `ON DELETE CASCADE`; связи `User` с `passive_deletes=True`: удаление аккаунта — один `DELETE` пользователя, без загрузки его данных в память
 * `tokens`: refresh-токены сессий пользователей (SHA-256 хеш) со статусом (`active`, `revoked`, `expired`), временем отзыва `revoked_at` и преемником по ротации `replaced_by_id` (без внешнего ключа: пакетная очистка токенов не сканирует таблицу на каждую удалённую строку)
 * `transactions`: Финансовые операции (доход/расход с категорией, датой и мультивалютными полями стандарта `NUMERIC(18, 2)` и `NUMERIC(18, 6)`: `amount`, `currency`, `exchange_rate`, `base_amount`; `updated_at` — время последней правки для ETag списка и выборки `GET /sync/changes`, индекс `(user_id, updated_at)`)
@@ -227,6 +228,7 @@ getbalanceai_api/
 │   ├── database.py             # Подключение к PostgreSQL, SessionLocal, UnitOfWork и get_db
 │   ├── exceptions.py           # Доменные исключения (AppException) и коды ошибок ErrorCode
 │   ├── limiter.py              # Инициализация Rate Limiter (SlowAPI)
+│   ├── pii.py                  # Шифрование имени и email (AES-256-GCM) и слепой индекс email (HMAC)
 │   └── redis.py                # Централизованный клиент Redis и генераторы ключей
 ├── config_reader/              # Загрузка и объединение YAML + .env
 │   └── config_reader.py
@@ -239,6 +241,7 @@ getbalanceai_api/
 ├── scripts/                    # CLI-скрипты и утилиты
 │   ├── cleanup_tokens.py       # Запуск регламентной очистки токенов через cron/CLI
 │   ├── delete_user_by_email.py # Административное удаление аккаунта по email (запросы без входа в приложение)
+│   ├── rotate_pii_keys.py      # Ротация ключей шифрования имени и email: перешифровка и пересчёт слепого индекса
 │   └── issue_load_test_tokens.py # Тестовые пользователи с историей и токенами для нагрузочного теста; cleanup
 ├── loadtest/                   # Сценарии Locust, профили нагрузки и run.sh (отчёты — в reports/<время>_<сценарий>/); не входит в Docker-образ
 ├── tests/                      # Набор тестов Pytest
@@ -249,6 +252,7 @@ getbalanceai_api/
 │   ├── test_auth.py            # Интеграционные тесты профиля пользователя и базовой валюты
 │   ├── test_auth_service.py    # Модульные и интеграционные тесты аутентификации
 │   ├── test_delete_user_by_email.py # Тесты CLI-скрипта удаления пользователя по email
+│   ├── test_pii.py             # Шифрование имени и email: шифр, хранение в БД, поиск, API, журналы, ротация ключей
 │   ├── test_issue_load_test_tokens.py # Тесты подготовки и очистки данных нагрузочного теста
 │   ├── test_budget_service.py  # Модульные тесты сервиса бюджетов
 │   ├── test_budgets.py         # Интеграционные тесты эндпоинтов бюджетов
@@ -332,7 +336,11 @@ getbalanceai_api/
      * IP клиента за nginx: nginx перезаписывает `X-Forwarded-For` значением `$remote_addr`, gunicorn запущен с `--forwarded-allow-ips "*"` (gunicorn 23 не принимает подсеть CIDR; порт 8000 доступен только из сети Docker и с хоста).
      * Счётчики хранятся в `RATE_LIMIT_STORAGE_URI` (в docker-compose — Redis, общий для 4 воркеров gunicorn; по умолчанию `memory://`, например в тестах). При недоступности Redis лимиты временно считаются в памяти воркера (`in_memory_fallback_enabled`), запросы не падают.
    * **Сбой Redis**: `get_current_user` при недоступном хранилище отзывов отвечает `503 SERVICE_UNAVAILABLE` (не 500 и не 401 — клиент не завершает сессию); `/health` проверяет БД и Redis.
-   * **Защита продакшн-конфигурации**: `APP_DEBUG` по умолчанию `false`. При старте в режиме `debug=False` блокируется запуск с дефолтным или пустым `SECRET_KEY`, без `GOOGLE_CLIENT_ID` (`APPLE_CLIENT_ID` необязателен — без него вход через Apple отклоняется) и с `CORS_ORIGINS=*` вместе с `CORS_ALLOW_CREDENTIALS=true`.
+   * **Защита продакшн-конфигурации**: `APP_DEBUG` по умолчанию `false`. При старте в режиме `debug=False` блокируется запуск с дефолтным или пустым `SECRET_KEY`, без своих `PII_ENCRYPTION_KEYS` и `PII_HMAC_KEY` (ключи разработки из кода запрещены), без `GOOGLE_CLIENT_ID` (`APPLE_CLIENT_ID` необязателен — без него вход через Apple отклоняется) и с `CORS_ORIGINS=*` вместе с `CORS_ALLOW_CREDENTIALS=true`.
+   * **Шифрование имени и email (`app/pii.py`)**: колонки `users.email` и `users.name` имеют тип `EncryptedString` (`app/models/models.py`): значение шифруется AES-256-GCM при записи и расшифровывается при чтении, код сервисов и ответы API работают с открытым текстом. Формат — `<id ключа>:<base64(nonce + шифртекст)>`, nonce случайный, имя колонки входит в AAD (шифртекст email не подставить в колонку имени). Ключи — только в окружении (`PII_ENCRYPTION_KEYS`: `id:ключ` через запятую, первый — текущий; `PII_HMAC_KEY`), в БД и её резервных копиях их нет; неверный формат ключей — отказ при старте (`lifespan`).
+     * Поиск по email — `User.email_matches(email)` (слепой индекс `email_hash`, пересчитывается валидатором при каждой записи `email`). Сравнение зашифрованной колонки в SQL (`==`, `like`, сортировка) запрещено типом и падает с `TypeError`, а не находит молча ничего. Длина открытого значения ограничена как раньше (email 255, имя 100).
+     * Ротация — `scripts/rotate_pii_keys.py` (перешифровка текущим ключом и пересчёт индекса, порядок — в README). Смена `PII_HMAC_KEY` — только с остановленным API.
+     * Движок БД создаётся с `hide_parameters=True`: текст ошибок SQL, который уходит в журнал, не содержит значений запроса (открытых имени и email до шифрования, описаний операций). В журналах пользователь обозначается только `user_id`.
 
 5. **Управление транзакциями и пулом соединений (Unit of Work, get_db & Pool Resilience)**:
    * **Чистый слой сервисов**: Сервисы (`TransactionService`, `BudgetService`, `AuthService`) не управляют состоянием транзакции напрямую (`commit`/`rollback`), а только оперируют объектами (`db.add()`, `db.delete()`, `db.flush()`).
@@ -352,8 +360,8 @@ getbalanceai_api/
    * Страница удаления описывает удаление в приложении (*Профиль → Удалить аккаунт*), перечень безвозвратно удаляемых данных и удаление по email без входа в приложение (срок — 30 дней). URL указываются в Play Console (Data Safety, Privacy Policy) и открываются из мобильного приложения.
    * Nginx проксирует пути на API, кроме закрытого `/metrics` и `/docs`, `/redoc`, `/openapi.json` за basic auth (см. раздел 7). Для `/privacy`, `/terms`, `/delete-account` в `nginx/conf.d/default.conf` действует лимит `5r/s` на IP (`limit_req_zone` по ключу из `map $uri`, `burst=20 nodelay`, при превышении — `429`); остальные пути лимитом Nginx не затрагиваются.
    * Сроки хранения, указанные в текстах, должны совпадать с настройками: резервные копии БД — 7 последних файлов `scripts/backup_db.sh` при ежедневном cron (≈7 суток) и не более 3 копий перед деплоем (`predeploy`, не дольше 7 суток); зашифрованные копии в Cloudflare R2 удаляются lifecycle-правилом бакета через 7 дней, логи Loki — 30 дней. При изменении настроек обновляйте `app/legal/`.
-   * Запросы на удаление по email выполняются администратором скриптом `scripts/delete_user_by_email.py`: он вызывает `AuthService.delete_account` (те же шаги, что у `DELETE /auth/me`: каскадное удаление в БД и очистка ключей Redis).
-   * Нагрузочное тестирование прода: `scripts/issue_load_test_tokens.py` создаёт пользователей только с email `loadtest+…@getbalanceai.test` (зарезервированный домен), вставляет их историю пачками напрямую в БД (без API и его лимитов) и выдаёт токены через `AuthService._issue_token_pair`; `cleanup` удаляет их по этому шаблону каскадом, реальные пользователи не затрагиваются. Входа по паролю для тестов нет. Сценарии и критерии — `loadtest/README.md`.
+   * Запросы на удаление по email выполняются администратором скриптом `scripts/delete_user_by_email.py`: он находит пользователя по слепому индексу (`AuthService.find_user_by_email`) и вызывает `AuthService.delete_account` (те же шаги, что у `DELETE /auth/me`: каскадное удаление в БД и очистка ключей Redis).
+   * Нагрузочное тестирование прода: `scripts/issue_load_test_tokens.py` создаёт пользователей только с email `loadtest+…@getbalanceai.test` (зарезервированный домен), вставляет их историю пачками напрямую в БД (без API и его лимитов) и выдаёт токены через `AuthService._issue_token_pair`; `cleanup` удаляет их по этому шаблону каскадом (email зашифрован, поэтому адреса расшифровываются в скрипте и отбираются по шаблону, а не `LIKE` в SQL), реальные пользователи не затрагиваются. Входа по паролю для тестов нет. Сценарии и критерии — `loadtest/README.md`.
 
 
 ---

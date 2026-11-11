@@ -6,7 +6,7 @@
 Использование:
     python scripts/delete_user_by_email.py --email user@example.com [--yes]
 
-Коды возврата: 0 — удалён, 1 — не найден, 2 — найдено несколько пользователей, 3 — отменено.
+Коды возврата: 0 — удалён, 1 — не найден, 3 — отменено.
 """
 
 import argparse
@@ -27,7 +27,6 @@ logger = get_logger("scripts.delete_user_by_email")
 
 EXIT_DELETED = 0
 EXIT_NOT_FOUND = 1
-EXIT_AMBIGUOUS = 2
 EXIT_CANCELLED = 3
 
 
@@ -38,20 +37,17 @@ def _confirmed(email: str) -> bool:
 
 
 async def delete_user_by_email(email: str, assume_yes: bool = False, session_factory: Any = async_session_maker) -> int:
-    """Найти пользователя по email (без учёта регистра) и удалить его аккаунт; вернуть код завершения."""
+    """Найти пользователя по email (без учёта регистра, по слепому индексу) и удалить его аккаунт; вернуть код."""
     async with UnitOfWork(session_factory=session_factory) as session:
-        found = await AuthService(session).find_users_by_email(email)
+        user = await AuthService(session).find_user_by_email(email)
         # Забираем значения до закрытия сессии: после commit ORM-объекты могут быть отсоединены
-        users = [(user.id, user.email) for user in found]
+        found = (user.id, user.email) if user else None
 
-    if not users:
+    if found is None:
         print("Пользователь с таким email не найден. Ничего не удалено.")
         return EXIT_NOT_FOUND
-    if len(users) > 1:
-        print(f"Найдено пользователей: {len(users)}. Автоматическое удаление отменено, разберитесь вручную.")
-        return EXIT_AMBIGUOUS
 
-    user_id, user_email = users[0]
+    user_id, user_email = found
     if not assume_yes and not _confirmed(user_email):
         print("Подтверждение не получено. Ничего не удалено.")
         return EXIT_CANCELLED

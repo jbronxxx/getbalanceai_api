@@ -32,6 +32,7 @@ from scripts.issue_load_test_tokens import (
     EXIT_OK,
     background_history_size,
     cleanup_load_test_users,
+    find_load_test_users,
     generate_budgets,
     generate_transactions,
     issue_load_test_tokens,
@@ -39,6 +40,12 @@ from scripts.issue_load_test_tokens import (
 )
 from scripts.issue_load_test_tokens import main as cli_main
 from tests.conftest import TestingSessionLocal
+
+
+async def _load_test_users() -> list[tuple[uuid.UUID, str]]:
+    """Тестовые пользователи нагрузочного теста в тестовой БД."""
+    async with TestingSessionLocal() as session:
+        return await find_load_test_users(session)
 
 
 async def _count(model: type, *criteria) -> int:
@@ -94,9 +101,8 @@ class TestIssueLoadTestTokens:
         code, out_path = await _issue(tmp_path, users=3, transactions=20, background_users=2)
 
         assert code == EXIT_OK
-        token_users = await _count(User, User.email.like("loadtest+u-%"))
-        background_users = await _count(User, User.email.like("loadtest+bg-%"))
-        assert (token_users, background_users) == (3, 2)
+        emails = sorted(email for _, email in await _load_test_users())
+        assert emails == sorted([load_test_email(i) for i in (1, 2, 3)] + [load_test_email(i, True) for i in (1, 2)])
         assert await _count(Token) == 3
 
         document = json.loads(out_path.read_text(encoding="utf-8"))
@@ -201,7 +207,7 @@ class TestCleanupLoadTestUsers:
         deleted = await cleanup_load_test_users(session_factory=TestingSessionLocal)
 
         assert deleted == 4
-        assert await _count(User, User.email.like("loadtest+%")) == 0
+        assert await _load_test_users() == []
         for model in (Transaction, Budget, Token):
             assert await _count(model, model.user_id != real_user_id) == 0
         assert await redis.get(get_budgets_version_key(test_user_id)) is None

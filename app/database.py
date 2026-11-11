@@ -10,10 +10,12 @@ from config_reader.config_reader import config
 # Убедимся, что драйвер asyncpg используется в URL
 db_url = config.db_url.replace("postgresql://", "postgresql+asyncpg://")
 
-# Базовые параметры пула соединений для устойчивости к обрывам
+# Базовые параметры пула соединений для устойчивости к обрывам. hide_parameters: текст ошибки SQL (он уходит
+# в журнал) не содержит значений запроса — имени и email до шифрования, описаний операций
 engine_kwargs: dict[str, object] = {
     "pool_pre_ping": config.db_pool_pre_ping,
     "pool_recycle": config.db_pool_recycle,
+    "hide_parameters": True,
 }
 
 if "sqlite" not in db_url:

@@ -177,11 +177,11 @@ class AuthService:
     async def _handle_oauth_user(self, provider: str, email: str, name: str, avatar_url: str | None = None) -> TokenResponse:
         """Найти или создать пользователя по email из ID-токена провайдера и выдать пару токенов.
 
-        Email хранится и ищется в нижнем регистре: иначе один адрес в разном регистре
-        давал бы два аккаунта, а уникальность колонки email регистр учитывает.
+        Email хранится в нижнем регистре и ищется по слепому индексу (HMAC нормализованного адреса):
+        сама колонка зашифрована, а один адрес в разном регистре не должен давать два аккаунта.
         """
         email = email.strip().lower()
-        query = select(User).where(User.email == email)
+        query = select(User).where(User.email_matches(email))
         result = await self.db.execute(query)
         user = result.scalar_one_or_none()
         is_new = user is None
@@ -229,7 +229,8 @@ class AuthService:
             if data.get("email_verified") not in (True, "true"):
                 raise ValueError("Google email is not verified")
 
-            name = payload.name or data.get("name") or email.split("@")[0]
+            # Имя из токена Google длину не ограничивает, а колонка хранит до 100 символов
+            name = (payload.name or data.get("name") or email.split("@")[0])[:100]
             picture = payload.avatar_url or data.get("picture")
 
             return await self._handle_oauth_user("google", email, name, picture)
@@ -254,7 +255,7 @@ class AuthService:
             if not email:
                 raise ValueError("Email not provided by Apple")
 
-            name = email.split("@")[0]  # В реальном приложении можно парсить доп. данные
+            name = email.split("@")[0][:100]
 
             return await self._handle_oauth_user("apple", email, name, None)
         except Exception as e:
@@ -330,11 +331,13 @@ class AuthService:
 
         logger.info(f"Токен успешно отозван при выходе пользователя {user_id}")
 
-    async def find_users_by_email(self, email: str) -> list[User]:
-        """Найти пользователей по email без учёта регистра (для административных операций)."""
-        query = select(User).where(func.lower(User.email) == email.strip().lower())
-        result = await self.db.execute(query)
-        return list(result.scalars().all())
+    async def find_user_by_email(self, email: str) -> User | None:
+        """Найти пользователя по email без учёта регистра (для административных операций).
+
+        Слепой индекс email уникален, поэтому пользователь с таким адресом — один или никого.
+        """
+        result = await self.db.execute(select(User).where(User.email_matches(email)))
+        return result.scalar_one_or_none()
 
     async def delete_account(self, user_id: uuid.UUID) -> None:
         """Удалить аккаунт пользователя и все связанные с ним данные."""

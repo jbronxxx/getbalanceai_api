@@ -28,6 +28,7 @@ if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
         SQLALCHEMY_DATABASE_URL,
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
+        hide_parameters=True,
     )
 
     @event.listens_for(engine.sync_engine, "connect")
@@ -39,7 +40,7 @@ if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
 
 else:
     # Без пула: у каждого теста свой event loop, а соединения asyncpg привязаны к циклу, в котором открыты
-    engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
+    engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool, hide_parameters=True)
 TestingSessionLocal = async_sessionmaker(autocommit=False, autoflush=False, bind=engine, class_=AsyncSession)
 
 

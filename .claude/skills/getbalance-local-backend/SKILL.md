@@ -36,9 +36,9 @@ docker exec $DB sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\d <таб
 Если нужно проверить код без новой миграции (старый бэкенд), убрать правки `git stash push -u -m <имя>`, перезапустить API, а потом `git stash pop` и снова `upgrade head`.
 
 ## 3. Токен и запросы к API
-Аккаунт для проверок — **e.makarov** (`email like 'e.makarov%'`). QA-аккаунт (qa.hamkor…) — только с отдельного разрешения пользователя в этой задаче. Токен выдаётся внутри контейнера, без пароля:
+Аккаунт для проверок — **e.makarov** (email начинается с `e.makarov`). Имя и email в базе зашифрованы (SEC-10): `LIKE` по ним в SQL не работает, аккаунт ищется в контейнере после расшифровки, а в `psql` — по `user_id`. QA-аккаунт (qa.hamkor…) — только с отдельного разрешения пользователя в этой задаче. Токен выдаётся внутри контейнера, без пароля:
 ```bash
-TOKEN=$(docker exec $API python -c "
+OUT=$(docker exec $API python -c "
 import asyncio
 from sqlalchemy import select
 from app.database import async_session_maker
@@ -46,10 +46,11 @@ from app.models.models import User
 from app.services.auth_service import AuthService
 async def main():
     async with async_session_maker() as db:
-        u = (await db.execute(select(User).where(User.email.like('e.makarov%')))).scalar_one()
-        print(AuthService(db).create_access_token(u.id))
+        users = (await db.execute(select(User))).scalars().all()
+        u = next(u for u in users if u.email.startswith('e.makarov'))
+        print(u.id, AuthService(db).create_access_token(u.id))
 asyncio.run(main())
-" 2>/dev/null | tail -1); echo "token ${#TOKEN} chars"
+" 2>/dev/null | tail -1); USER_ID=${OUT%% *}; TOKEN=${OUT#* }; echo "token ${#TOKEN} chars"
 H="Authorization: Bearer $TOKEN"; B=http://127.0.0.1:8000/api/v1
 curl -s "$B/auth/me" -H "$H"
 curl -s -X POST "$B/sync/" -H "$H" -H 'Content-Type: application/json' -d '{...}'
@@ -57,7 +58,7 @@ curl -s -D - -o /dev/null "$B/<ресурс>/" -H "$H" -H 'If-None-Match: "<etag
 ```
 * Токен не печатать в ответ и не сохранять в репозитории; временные файлы — только в scratchpad.
 * Если аккаунта нет в локальной базе — он появляется после входа в приложение (debug-сборка на локальном API, скилл `getbalance-device-check` в приложении) или спросить пользователя.
-* Результат сверять в базе: `psql_db "select ... from <таблица> where user_id in (select id from users where email like 'e.makarov%')"`.
+* Результат сверять в базе по `USER_ID` из шага с токеном: `psql_db "select ... from <таблица> where user_id = '$USER_ID'"`.
 * Временные правки ради проверки (снижение лимитов и т.п.) — с пометкой `# TEMP` и откатом `git checkout <файл>` + `docker restart $API` сразу после проверки.
 
 ### Очистка тестовых данных
