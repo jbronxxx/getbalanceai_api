@@ -75,7 +75,7 @@ class TestCurrencyRatesCacheControl:
     def _rates(is_fallback: bool) -> CurrencyRatesResponse:
         return CurrencyRatesResponse(
             base="USD",
-            rates={"USD": Decimal("1"), "EUR": Decimal("0.92"), "UZS": Decimal("12800"), "KZT": Decimal("495")},
+            rates={"USD": Decimal("1"), "EUR": Decimal("0.92")},
             updated_at=datetime.now(timezone.utc),
             is_fallback=is_fallback,
         )

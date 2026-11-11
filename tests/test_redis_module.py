@@ -25,12 +25,12 @@ def test_redis_key_builders():
     assert budgets_key == f"budgets_version:{test_id}"
 
     # 2. Ключи кэша инсайтов без указания периода
-    cache_key = get_insights_cache_key(test_id, locale="ru", currency="UZS")
-    assert cache_key == f"insights_cache:{test_id}:ru:UZS"
+    cache_key = get_insights_cache_key(test_id, locale="ru", currency="EUR")
+    assert cache_key == f"insights_cache:{test_id}:ru:EUR"
 
     # 3. Ключи кэша инсайтов с учетом месяца и года
-    cache_key_period = get_insights_cache_key(test_id, locale="kk", currency="KZT", month=10, year=2026)
-    assert cache_key_period == f"insights_cache:{test_id}:kk:KZT:10:2026"
+    cache_key_period = get_insights_cache_key(test_id, locale="en", currency="USD", month=10, year=2026)
+    assert cache_key_period == f"insights_cache:{test_id}:en:USD:10:2026"
 
     # 4. Ключ суточного счетчика обращений к LLM
     quota_key = get_insights_daily_quota_key(test_id, "2026-10-14")

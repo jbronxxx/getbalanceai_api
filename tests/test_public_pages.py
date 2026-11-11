@@ -13,19 +13,19 @@ class TestResolveLanguage:
     """Выбор языка страницы по параметру и заголовку Accept-Language."""
 
     def test_query_param_has_priority(self):
-        assert resolve_language("kk", "ru-RU,ru;q=0.9") == "kk"
+        assert resolve_language("ru", "en-US,en;q=0.9") == "ru"
 
     def test_query_param_is_normalized(self):
-        assert resolve_language(" UZ ", None) == "uz"
+        assert resolve_language(" RU ", None) == "ru"
 
     def test_unsupported_param_falls_back_to_header(self):
-        assert resolve_language("de", "uz-UZ,uz;q=0.9") == "uz"
+        assert resolve_language("de", "ru-RU,ru;q=0.9") == "ru"
 
     def test_header_respects_quality(self):
-        assert resolve_language(None, "de;q=1.0,ru;q=0.5,kk;q=0.8") == "kk"
+        assert resolve_language(None, "de;q=1.0,en;q=0.5,ru;q=0.8") == "ru"
 
     def test_header_with_invalid_quality_is_ignored(self):
-        assert resolve_language(None, "kk;q=abc,ru;q=0.4") == "ru"
+        assert resolve_language(None, "en;q=abc,ru;q=0.4") == "ru"
 
     def test_unsupported_everything_returns_default(self):
         assert resolve_language("zz", "fr-FR,de;q=0.8") == "en"
@@ -50,7 +50,7 @@ class TestLegalContent:
 
     @pytest.mark.parametrize("lang", list(LANGUAGES))
     def test_privacy_states_operator_hosting_and_retention(self, lang: str):
-        """Политика на каждом языке содержит оператора, контакт, расположение серверов и сроки хранения."""
+        """Политика на каждом языке: оператор, контакт, серверы, сроки хранения, обработчики и GDPR; без пароля и KZ/UZ."""
         text = " ".join(
             block if isinstance(block, str) else " ".join(block)
             for _, blocks in PAGES["privacy"][lang]["sections"]
@@ -58,9 +58,25 @@ class TestLegalContent:
         )
         assert "Yevgeniy Makarov" in text
         assert SUPPORT_EMAIL in text
-        assert "Helsinki" in text or "Хельсинки" in text or "Xelsinki" in text
+        assert "Helsinki" in text or "Хельсинки" in text
         assert "7" in text and "30" in text
-        assert "Crashlytics" not in text and "Sentry" not in text
+        assert "Crashlytics" in text and "Sentry" not in text
+        assert "open.er-api.com" in text
+        assert "GDPR" in text
+        assert "парол" not in text.replace("Пароль от аккаунта Google", "")
+        assert "password hash" not in text and "password hashing" not in text
+
+    @pytest.mark.parametrize("lang", list(LANGUAGES))
+    def test_terms_have_no_governing_law(self, lang: str):
+        """Применимое право в соглашении не указано (решение 11.11.2026, MKT-01) — до проверки юристом."""
+        titles = " ".join(title for title, _ in PAGES["terms"][lang]["sections"])
+        text = " ".join(
+            block if isinstance(block, str) else " ".join(block)
+            for _, blocks in PAGES["terms"][lang]["sections"]
+            for block in blocks
+        )
+        assert "Применимое право" not in titles and "Governing law" not in titles
+        assert "Узбекистан" not in text and "Uzbekistan" not in text
 
     def test_support_email_is_project_domain(self):
         assert SUPPORT_EMAIL == "support@getbalanceai.app"
@@ -93,9 +109,9 @@ class TestPublicPages:
     @pytest.mark.parametrize("path", PAGE_PATHS)
     async def test_language_from_accept_language_header(self, client: AsyncClient, path: str):
         """Без параметра lang язык берётся из Accept-Language."""
-        response = await client.get(path, headers={"Accept-Language": "kk-KZ,kk;q=0.9,ru;q=0.5"})
+        response = await client.get(path, headers={"Accept-Language": "ru-RU,ru;q=0.9,en;q=0.5"})
         assert response.status_code == 200
-        assert '<html lang="kk">' in response.text
+        assert '<html lang="ru">' in response.text
         assert response.headers["vary"] == "Accept-Language"
 
     @pytest.mark.asyncio
@@ -125,9 +141,9 @@ class TestPublicPages:
 
     @pytest.mark.asyncio
     async def test_pages_link_to_each_other_in_same_language(self, client: AsyncClient):
-        response = await client.get("/privacy", params={"lang": "uz"})
+        response = await client.get("/privacy", params={"lang": "ru"})
         for path in PAGE_PATHS:
-            assert f'href="{path}?lang=uz"' in response.text
+            assert f'href="{path}?lang=ru"' in response.text
 
     @pytest.mark.asyncio
     async def test_pages_are_hidden_from_openapi(self, client: AsyncClient):

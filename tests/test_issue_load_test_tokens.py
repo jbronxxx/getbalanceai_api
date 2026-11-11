@@ -151,7 +151,7 @@ class TestGeneratedData:
     def test_transactions_are_consistent(self):
         """Категория соответствует типу, валюта поддерживается, base_amount = amount × курс, дата — за последний год."""
         now = datetime.now(timezone.utc)
-        rows = list(generate_transactions(random.Random(1), uuid.uuid4(), "KZT", 500, now))
+        rows = list(generate_transactions(random.Random(1), uuid.uuid4(), "EUR", 500, now))
 
         assert len(rows) == 500
         for row in rows:
@@ -161,7 +161,7 @@ class TestGeneratedData:
             assert row["amount"] > 0
             assert abs(row["base_amount"] - row["amount"] * row["exchange_rate"]) <= Decimal("0.01")
             assert now - timedelta(days=366) <= row["date"] <= now
-            if row["currency"] == "KZT":
+            if row["currency"] == "EUR":
                 assert row["exchange_rate"] == Decimal("1")
         assert {row["type"] for row in rows} == {TransactionType.income, TransactionType.expense}
 

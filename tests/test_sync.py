@@ -12,7 +12,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.exceptions import InvalidCurrencyException
 from app.models.models import Budget, Category, Transaction, TransactionType, User
+from app.schemas.schemas import CurrencyRatesResponse
 from app.services.currency_service import CurrencyService
+
+
+def _huge_eur_rates() -> CurrencyRatesResponse:
+    """Курсы, при которых 10^12 USD в EUR не помещаются в Numeric(18, 2): у USD/EUR такого курса нет,
+    но шлюз котировок может вернуть что угодно, и сервер должен ответить ошибкой, а не 500."""
+    return CurrencyRatesResponse(
+        base="USD", rates={"USD": Decimal("1"), "EUR": Decimal("20000")}, updated_at=datetime.now(timezone.utc)
+    )
 
 
 class TestSyncEndpointIntegration:
@@ -477,7 +486,7 @@ class TestSyncEndpointIntegration:
                 {
                     "id": str(other_tx_id),
                     "amount": 500.0,
-                    "currency": "KZT",
+                    "currency": "EUR",
                     "description": "Попытка перезаписать чужую",
                     "category": "food",
                     "type": "expense",
@@ -486,7 +495,7 @@ class TestSyncEndpointIntegration:
                 {
                     "id": my_tx_id,
                     "amount": 350.0,
-                    "currency": "KZT",
+                    "currency": "EUR",
                     "description": "Моя валидная транзакция",
                     "category": "transport",
                     "type": "expense",
@@ -687,7 +696,7 @@ class TestSyncEndpointIntegration:
             id=tx1_id,
             user_id=user_id,
             amount=Decimal("100.00"),
-            currency="KZT",
+            currency="EUR",
             exchange_rate=Decimal("1.0"),
             base_amount=Decimal("100.00"),
             description="Своя транзакция 1",
@@ -699,7 +708,7 @@ class TestSyncEndpointIntegration:
             id=tx2_id,
             user_id=user_id,
             amount=Decimal("200.00"),
-            currency="KZT",
+            currency="EUR",
             exchange_rate=Decimal("1.0"),
             base_amount=Decimal("200.00"),
             description="Своя транзакция 2",
@@ -711,7 +720,7 @@ class TestSyncEndpointIntegration:
             id=alien_tx_id,
             user_id=alien_user_id,
             amount=Decimal("500.00"),
-            currency="KZT",
+            currency="EUR",
             exchange_rate=Decimal("1.0"),
             base_amount=Decimal("500.00"),
             description="Чужая транзакция",
@@ -856,7 +865,7 @@ class TestSyncInputLimits:
         [
             ({"category": "pets"}, "INVALID_CATEGORY"),  # категории нет на сервере (новое приложение, старый бэк)
             ({"category": "salary"}, "INVALID_CATEGORY"),  # доходная категория у расхода
-            ({"currency": "RUB"}, "INVALID_CURRENCY"),
+            ({"currency": "XYZ"}, "INVALID_CURRENCY"),
             ({"amount": 0}, "INVALID_AMOUNT"),
             ({"date": "не дата"}, "INVALID_SYNC_ITEM"),
             ({"type": "transfer"}, "INVALID_SYNC_ITEM"),
@@ -919,12 +928,13 @@ class TestSyncInputLimits:
         test_user: User,
     ):
         """Сумма, которая после пересчёта в базовую валюту не помещается в Numeric(18, 2), уходит в rejected."""
-        test_user.base_currency = "UZS"
+        test_user.base_currency = "EUR"
         await db_session.commit()
 
         overflow = self._tx(amount="1000000000000", currency="USD")
-        valid = self._tx(amount=10.0, currency="USD")
-        response = await client.post("/api/v1/sync/", json={"transactions": [overflow, valid]}, headers=auth_headers)
+        valid = self._tx(amount=10.0, currency="EUR")
+        with patch.object(CurrencyService, "get_rates", AsyncMock(return_value=_huge_eur_rates())):
+            response = await client.post("/api/v1/sync/", json={"transactions": [overflow, valid]}, headers=auth_headers)
 
         assert response.status_code == 200
         data = response.json()["data"]
@@ -1008,7 +1018,7 @@ class TestTransactionInputLimits:
         test_user: User,
     ):
         """Переполнение суммы в базовой валюте — 400 INVALID_TRANSACTION_AMOUNT, а не 500."""
-        test_user.base_currency = "UZS"
+        test_user.base_currency = "EUR"
         await db_session.commit()
         payload = {
             "amount": "1000000000000",
@@ -1017,7 +1027,8 @@ class TestTransactionInputLimits:
             "category": "food",
             "type": "expense",
         }
-        response = await client.post("/api/v1/transactions/", json=payload, headers=auth_headers)
+        with patch.object(CurrencyService, "get_rates", AsyncMock(return_value=_huge_eur_rates())):
+            response = await client.post("/api/v1/transactions/", json=payload, headers=auth_headers)
 
         assert response.status_code == 400
         assert response.json()["code"] == "INVALID_TRANSACTION_AMOUNT"

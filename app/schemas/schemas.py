@@ -188,7 +188,7 @@ class UserUpdateRequest(BaseModel):
     Атрибуты:
         name (str | None): Новое имя пользователя.
         avatar_url (str | None): URL нового аватара.
-        base_currency (str | None): Базовая валюта учета (USD, EUR, KZT, UZS).
+        base_currency (str | None): Базовая валюта учета (USD, EUR).
     """
 
     name: Optional[str] = Field(default=None, max_length=100, description="Имя пользователя")
@@ -226,7 +226,7 @@ class TransactionCreate(BaseModel):
 
     Атрибуты:
         amount (Decimal): Сумма операции (> 0).
-        currency (str): Код валюты операции (USD, UZS, EUR и др.).
+        currency (str): Код валюты операции (USD, EUR).
         exchange_rate (Decimal): Курс к базовой валюте.
         base_amount (Decimal | None): Сумма в базовой валюте.
         description (str): Описание операции.
@@ -240,7 +240,7 @@ class TransactionCreate(BaseModel):
     )
     currency: Optional[str] = Field(
         default=None,
-        description="Код валюты операции (USD, EUR, KZT, UZS). По умолчанию базовая валюта пользователя",
+        description="Код валюты операции (USD, EUR). По умолчанию базовая валюта пользователя",
     )
     exchange_rate: Optional[Decimal] = Field(
         default=None,
@@ -361,7 +361,7 @@ class BudgetCreate(BaseModel):
     )
     currency: Optional[str] = Field(
         default=None,
-        description="Валюта лимита (USD, EUR, KZT, UZS). По умолчанию базовая валюта пользователя",
+        description="Валюта лимита (USD, EUR). По умолчанию базовая валюта пользователя",
     )
     month: int = Field(..., ge=1, le=12, description="Номер месяца (от 1 до 12)")
     year: int = Field(..., ge=2000, le=2100, description="Год")
@@ -403,7 +403,7 @@ class BudgetResponse(BaseModel):
     id: uuid.UUID = Field(..., description="ID бюджета")
     category: Category = Field(..., description="Категория расходов")
     limit_amount: Decimal = Field(..., description="Установленный лимит бюджета в валюте лимита")
-    currency: str = Field(..., description="Валюта лимита (USD, EUR, KZT, UZS)")
+    currency: str = Field(..., description="Валюта лимита (USD, EUR)")
     month: int = Field(..., description="Месяц действия бюджета (1-12)")
     year: int = Field(..., description="Год действия бюджета")
     spent: Decimal = Field(
@@ -464,7 +464,7 @@ class TransactionSyncItem(BaseModel):
     amount: Decimal = Field(..., gt=Decimal("0"), le=MAX_MONEY_AMOUNT, description="Сумма (не больше 10^12)")
     currency: Optional[str] = Field(
         default=None,
-        description="Код валюты операции (USD, EUR, KZT, UZS). По умолчанию базовая валюта пользователя",
+        description="Код валюты операции (USD, EUR). По умолчанию базовая валюта пользователя",
     )
     exchange_rate: Optional[Decimal] = Field(
         default=None,
@@ -527,7 +527,7 @@ class BudgetSyncItem(BaseModel):
     currency: Optional[str] = Field(
         default=None,
         description=(
-            "Валюта лимита (USD, EUR, KZT, UZS). Если не передана: у существующего лимита сохраняется, "
+            "Валюта лимита (USD, EUR). Если не передана: у существующего лимита сохраняется, "
             "новый создаётся в базовой валюте пользователя"
         ),
     )
@@ -577,7 +577,7 @@ class RecurringPaymentSyncItem(BaseModel):
     amount: Decimal = Field(
         ..., gt=Decimal("0"), le=MAX_MONEY_AMOUNT, description="Ожидаемая сумма в валюте платежа (не больше 10^12)"
     )
-    currency: str = Field(..., description="Валюта платежа (USD, EUR, KZT, UZS)")
+    currency: str = Field(..., description="Валюта платежа (USD, EUR)")
     description: str = Field(default="", description="Название платежа (длиннее 255 символов обрезается)")
     day_of_month: int = Field(..., ge=1, le=31, description="День месяца; в коротком месяце — его последний день")
     start_date: date = Field(..., description="Первый день платежа")
@@ -843,7 +843,7 @@ class CurrencyRatesResponse(BaseModel):
     """Схема ответа со справочником актуальных курсов валют."""
 
     base: str = Field(default="USD", description="Базовая валюта котировок")
-    rates: dict[str, Decimal] = Field(..., description="Словарь курсов валют к базовой (USD, EUR, UZS, KZT)")
+    rates: dict[str, Decimal] = Field(..., description="Словарь курсов валют к базовой (USD, EUR)")
     updated_at: datetime = Field(..., description="Дата и время актуализации котировок")
     is_fallback: bool = Field(
         default=False,

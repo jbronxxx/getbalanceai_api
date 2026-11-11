@@ -13,7 +13,7 @@ from google.genai import types
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.models import Budget, Transaction
+from app.models.models import Budget, Transaction, TransactionType
 from app.redis import (
     get_insights_cache_key,
     get_insights_daily_quota_key,
@@ -23,6 +23,7 @@ from app.redis import (
 from app.schemas.schemas import BudgetResponse, InsightResponse, InsightState
 from app.services.budget_service import BudgetService
 from app.services.insights_formatting import category_name, format_money
+from app.services.insights_texts import insight_texts
 from app.services.period import current_month as client_current_month
 from app.services.period import month_bounds
 from config_reader.config_reader import config
@@ -206,7 +207,7 @@ class AIService:
         self,
         user_id: uuid.UUID,
         currency: str = "USD",
-        locale: str = "ru",
+        locale: str = "en",
         month: int | None = None,
         year: int | None = None,
         generate: bool = True,
@@ -224,23 +225,14 @@ class AIService:
         current_year, current_month = client_current_month(tz)
         target_month = month or current_month
         target_year = year or current_year
-        lang_prefix = locale[:2].lower()
+        texts = insight_texts(locale)
 
         if (target_year, target_month) > (current_year, current_month):
             return InsightResponse(insights=[], generated_at=now, state=InsightState.no_data)
 
         if self._is_placeholder_key(config.gemini_api_key):
             logger.warning("GEMINI_API_KEY is not set or is a placeholder, returning stub insights")
-            stub_msg = {
-                "ru": "В разработке...",
-                "uz": "Ishlab chiqilmoqda...",
-                "en": "In development...",
-                "kk": "Әзірленуде...",
-            }
-            return InsightResponse(
-                insights=[stub_msg.get(lang_prefix, stub_msg["en"])],
-                generated_at=now,
-            )
+            return InsightResponse(insights=[texts.stub], generated_at=now)
 
         fingerprint = await self._month_fingerprint(user_id, target_month, target_year, tz)
         if fingerprint.tx_count == 0:
@@ -285,7 +277,7 @@ class AIService:
             logger.warning(f"Не удалось занять квоту AI в Redis для пользователя {user_id}: {err}")
             if cached:
                 return self._response_from_cache(cached, is_outdated=True, state=InsightState.busy)
-            return InsightResponse(insights=self._fallback_messages(lang_prefix), generated_at=now, state=InsightState.busy)
+            return InsightResponse(insights=list(texts.busy), generated_at=now, state=InsightState.busy)
 
         if daily_calls > config.ai_daily_limit_per_user:
             logger.warning(
@@ -298,26 +290,8 @@ class AIService:
                 # Старые клиенты показывают insights как есть; новые по state пишут, что обновить можно завтра
                 return self._response_from_cache(cached, is_outdated=True, state=InsightState.quota_exceeded)
 
-            quota_messages = {
-                "ru": [
-                    "Вы достигли дневного лимита запросов к финансовому помощнику (максимум 5 обновлений в день).",
-                    "Пожалуйста, возвращайтесь завтра или продолжайте пользоваться текущей аналитикой.",
-                ],
-                "en": [
-                    "You have reached your daily limit for financial assistant requests (maximum 5 updates per day).",
-                    "Please return tomorrow or continue using your current insights.",
-                ],
-                "uz": [
-                    "Siz moliyaviy yordamchiga kunlik so'rovlar limitiga yetdingiz (kuniga ko'pi bilan 5 ta yangilanish).",
-                    "Iltimos, ertaga qaytib keling yoki joriy tahlildan foydalanishda davom eting.",
-                ],
-                "kk": [
-                    "Сіз қаржылық көмекшіге тәуліктік сұраныс шегіне жеттіңіз (күніне ең көбі 5 жаңарту).",
-                    "Ертең қайта келіңіз немесе ағымдағы талдауды пайдалануды жалғастырыңыз.",
-                ],
-            }
             return InsightResponse(
-                insights=quota_messages.get(lang_prefix, quota_messages["en"]),
+                insights=list(texts.quota_exceeded),
                 generated_at=now,
                 state=InsightState.quota_exceeded,
             )
@@ -365,7 +339,7 @@ class AIService:
             await self._release_quota(daily_quota_key, user_id)
             # Сообщение остаётся в insights для старых клиентов; новые по state показывают свою карточку
             return InsightResponse(
-                insights=self._fallback_messages(lang_prefix),
+                insights=list(texts.busy),
                 generated_at=datetime.now(timezone.utc),
                 state=InsightState.busy,
             )
@@ -398,41 +372,19 @@ class AIService:
         except Exception as err:
             logger.warning(f"Не удалось вернуть квоту AI в Redis для пользователя {user_id}: {err}")
 
-    @staticmethod
-    def _fallback_messages(lang_prefix: str) -> list[str]:
-        """Сообщение о временной недоступности генерации на языке пользователя."""
-        fallback_messages = {
-            "ru": [
-                "К сожалению, наши умные помощники сейчас очень заняты и не могут проанализировать данные.",
-                "Пожалуйста, загляните за советами немного позже.",
-            ],
-            "en": [
-                "Unfortunately, our smart assistants are currently very busy and cannot analyze the data.",
-                "Please check back for tips a little later.",
-            ],
-            "uz": [
-                "Afsuski, aqlli yordamchilarimiz hozir juda band va ma'lumotlarni tahlil qila olmaydilar.",
-                "Iltimos, maslahatlar uchun biroz keyinroq qaytib keling.",
-            ],
-            "kk": [
-                "Өкінішке қарай, біздің ақылды көмекшілеріміз қазір өте бос емес және деректерді талдай алмайды.",
-                "Кеңестер алу үшін сәл кейінірек кіріңіз.",
-            ],
-        }
-        return fallback_messages.get(lang_prefix, fallback_messages["en"])
-
     def _build_summary(
         self,
         transactions: list[Transaction],
         budgets: list[BudgetResponse] | str | None = None,
         currency: str = "USD",
-        locale: str = "ru",
+        locale: str = "en",
     ) -> str:
         """Сформировать текстовую сводку транзакций и бюджетов для системного промпта LLM.
 
-        Категории и суммы записываются так же, как их показывает приложение на языке отчёта
-        («Питание», «154 771 сум»): модель повторяет их в советах дословно.
+        Подписи, категории и суммы — на языке отчёта, как их показывает приложение («Питание»,
+        «$1 234,50»): модель повторяет их в советах дословно и отвечает на том же языке.
         """
+        texts = insight_texts(locale)
         if isinstance(budgets, str):
             currency = budgets
             budgets_list: list[BudgetResponse] = []
@@ -442,31 +394,34 @@ class AIService:
         blocks = []
 
         # Блок 1: Сводка по лимитам категорий на месяц
-        blocks.append("Блок 1: Сводка по лимитам категорий на месяц:")
+        blocks.append(texts.limits_header)
         if budgets_list:
             for b in budgets_list:
                 cat = category_name(getattr(b.category, "value", b.category), locale)
-                status = "Превышен" if b.spent > b.limit_amount else "В пределах лимита"
+                status = texts.over_limit if b.spent > b.limit_amount else texts.within_limit
 
                 # Суммы лимита — в его собственной валюте, не обязательно базовой
                 limit = format_money(b.limit_amount, b.currency, locale)
                 spent = format_money(b.spent, b.currency, locale)
                 remaining = format_money(b.remaining, b.currency, locale)
-                blocks.append(f"{cat} | Лимит: {limit} | Потрачено: {spent} | Остаток: {remaining} | {status}")
+                blocks.append(
+                    texts.limit_line.format(category=cat, limit=limit, spent=spent, remaining=remaining, status=status)
+                )
         else:
-            blocks.append("Лимиты бюджетов на данный период не установлены.")
+            blocks.append(texts.no_limits)
 
         # Блок 2: Список транзакций
-        blocks.append("\nБлок 2: Список транзакций:")
+        blocks.append("\n" + texts.transactions_header)
         if transactions:
             for tx in transactions:
                 tx_curr = getattr(tx, "currency", None) or currency
                 base_amt = getattr(tx, "base_amount", None)
                 amount_str = format_money(tx.amount, tx_curr, locale)
                 if tx_curr != currency and base_amt is not None:
-                    amount_str = f"{amount_str} (эквивалент: {format_money(base_amt, currency, locale)})"
+                    amount_str = texts.equivalent.format(amount=amount_str, base=format_money(base_amt, currency, locale))
 
-                type_val = tx.type.value if hasattr(tx.type, "value") else str(tx.type)
+                type_code = tx.type.value if hasattr(tx.type, "value") else str(tx.type)
+                type_val = texts.income if type_code == TransactionType.income.value else texts.expense
                 cat_val = category_name(getattr(tx.category, "value", tx.category), locale)
                 date_str = tx.date.strftime("%Y-%m-%d") if hasattr(tx.date, "strftime") else str(tx.date)
 
@@ -475,7 +430,7 @@ class AIService:
                 clean_desc = re.sub(r"[\r\n\t|]+", " ", raw_desc)
                 clean_desc = "".join(ch for ch in clean_desc if ch >= " ")
                 clean_desc = re.sub(r"\s+", " ", clean_desc).strip()
-                clean_desc = clean_desc or "Без описания"
+                clean_desc = clean_desc or texts.no_description
 
                 parts = [
                     date_str,
@@ -486,42 +441,16 @@ class AIService:
                 ]
                 blocks.append(" | ".join(parts))
         else:
-            blocks.append("Транзакции за данный период отсутствуют.")
+            blocks.append(texts.no_transactions)
 
         return "\n".join(blocks)
 
     async def _call_gemini(self, summary: str, locale: str, currency: str) -> list[str]:
         """Отправить запрос в Gemini API со Structured Outputs и распарсить JSON с рекомендациями."""
+        texts = insight_texts(locale)
         # Пример суммы в том виде, в каком она дана в данных: модель должна повторять этот формат
-        money_example = format_money(154771, currency, locale)
-        system_instruction = (
-            "Ты — персональный финансовый ассистент. Анализируй расходы пользователя и соблюдение им "
-            "установленных месячных лимитов бюджетов по категориям. Формируй практичные, понятные "
-            "и действенные советы на основе предоставленных данных.\n"
-            "Строгие правила:\n"
-            "1. Используй ТОЛЬКО точные названия категорий, переданные в данных (например, пиши строго "
-            "«Питание», никогда не заменяй синонимами вроде «Еда» и не переводи их).\n"
-            "2. Записывай суммы точно в том формате, в котором они даны в данных: число с разделителями "
-            f"разрядов и обозначение валюты (например: {money_example}). Не заменяй обозначения валют "
-            "банковскими кодами (UZS, KZT, USD, EUR), если в данных их нет; для узбекского сума в русском "
-            "тексте всегда пиши «сум» после числа (например: 154 771 сум).\n"
-            "3. Не пересчитывай и не округляй суммы из данных: пользователь сверяет их с экраном приложения.\n"
-            'Ответ всегда возвращай строго в формате JSON: {"insights": ["совет 1", "совет 2", "совет 3"]}.'
-        )
-
-        prompt = f"""Вот финансовые данные пользователя за выбранный период:
-
-{summary}
-
-Дай 3 конкретных совета по управлению финансами и бюджетом на основе этих данных.
-Учитывай как фактические транзакции, так и состояние месячных лимитов категорий (превышения, остатки).
-Выдача советов должна быть максимально простой, без сложных финансовых слов и фраз.
-Пиши доступным языком для среднестатистического человека.
-Базовая валюта пользователя — {currency}; суммы лимитов указаны в валюте каждого лимита.
-Соразмеряй советы с реалиями этих валют.
-Ответ сформируй на языке/локали: {locale}. Названия категорий и суммы бери из данных без изменений.
-Формат ответа JSON: {{"insights": ["совет 1", "совет 2", "совет 3"]}}
-Только JSON, без лишнего текста."""
+        system_instruction = texts.system_instruction.format(money_example=format_money(154771, currency, locale))
+        prompt = texts.prompt.format(summary=summary, currency=currency)
 
         gen_config = types.GenerateContentConfig(
             response_mime_type="application/json",

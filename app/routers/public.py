@@ -19,26 +19,26 @@ def _page_response(page: str, lang: str | None, accept_language: str | None) -> 
 
 @router.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
 async def privacy_page(
-    lang: str | None = Query(None, max_length=10, description="Язык страницы: ru, en, uz, kk"),
+    lang: str | None = Query(None, max_length=10, description="Язык страницы: ru, en"),
     accept_language: str | None = Header(None),
 ) -> HTMLResponse:
-    """Политика конфиденциальности (ru, en, uz, kk)."""
+    """Политика конфиденциальности (ru, en)."""
     return _page_response("privacy", lang, accept_language)
 
 
 @router.get("/terms", response_class=HTMLResponse, include_in_schema=False)
 async def terms_page(
-    lang: str | None = Query(None, max_length=10, description="Язык страницы: ru, en, uz, kk"),
+    lang: str | None = Query(None, max_length=10, description="Язык страницы: ru, en"),
     accept_language: str | None = Header(None),
 ) -> HTMLResponse:
-    """Пользовательское соглашение (ru, en, uz, kk)."""
+    """Пользовательское соглашение (ru, en)."""
     return _page_response("terms", lang, accept_language)
 
 
 @router.get("/delete-account", response_class=HTMLResponse, include_in_schema=False)
 async def delete_account_page(
-    lang: str | None = Query(None, max_length=10, description="Язык страницы: ru, en, uz, kk"),
+    lang: str | None = Query(None, max_length=10, description="Язык страницы: ru, en"),
     accept_language: str | None = Header(None),
 ) -> HTMLResponse:
-    """Порядок удаления аккаунта и данных (ru, en, uz, kk)."""
+    """Порядок удаления аккаунта и данных (ru, en)."""
     return _page_response("delete-account", lang, accept_language)

@@ -1,4 +1,4 @@
-"""Политика конфиденциальности GetBalance AI (ru, en, uz, kk)."""
+"""Политика конфиденциальности GetBalance AI (ru, en)."""
 
 from app.legal.types import PageContent
 from app.legal.ui import SUPPORT_EMAIL
@@ -14,20 +14,25 @@ PRIVACY: dict[str, PageContent] = {
                     "Разработчик и оператор данных — Yevgeniy Makarov (Республика Узбекистан, г. Ташкент), "
                     f"контактный email: {SUPPORT_EMAIL}. Эта Политика объясняет, какие данные мы обрабатываем, "
                     "зачем и какие права у вас есть.",
+                    "Приложение предназначено для пользователей в Европейском Союзе и Европейской экономической "
+                    "зоне, Великобритании, Швейцарии, США, Канаде и Австралии.",
                 ],
             ),
             (
                 "2. Какие данные мы собираем",
                 [
                     [
-                        "Учётная запись: адрес электронной почты, имя и (при наличии) фото профиля. "
-                        "При регистрации по email хранится только хеш пароля.",
+                        "Учётная запись: адрес электронной почты, имя и (при наличии) фото профиля.",
                         "Вход через Google или Apple: идентификатор аккаунта, email, имя и фото, которые "
                         "передаёт провайдер. Пароль от аккаунта Google или Apple нам недоступен.",
-                        "Финансовые данные: операции, категории, бюджеты и базовая валюта, которые вы вносите сами.",
+                        "Финансовые данные: операции, категории, бюджеты, регулярные платежи и базовая валюта, "
+                        "которые вы вносите сами. В гостевом режиме они хранятся только на устройстве и на "
+                        "сервер не передаются.",
                         "Технические данные: IP-адрес, версия приложения и метаданные запросов в серверных "
-                        "технических журналах — для безопасности и стабильной работы. Сторонние сервисы "
-                        "сбора сбоев в приложении не используются.",
+                        "технических журналах — для безопасности и стабильной работы.",
+                        "Отчёты о сбоях (только в Android-версии): модель устройства, версия операционной "
+                        "системы и приложения, идентификатор установки и техническое описание ошибки. Имя, "
+                        "email и финансовые данные в отчёты о сбоях не добавляются.",
                     ],
                 ],
             ),
@@ -36,11 +41,13 @@ PRIVACY: dict[str, PageContent] = {
                 [
                     [
                         "Создание и управление вашей учётной записью.",
-                        "Синхронизация операций и бюджетов между устройствами.",
+                        "Синхронизация операций, бюджетов и регулярных платежей между устройствами.",
                         "Формирование персонализированной финансовой аналитики с помощью ИИ.",
+                        "Поиск и исправление ошибок в приложении.",
                         "Защита от злоупотреблений, поддержка и улучшение сервиса.",
                     ],
-                    "Мы не продаём ваши данные и не используем их для рекламы.",
+                    "Мы не продаём ваши данные и не используем их для рекламы. Напоминания о регулярных "
+                    "платежах формируются на устройстве.",
                 ],
             ),
             (
@@ -53,7 +60,12 @@ PRIVACY: dict[str, PageContent] = {
                         "Gemini API: переданные данные применяются только для формирования ответа и не "
                         "используются Google для обучения моделей ИИ. Не указывайте в описаниях операций "
                         "персональные данные.",
+                        "Google (Firebase Crashlytics) — сбор отчётов о сбоях в Android-версии (см. раздел 2). "
+                        "Google обрабатывает эти данные по нашему поручению.",
                         "Google Sign-In и Sign in with Apple — вход в аккаунт.",
+                        "Открытый сервис курсов валют open.er-api.com — наш сервер получает от него курсы, "
+                        "а приложение обращается к нему напрямую, если наш сервер недоступен. Сервис получает "
+                        "только сам запрос (в том числе IP-адрес); ваши данные ему не передаются.",
                         "Google Play и Apple App Store — распространение приложения и оплата платных функций. "
                         "Данные банковской карты обрабатывает магазин; мы их не получаем и не храним.",
                         "Хостинг-провайдер — хранение и обработка данных на серверах (см. раздел 6).",
@@ -64,25 +76,28 @@ PRIVACY: dict[str, PageContent] = {
                 "5. Хранение и удаление",
                 [
                     "Данные хранятся, пока существует ваш аккаунт. При удалении аккаунта профиль, операции, "
-                    "бюджеты, сессии и кэш аналитики удаляются из базы данных безвозвратно. Резервные копии "
-                    "базы данных создаются ежедневно и хранятся не более 7 суток, серверные технические "
-                    "журналы — не более 30 дней; по истечении этих сроков удалённые данные исчезают и оттуда.",
+                    "бюджеты, регулярные платежи, сессии и кэш аналитики удаляются из базы данных безвозвратно. "
+                    "Резервные копии базы данных создаются ежедневно и хранятся не более 7 суток, серверные "
+                    "технические журналы — не более 30 дней; по истечении этих сроков удалённые данные "
+                    "исчезают и оттуда.",
                 ],
             ),
             (
-                "6. Расположение серверов и трансграничная передача",
+                "6. Расположение серверов и международная передача",
                 [
                     "Серверная инфраструктура GetBalance AI расположена в Европейском Союзе (г. Хельсинки, "
-                    "Финляндия), то есть за пределами Республики Узбекистан. Регистрируясь и используя "
-                    "Приложение, вы даёте согласие на трансграничную передачу, обработку и хранение ваших "
-                    "данных на этих серверах. Если вы не согласны, не используйте Приложение.",
+                    "Финляндия). Сервисы Google из раздела 4 могут обрабатывать данные за пределами ЕС, "
+                    "в том числе в США; такая передача выполняется с мерами защиты, предусмотренными "
+                    "законодательством ЕС о защите данных (например, стандартными договорными условиями "
+                    "Европейской комиссии).",
                 ],
             ),
             (
                 "7. Безопасность",
                 [
-                    "Мы применяем технические и организационные меры защиты, включая HTTPS и хеширование "
-                    "паролей. Однако ни одна передача данных через Интернет не может быть безопасной на 100%.",
+                    "Мы применяем технические и организационные меры защиты, включая шифрование данных при "
+                    "передаче (HTTPS) и ограничение доступа к серверам. Однако ни одна передача данных через "
+                    "Интернет не может быть безопасной на 100%.",
                 ],
             ),
             (
@@ -95,15 +110,18 @@ PRIVACY: dict[str, PageContent] = {
                 ],
             ),
             (
-                "9. Возраст",
-                ["Приложение не предназначено для лиц младше 18 лет, и мы сознательно не собираем их данные."],
+                "9. Пользователям в ЕС, ЕЭЗ и Великобритании",
+                [
+                    "Для пользователей в Европейском Союзе, Европейской экономической зоне и Великобритании "
+                    "данные обрабатываются в соответствии с Общим регламентом по защите данных (GDPR) и UK "
+                    "GDPR. Помимо прав из раздела 8 вы вправе ограничить обработку своих данных, возразить "
+                    "против неё, получить данные в машиночитаемом формате и подать жалобу в надзорный орган "
+                    "по защите данных своей страны.",
+                ],
             ),
             (
-                "10. Применимое право",
-                [
-                    "Обработка данных осуществляется с учётом законодательства Республики Узбекистан "
-                    "о персональных данных.",
-                ],
+                "10. Возраст",
+                ["Приложение не предназначено для лиц младше 18 лет, и мы сознательно не собираем их данные."],
             ),
             (
                 "11. Изменения политики",
@@ -124,19 +142,25 @@ PRIVACY: dict[str, PageContent] = {
                     'GetBalance AI ("we") is a personal finance mobile app with AI-powered insights. The developer '
                     "and data operator is Yevgeniy Makarov (Republic of Uzbekistan, Tashkent), contact email: "
                     f"{SUPPORT_EMAIL}. This Policy explains what data we process, why, and what rights you have.",
+                    "The app is intended for users in the European Union and the European Economic Area, the "
+                    "United Kingdom, Switzerland, the United States, Canada and Australia.",
                 ],
             ),
             (
                 "2. Data we collect",
                 [
                     [
-                        "Account: email address, name and, if available, profile photo. For email sign-up we "
-                        "store only a password hash.",
+                        "Account: email address, name and, if available, profile photo.",
                         "Google or Apple sign-in: account identifier, email, name and photo provided by the "
                         "provider. We never receive your Google or Apple password.",
-                        "Financial data: transactions, categories, budgets and base currency that you enter yourself.",
+                        "Financial data: transactions, categories, budgets, recurring payments and base currency "
+                        "that you enter yourself. In guest mode they are stored only on your device and are not "
+                        "sent to the server.",
                         "Technical data: IP address, app version and request metadata in server technical logs, "
-                        "used for security and stability. The app does not use third-party crash reporting services.",
+                        "used for security and stability.",
+                        "Crash reports (Android version only): device model, operating system and app version, "
+                        "installation identifier and a technical description of the error. Your name, email and "
+                        "financial data are not added to crash reports.",
                     ],
                 ],
             ),
@@ -145,11 +169,13 @@ PRIVACY: dict[str, PageContent] = {
                 [
                     [
                         "To create and manage your account.",
-                        "To sync transactions and budgets across your devices.",
+                        "To sync transactions, budgets and recurring payments across your devices.",
                         "To generate personalized financial insights using AI.",
+                        "To find and fix errors in the app.",
                         "To prevent abuse, provide support and improve the service.",
                     ],
-                    "We do not sell your data and do not use it for advertising.",
+                    "We do not sell your data and do not use it for advertising. Recurring payment reminders "
+                    "are created on your device.",
                 ],
             ),
             (
@@ -161,7 +187,12 @@ PRIVACY: dict[str, PageContent] = {
                         "name, email and user identifier are not sent. We use the commercial (paid) tier of the "
                         "Gemini API: the data is used only to produce the response and is not used by Google to "
                         "train AI models. Do not put personal data in transaction descriptions.",
+                        "Google (Firebase Crashlytics) collects crash reports in the Android version (see "
+                        "section 2). Google processes this data on our behalf.",
                         "Google Sign-In and Sign in with Apple handle account sign-in.",
+                        "The open exchange rate service open.er-api.com: our server gets currency rates from it, "
+                        "and the app contacts it directly when our server is unavailable. The service receives "
+                        "only the request itself (including the IP address); none of your data is sent to it.",
                         "Google Play and the Apple App Store distribute the app and process payments for paid "
                         "features. Card details are handled by the store; we never receive or store them.",
                         "A hosting provider stores and processes data on servers (see section 6).",
@@ -172,25 +203,27 @@ PRIVACY: dict[str, PageContent] = {
                 "5. Retention and deletion",
                 [
                     "Data is kept while your account exists. When you delete your account, your profile, "
-                    "transactions, budgets, sessions and analytics cache are permanently erased from the "
-                    "database. Database backups are created daily and kept for no more than 7 days, and server "
-                    "technical logs for no more than 30 days; after that the deleted data disappears from them too.",
+                    "transactions, budgets, recurring payments, sessions and analytics cache are permanently "
+                    "erased from the database. Database backups are created daily and kept for no more than "
+                    "7 days, and server technical logs for no more than 30 days; after that the deleted data "
+                    "disappears from them too.",
                 ],
             ),
             (
-                "6. Server location and cross-border transfer",
+                "6. Server location and international transfers",
                 [
-                    "GetBalance AI server infrastructure is located in the European Union (Helsinki, Finland), "
-                    "that is, outside the Republic of Uzbekistan. By registering and using the App you consent "
-                    "to the cross-border transfer, processing and storage of your data on these servers. "
-                    "If you do not agree, please do not use the App.",
+                    "GetBalance AI server infrastructure is located in the European Union (Helsinki, Finland). "
+                    "The Google services listed in section 4 may process data outside the EU, including in the "
+                    "United States; such transfers are made with the safeguards provided by EU data protection "
+                    "law (for example, the European Commission's Standard Contractual Clauses).",
                 ],
             ),
             (
                 "7. Security",
                 [
-                    "We apply technical and organizational safeguards, including HTTPS and password hashing. "
-                    "However, no transmission over the internet can be guaranteed to be 100% secure.",
+                    "We apply technical and organizational safeguards, including encryption in transit (HTTPS) "
+                    "and restricted access to servers. However, no transmission over the internet can be "
+                    "guaranteed to be 100% secure.",
                 ],
             ),
             (
@@ -202,234 +235,24 @@ PRIVACY: dict[str, PageContent] = {
                 ],
             ),
             (
-                "9. Age",
-                ["The app is not intended for people under 18, and we knowingly do not collect their data."],
+                "9. Users in the EU, EEA and UK",
+                [
+                    "For users in the European Union, the European Economic Area and the United Kingdom, data "
+                    "is processed in accordance with the General Data Protection Regulation (GDPR) and the UK "
+                    "GDPR. In addition to the rights in section 8, you may restrict or object to the processing "
+                    "of your data, receive your data in a machine-readable format and lodge a complaint with "
+                    "the data protection authority of your country.",
+                ],
             ),
             (
-                "10. Applicable law",
-                ["Data is processed in accordance with the personal data legislation of the Republic of Uzbekistan."],
+                "10. Age",
+                ["The app is not intended for people under 18, and we knowingly do not collect their data."],
             ),
             (
                 "11. Changes to this policy",
                 ["We may update this Policy. The current version and its effective date are always shown on this page."],
             ),
             ("12. Contact", ["Send questions and data requests to:"]),
-        ],
-    },
-    "uz": {
-        "title": "GetBalance AI Maxfiylik siyosati",
-        "sections": [
-            (
-                "1. Kirish",
-                [
-                    'GetBalance AI ("biz") — sun’iy intellekt tahlili bilan shaxsiy moliyani yuritish uchun mobil '
-                    "ilova. Ishlab chiquvchi va ma’lumotlar operatori — Yevgeniy Makarov (O‘zbekiston "
-                    f"Respublikasi, Toshkent sh.), aloqa uchun email: {SUPPORT_EMAIL}. Ushbu Siyosat qanday "
-                    "ma’lumotlarni, nima uchun qayta ishlashimizni va sizning huquqlaringizni tushuntiradi.",
-                ],
-            ),
-            (
-                "2. Qanday ma’lumotlarni yig‘amiz",
-                [
-                    [
-                        "Hisob: elektron pochta manzili, ism va (mavjud bo‘lsa) profil surati. Email orqali "
-                        "ro‘yxatdan o‘tishda faqat parolning heshi saqlanadi.",
-                        "Google yoki Apple orqali kirish: provayder uzatadigan hisob identifikatori, email, ism va "
-                        "surat. Google yoki Apple parolingiz bizga ma’lum bo‘lmaydi.",
-                        "Moliyaviy ma’lumotlar: o‘zingiz kiritgan operatsiyalar, toifalar, byudjetlar va asosiy valyuta.",
-                        "Texnik ma’lumotlar: server texnik jurnallaridagi IP-manzil, ilova versiyasi va so‘rovlar "
-                        "metama’lumotlari — xavfsizlik va barqaror ishlash uchun. Ilovada xatoliklarni yig‘uvchi "
-                        "uchinchi tomon xizmatlari ishlatilmaydi.",
-                    ],
-                ],
-            ),
-            (
-                "3. Ma’lumotlardan qanday foydalanamiz",
-                [
-                    [
-                        "Hisobingizni yaratish va boshqarish.",
-                        "Operatsiyalar va byudjetlarni qurilmalar o‘rtasida sinxronlash.",
-                        "Sun’iy intellekt yordamida shaxsiylashtirilgan moliyaviy tahlillarni taqdim etish.",
-                        "Suiiste’molning oldini olish, qo‘llab-quvvatlash va xizmatni yaxshilash.",
-                    ],
-                    "Biz ma’lumotlaringizni sotmaymiz va reklama uchun ishlatmaymiz.",
-                ],
-            ),
-            (
-                "4. Uchinchi tomon xizmatlari",
-                [
-                    [
-                        "Google (Gemini API) — SI tahlillarini yaratish. Shaxsiylashtirilmagan yozuvlar "
-                        "uzatiladi: operatsiyalarning sanasi, turi, toifasi, summasi, valyutasi va matnli "
-                        "izohlari; ism, email va foydalanuvchi identifikatori uzatilmaydi. Biz Gemini API ning "
-                        "tijorat (pullik) tarifidan foydalanamiz: uzatilgan ma’lumotlar faqat javob yaratish "
-                        "uchun ishlatiladi va Google tomonidan SI modellarini o‘qitish uchun ishlatilmaydi. "
-                        "Operatsiya izohlariga shaxsiy ma’lumotlarni yozmang.",
-                        "Google Sign-In va Sign in with Apple — hisobga kirish.",
-                        "Google Play va Apple App Store — ilovani tarqatish va pullik funksiyalar uchun to‘lov. "
-                        "Bank kartasi ma’lumotlarini do‘kon qayta ishlaydi; biz ularni olmaymiz va saqlamaymiz.",
-                        "Xosting-provayder — ma’lumotlarni serverlarda saqlash va qayta ishlash (6-bo‘limga qarang).",
-                    ],
-                ],
-            ),
-            (
-                "5. Saqlash va o‘chirish",
-                [
-                    "Ma’lumotlar hisobingiz mavjud ekan saqlanadi. Hisob o‘chirilganda profil, operatsiyalar, "
-                    "byudjetlar, seanslar va tahlil keshi ma’lumotlar bazasidan qaytarib bo‘lmaydigan tarzda "
-                    "o‘chiriladi. Ma’lumotlar bazasining zaxira nusxalari har kuni yaratiladi va 7 sutkadan "
-                    "ko‘p saqlanmaydi, server texnik jurnallari — 30 kundan ko‘p emas; bu muddatlar "
-                    "o‘tgach, o‘chirilgan ma’lumotlar u yerdan ham yo‘qoladi.",
-                ],
-            ),
-            (
-                "6. Serverlar joylashuvi va transchegaraviy uzatish",
-                [
-                    "GetBalance AI server infratuzilmasi Yevropa Ittifoqida (Xelsinki sh., Finlyandiya), ya’ni "
-                    "O‘zbekiston Respublikasi hududidan tashqarida joylashgan. Ilovada ro‘yxatdan o‘tib va "
-                    "undan foydalanib, siz ma’lumotlaringizni ushbu serverlarga transchegaraviy uzatish, "
-                    "qayta ishlash va saqlashga rozilik bildirasiz. Rozi bo‘lmasangiz, ilovadan foydalanmang.",
-                ],
-            ),
-            (
-                "7. Xavfsizlik",
-                [
-                    "Biz texnik va tashkiliy himoya choralarini, jumladan HTTPS va parollarni heshlashni "
-                    "qo‘llaymiz. Biroq internet orqali hech qanday uzatishning 100% xavfsizligini kafolatlab "
-                    "bo‘lmaydi.",
-                ],
-            ),
-            (
-                "8. Sizning huquqlaringiz",
-                [
-                    "Siz ma’lumotlaringizga kirish, ularni tuzatish, nusxasini olish yoki o‘chirishni so‘rashingiz "
-                    "mumkin. Hisob va barcha ma’lumotlarni ilovada (Profil → Hisobni o‘chirish), «Hisobni "
-                    "o‘chirish» sahifasidagi ko‘rsatma bo‘yicha yoki quyidagi email orqali o‘chirishingiz mumkin. "
-                    "So‘rovlarga 30 kun ichida javob beramiz.",
-                ],
-            ),
-            (
-                "9. Yosh",
-                ["Ilova 18 yoshga to‘lmaganlar uchun mo‘ljallanmagan va biz ularning ma’lumotlarini bila turib yig‘maymiz."],
-            ),
-            (
-                "10. Qo‘llaniladigan huquq",
-                [
-                    "Ma’lumotlar O‘zbekiston Respublikasining shaxsiy ma’lumotlar to‘g‘risidagi "
-                    "qonunchiligi hisobga olingan holda qayta ishlanadi.",
-                ],
-            ),
-            (
-                "11. Siyosatdagi o‘zgarishlar",
-                ["Siyosatni yangilashimiz mumkin. Joriy versiya va kuchga kirish sanasi doim shu sahifada ko‘rsatiladi."],
-            ),
-            ("12. Aloqa", ["Savollar va ma’lumotlar bo‘yicha so‘rovlarni quyidagi manzilga yuboring:"]),
-        ],
-    },
-    "kk": {
-        "title": "GetBalance AI құпиялылық саясаты",
-        "sections": [
-            (
-                "1. Кіріспе",
-                [
-                    "GetBalance AI («біз») — жасанды интеллект талдауы бар жеке қаржыны есепке алуға арналған "
-                    "мобильді қолданба. Әзірлеуші және деректер операторы — Yevgeniy Makarov (Өзбекстан "
-                    f"Республикасы, Ташкент қ.), байланыс email: {SUPPORT_EMAIL}. Бұл Саясат қандай деректерді, "
-                    "не үшін өңдейтінімізді және сіздің құқықтарыңызды түсіндіреді.",
-                ],
-            ),
-            (
-                "2. Қандай деректерді жинаймыз",
-                [
-                    [
-                        "Аккаунт: электрондық пошта, аты және (болса) профиль суреті. Email арқылы тіркелгенде "
-                        "тек парольдің хеші сақталады.",
-                        "Google немесе Apple арқылы кіру: провайдер беретін аккаунт идентификаторы, email, аты және "
-                        "суреті. Google немесе Apple паролі бізге қолжетімсіз.",
-                        "Қаржылық деректер: өзіңіз енгізген операциялар, санаттар, бюджеттер және негізгі валюта.",
-                        "Техникалық деректер: серверлік техникалық журналдардағы IP-мекенжай, қолданба нұсқасы "
-                        "және сұраныстар метадеректері — қауіпсіздік пен тұрақты жұмыс үшін. Қолданбада ақауларды "
-                        "жинайтын үшінші тарап қызметтері пайдаланылмайды.",
-                    ],
-                ],
-            ),
-            (
-                "3. Деректерді қалай пайдаланамыз",
-                [
-                    [
-                        "Аккаунтыңызды құру және басқару.",
-                        "Операциялар мен бюджеттерді құрылғылар арасында синхрондау.",
-                        "Жасанды интеллект арқылы жекелендірілген қаржылық талдау ұсыну.",
-                        "Теріс пайдаланудан қорғау, қолдау көрсету және қызметті жақсарту.",
-                    ],
-                    "Біз деректеріңізді сатпаймыз және жарнама үшін пайдаланбаймыз.",
-                ],
-            ),
-            (
-                "4. Үшінші тарап қызметтері",
-                [
-                    [
-                        "Google (Gemini API) — ЖИ талдауын жасау. Иесіздендірілген жазбалар беріледі: "
-                        "операциялардың күні, түрі, санаты, сомасы, валютасы және мәтіндік сипаттамалары; аты, "
-                        "email және пайдаланушы идентификаторы берілмейді. Біз Gemini API-дің коммерциялық "
-                        "(ақылы) тарифін қолданамыз: берілген деректер тек жауап жасау үшін пайдаланылады және "
-                        "Google оларды ЖИ модельдерін оқыту үшін пайдаланбайды. Операция сипаттамаларына жеке "
-                        "деректерді жазбаңыз.",
-                        "Google Sign-In және Sign in with Apple — аккаунтқа кіру.",
-                        "Google Play және Apple App Store — қолданбаны тарату және ақылы функциялар үшін төлем. "
-                        "Банк картасының деректерін дүкен өңдейді; біз оларды алмаймыз және сақтамаймыз.",
-                        "Хостинг-провайдер — деректерді серверлерде сақтау және өңдеу (6-бөлімді қараңыз).",
-                    ],
-                ],
-            ),
-            (
-                "5. Сақтау және жою",
-                [
-                    "Деректер аккаунтыңыз бар кезде сақталады. Аккаунтты жойғанда профиль, операциялар, "
-                    "бюджеттер, сессиялар және талдау кэші деректер қорынан қайтарусыз жойылады. Деректер "
-                    "қорының резервтік көшірмелері күн сайын жасалады және 7 тәуліктен артық сақталмайды, "
-                    "серверлік техникалық журналдар — 30 күннен артық емес; осы мерзімдер өткен соң жойылған "
-                    "деректер олардан да жоғалады.",
-                ],
-            ),
-            (
-                "6. Серверлердің орналасуы және трансшекаралық беру",
-                [
-                    "GetBalance AI серверлік инфрақұрылымы Еуропалық Одақта (Хельсинки қ., Финляндия), яғни "
-                    "Өзбекстан Республикасының аумағынан тыс орналасқан. Қолданбада тіркеліп, оны пайдалана "
-                    "отырып, сіз деректеріңізді осы серверлерге трансшекаралық беруге, өңдеуге және сақтауға "
-                    "келісім бересіз. Келіспесеңіз, қолданбаны пайдаланбаңыз.",
-                ],
-            ),
-            (
-                "7. Қауіпсіздік",
-                [
-                    "Біз техникалық және ұйымдастырушылық қорғау шараларын, оның ішінде HTTPS пен парольдерді "
-                    "хештеуді қолданамыз. Алайда интернет арқылы ешбір беру 100% қауіпсіз бола алмайды.",
-                ],
-            ),
-            (
-                "8. Сіздің құқықтарыңыз",
-                [
-                    "Сіз деректеріңізге қол жеткізуді, түзетуді, көшірмесін алуды немесе жоюды сұрай аласыз. "
-                    "Аккаунт пен барлық деректерді қолданбада (Профиль → Аккаунтты жою), «Аккаунтты жою» "
-                    "бетіндегі нұсқаулық бойынша немесе төмендегі email арқылы жоюға болады. "
-                    "Сұраныстарға 30 күн ішінде жауап береміз.",
-                ],
-            ),
-            (
-                "9. Жас",
-                ["Қолданба 18 жасқа толмағандарға арналмаған, біз олардың деректерін әдейі жинамаймыз."],
-            ),
-            (
-                "10. Қолданылатын құқық",
-                ["Деректер Өзбекстан Республикасының дербес деректер туралы заңнамасы ескеріле отырып өңделеді."],
-            ),
-            (
-                "11. Саясаттағы өзгерістер",
-                ["Біз Саясатты жаңартуымыз мүмкін. Ағымдағы нұсқа мен күшіне енген күн әрдайым осы бетте көрсетіледі."],
-            ),
-            ("12. Байланыс", ["Сұрақтар мен деректер бойынша сұраныстарды мына мекенжайға жіберіңіз:"]),
         ],
     },
 }
