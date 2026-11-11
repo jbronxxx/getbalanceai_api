@@ -11,11 +11,11 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PrivateAttr,
     ValidationError,
     field_validator,
     model_validator,
 )
-from pydantic.json_schema import SkipJsonSchema
 from pydantic_core import PydanticCustomError
 
 from app.exceptions import ErrorCode
@@ -726,19 +726,25 @@ class SyncPayload(BaseModel):
         description="ID регулярных платежей для удаления (максимум 500 элементов)",
     )
     # Заполняется валидатором: записи transactions, budgets и recurring_payments, не прошедшие схему.
-    # Клиент это поле не передаёт
-    invalid_items: SkipJsonSchema[List[SyncRejectedItem]] = Field(default_factory=list, exclude=True)
+    # Приватный атрибут, а не поле: клиент его не передаёт, в схеме и ответах его нет. Поле с exclude=True
+    # FastAPI 0.115 при pydantic 2.12 разбирал отдельно и писал UnsupportedFieldAttributeWarning на каждый /sync
+    _invalid_items: List[SyncRejectedItem] = PrivateAttr(default_factory=list)
 
-    @model_validator(mode="before")
+    @property
+    def invalid_items(self) -> List[SyncRejectedItem]:
+        """Записи пакета, не прошедшие схему: уходят в rejected, остальные сохраняются."""
+        return self._invalid_items
+
+    @model_validator(mode="wrap")
     @classmethod
-    def split_invalid_items(cls, data: Any) -> Any:
+    def split_invalid_items(cls, data: Any, handler) -> "SyncPayload":
         """Проверить transactions, budgets и recurring_payments по одной записи; невалидные — в invalid_items.
 
         Одна запись с неизвестной категорией или суммой вне диапазона не должна ронять весь батч 422:
         оффлайн-очередь клиента повторяла бы его бесконечно, а пользователь видел бы только общую ошибку.
         """
         if not isinstance(data, dict):
-            return data
+            return handler(data)
         data = dict(data)
         invalid: list[SyncRejectedItem] = []
         models: tuple[tuple[str, type[BaseModel]], ...] = (
@@ -757,8 +763,9 @@ class SyncPayload(BaseModel):
                 except ValidationError as err:
                     invalid.append(_invalid_sync_item(raw, err, f"{key}.{index}"))
             data[key] = valid
-        data["invalid_items"] = invalid
-        return data
+        payload = handler(data)
+        payload._invalid_items = invalid
+        return payload
 
 
 class SyncResponse(BaseModel):
