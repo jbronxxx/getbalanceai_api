@@ -86,7 +86,7 @@ API использует единообразный формат ответов 
     "email": "user@example.com",
     "name": "John Doe",
     "avatar_url": "https://example.com/avatar.png",
-    "base_currency": "UZS",
+    "base_currency": "EUR",
     "created_at": "2026-09-10T10:30:00Z"
   }
 }
@@ -113,7 +113,7 @@ API использует единообразный формат ответов 
 ```
 
 ##### Мультивалютные правила для транзакций (`POST /api/v1/transactions` и `POST /api/v1/sync`):
-1. **Валидация валюты (`currency`)**: разрешены только поддерживаемые ISO-коды (`USD`, `EUR`, `KZT`, `UZS`). Любой иной код отклоняется со статусом `422 Unprocessable Entity` (`code: VALIDATION_ERROR`).
+1. **Валидация валюты (`currency`)**: разрешены только поддерживаемые ISO-коды (`USD`, `EUR`). Любой иной код отклоняется со статусом `422 Unprocessable Entity` (`code: VALIDATION_ERROR`).
 2. **Значение по умолчанию**: если поле `currency` не передано или передано как `null`, сервер автоматически устанавливает базовую валюту профиля текущего пользователя (`users.base_currency`).
 3. **Единое согласование сумм и курсов (`resolve_amounts`)**:
    - При совпадении валюты операции с базовой валютой пользователя: строго `exchange_rate = 1.0` и `base_amount = amount`. Любые переданные клиентом курсы или `base_amount` игнорируются для защиты от искажения финансовых данных.
@@ -140,10 +140,7 @@ API использует единообразный формат ответов 
     "base": "USD",
     "rates": {
       "USD": 1.0,
-      "EUR": 0.92,
-      "EUR": 0.92,
-      "UZS": 12850.0,
-      "KZT": 490.0
+      "EUR": 0.92
     },
     "updated_at": "2026-10-11T19:00:00Z",
     "is_fallback": false
@@ -206,7 +203,7 @@ API использует единообразный формат ответов 
 * `quota_exceeded` — суточная квота исчерпана: сохранённого отчёта за период нет (`insights` — локализованное сообщение) или он устарел (`insights` — сохранённый отчёт, `is_outdated=true`).
 * `busy` — LLM временно недоступен (ошибка/перегрузка провайдера, ответ дольше `AI_REQUEST_TIMEOUT`) или недоступен счётчик квоты в Redis; `insights` — локализованное сообщение для старых клиентов (или сохранённый отчёт с `is_outdated=true`), ответ не кэшируется, квота не тратится.
 
-Параметры: `currency` — только `USD`, `EUR`, `KZT`, `UZS`; `locale` — код языка `ru` или с регионом `ru_RU` (используется язык). Иначе `422 VALIDATION_ERROR`: оба значения попадают в промпт LLM и ключ кэша.
+Параметры: `currency` — только `USD`, `EUR`; `locale` — код языка `ru` или с регионом `ru_RU` (используется язык; по умолчанию и для языка, которого нет, — `en`). Иначе `422 VALIDATION_ERROR`: оба значения попадают в промпт LLM и ключ кэша.
 
 `is_outdated` (bool, по умолчанию `false`) — отдан сохранённый отчёт, а операции или лимиты месяца изменились после его генерации (`generate=false` или исчерпана квота): суммы в тексте могут не совпадать с текущими.
 
@@ -225,9 +222,9 @@ API использует единообразный формат ответов 
     "synced_transactions": [
       {
         "id": "550e8400-e29b-41d4-a716-446655440001",
-        "amount": 1280000.00,
-        "currency": "UZS",
-        "exchange_rate": 0.000078,
+        "amount": 92.00,
+        "currency": "EUR",
+        "exchange_rate": 1.086957,
         "base_amount": 100.00,
         "description": "Ужин",
         "category": "food",
@@ -253,8 +250,8 @@ API использует единообразный формат ответов 
         "id": "550e8400-e29b-41d4-a716-446655440003",
         "type": "expense",
         "category": "housing",
-        "amount": 350000.00,
-        "currency": "UZS",
+        "amount": 350.00,
+        "currency": "EUR",
         "description": "ЖКХ",
         "day_of_month": 15,
         "start_date": "2026-11-15",
@@ -299,8 +296,8 @@ API использует единообразный формат ответов 
       "id": "550e8400-e29b-41d4-a716-446655440003",
       "type": "expense",
       "category": "housing",
-      "amount": 350000.00,
-      "currency": "UZS",
+      "amount": 350.00,
+      "currency": "EUR",
       "description": "ЖКХ",
       "day_of_month": 15,
       "start_date": "2026-11-15",
@@ -325,9 +322,9 @@ API использует единообразный формат ответов 
     "transactions": [
       {
         "id": "550e8400-e29b-41d4-a716-446655440001",
-        "amount": 1280000.00,
-        "currency": "UZS",
-        "exchange_rate": 0.000078,
+        "amount": 92.00,
+        "currency": "EUR",
+        "exchange_rate": 1.086957,
         "base_amount": 100.00,
         "description": "Ужин",
         "category": "food",
@@ -496,7 +493,7 @@ API использует единообразный формат ответов 
 
 ## Исключение: публичные HTML-страницы
 
-`GET /privacy`, `GET /terms`, `GET /delete-account` не входят в API-контракт: они отдают `text/html` (не `ApiResponse`), доступны без авторизации и скрыты из OpenAPI. Единственный параметр — `lang` (`ru|en|uz|kk`, до 10 символов; иначе 422 в формате `ErrorResponse`).
+`GET /privacy`, `GET /terms`, `GET /delete-account` не входят в API-контракт: они отдают `text/html` (не `ApiResponse`), доступны без авторизации и скрыты из OpenAPI. Единственный параметр — `lang` (`ru|en`, до 10 символов; иначе 422 в формате `ErrorResponse`).
 
 ---
 

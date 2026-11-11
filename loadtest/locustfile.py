@@ -45,9 +45,9 @@ logger = logging.getLogger("loadtest")
 
 EXPENSE_CATEGORIES = ("food", "transport", "entertainment", "health", "subscriptions", "shopping", "other")
 INCOME_CATEGORIES = ("salary", "freelance", "investments", "transfers", "cashback", "sales")
-FOREIGN_CURRENCIES = ("USD", "EUR", "KZT", "UZS")
-# Смещения часовых поясов ожидаемой аудитории в минутах: Ташкент, Алматы, Москва, Берлин
-TIMEZONE_OFFSETS = ("300", "300", "300", "180", "60")
+FOREIGN_CURRENCIES = ("USD", "EUR")
+# Смещения часовых поясов ожидаемой аудитории в минутах: Берлин (дважды — ЕС основной рынок), Лондон, Нью-Йорк, Сидней
+TIMEZONE_OFFSETS = ("60", "60", "0", "-300", "600")
 CREATED_IDS_LIMIT = 200
 # Повторы одной и той же ошибки печатаются выборочно: при массовом отказе лог иначе забивает терминал
 FAILURE_LOG_EVERY = 100

@@ -87,8 +87,6 @@ class CurrencyCode(str, enum.Enum):
 
     USD = "USD"
     EUR = "EUR"
-    KZT = "KZT"
-    UZS = "UZS"
 
 
 SUPPORTED_CURRENCIES: tuple[str, ...] = tuple(c.value for c in CurrencyCode)
@@ -107,7 +105,7 @@ class User(Base):
         email (str): Уникальный адрес электронной почты (логин).
         name (str): Имя пользователя.
         avatar_url (str | None): URL аватара пользователя.
-        base_currency (str): Базовая валюта учета пользователя (USD, EUR, KZT, UZS).
+        base_currency (str): Базовая валюта учета пользователя (USD, EUR).
         created_at (datetime): Дата и время регистрации.
         transactions (list[Transaction]): Список связанных транзакций пользователя.
         budgets (list[Budget]): Список связанных бюджетов пользователя.
@@ -191,7 +189,7 @@ class Transaction(Base):
         id (uuid.UUID): Уникальный идентификатор транзакции (Primary Key).
         user_id (uuid.UUID): Внешний ключ на владельца операции (users.id).
         amount (Decimal): Сумма операции в валюте чека.
-        currency (str): Код валюты операции (USD, UZS, EUR и др.).
+        currency (str): Код валюты операции (USD, EUR).
         exchange_rate (Decimal): Курс валюты операции к базовой валюте.
         base_amount (Decimal): Эквивалент суммы в базовой валюте пользователя.
         description (str): Описание / комментарий к операции.
@@ -282,7 +280,7 @@ class Budget(Base):
         user_id (uuid.UUID): Внешний ключ на владельца бюджета (users.id).
         category (Category): Категория расходов, для которой установлен лимит.
         limit_amount (Decimal): Установленный лимит суммы на месяц в валюте лимита.
-        currency (str): Валюта лимита (USD, EUR, KZT, UZS); не зависит от базовой валюты пользователя.
+        currency (str): Валюта лимита (USD, EUR); не зависит от базовой валюты пользователя.
         month (int): Месяц действия бюджета (1-12).
         year (int): Год действия бюджета.
         created_at (datetime): Дата создания бюджета.
@@ -327,7 +325,7 @@ class RecurringPayment(Base):
         type (TransactionType): Расход или доход.
         category (Category): Категория будущих записей.
         amount (Decimal): Ожидаемая сумма в валюте платежа (при оплате её можно исправить).
-        currency (str): Валюта платежа (USD, EUR, KZT, UZS).
+        currency (str): Валюта платежа (USD, EUR).
         description (str): Название платежа («Интернет»); может быть пустым — тогда показывается категория.
         day_of_month (int): День месяца 1-31; в коротком месяце — его последний день.
         start_date (date): Первый день платежа.

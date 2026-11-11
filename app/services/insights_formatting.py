@@ -1,14 +1,14 @@
 """Названия категорий и формат сумм для данных AI-отчёта — так же, как их показывает приложение.
 
 Модель повторяет названия и суммы из переданных данных, поэтому они должны совпадать с экраном:
-«Питание», а не «food» или «Еда»; «154 771 сум», а не «154771.00 UZS».
+«Питание», а не «food» или «Еда»; «$1 234,50», а не «1234.50 USD».
 """
 
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from app.models.models import Category, CurrencyCode
 
-DEFAULT_LANG = "ru"
+DEFAULT_LANG = "en"
 
 # Названия категорий из локализаций мобильного приложения (lib/l10n/app_*.arb, ключи category_*)
 CATEGORY_NAMES: dict[str, dict[Category, str]] = {
@@ -58,68 +58,17 @@ CATEGORY_NAMES: dict[str, dict[Category, str]] = {
         Category.sales: "Sales",
         Category.other: "Other",
     },
-    "kk": {
-        Category.food: "Тамақтану",
-        Category.transport: "Көлік",
-        Category.entertainment: "Ойын-сауық",
-        Category.health: "Денсаулық",
-        Category.subscriptions: "Жазылымдар",
-        Category.shopping: "Сатып алулар",
-        Category.housing: "Үй және ЖКШ",
-        Category.communication: "Байланыс",
-        Category.education: "Білім",
-        Category.family: "Отбасы",
-        Category.car: "Автокөлік",
-        Category.gifts: "Сыйлықтар",
-        Category.travel: "Саяхат",
-        Category.beauty: "Сұлулық",
-        Category.salary: "Жалақы",
-        Category.freelance: "Фриланс",
-        Category.investments: "Инвестициялар",
-        Category.transfers: "Аударымдар",
-        Category.cashback: "Кэшбэк",
-        Category.sales: "Сатулар",
-        Category.other: "Басқа",
-    },
-    "uz": {
-        Category.food: "Oziq-ovqat",
-        Category.transport: "Transport",
-        Category.entertainment: "O'yin-kulgi",
-        Category.health: "Sog'liq",
-        Category.subscriptions: "Obunalar",
-        Category.shopping: "Xaridlar",
-        Category.housing: "Uy-joy, kommunal",
-        Category.communication: "Aloqa",
-        Category.education: "Ta'lim",
-        Category.family: "Oila",
-        Category.car: "Avtomobil",
-        Category.gifts: "Sovg'alar",
-        Category.travel: "Sayohat",
-        Category.beauty: "Go'zallik",
-        Category.salary: "Maosh",
-        Category.freelance: "Frilans",
-        Category.investments: "Investitsiyalar",
-        Category.transfers: "O'tkazmalar",
-        Category.cashback: "Keshbek",
-        Category.sales: "Sotuvlar",
-        Category.other: "Boshqa",
-    },
 }
-
-# Обозначение сума зависит от языка (ключ uzs_symbol в локализациях приложения)
-UZS_SYMBOLS: dict[str, str] = {"ru": "сум", "en": "UZS", "kk": "сом", "uz": "so'm"}
 
 # Обозначение валюты, ставится ли оно перед числом и число знаков после запятой (как Currency в приложении)
 CURRENCY_FORMATS: dict[str, tuple[str, bool, int]] = {
-    CurrencyCode.UZS.value: ("сум", False, 0),
-    CurrencyCode.KZT.value: ("₸", False, 0),
     CurrencyCode.EUR.value: ("€", True, 2),
     CurrencyCode.USD.value: ("$", True, 2),
 }
 
 
 def lang_of(locale: str) -> str:
-    """Язык из локали (`ru`, `ru_RU`, `uz-UZ`); неизвестный — русский."""
+    """Язык из локали (`ru`, `ru_RU`, `en-US`); неизвестный — английский."""
     lang = (locale or "")[:2].lower()
     return lang if lang in CATEGORY_NAMES else DEFAULT_LANG
 
@@ -136,13 +85,11 @@ def category_name(category: Category | str, locale: str) -> str:
 def format_money(amount: Decimal | float | int, currency: str, locale: str) -> str:
     """Сумма как в приложении: разряды через пробел (в en — запятая), обозначение валюты вместо кода.
 
-    Примеры (ru): «154 771 сум», «1 000 ₸», «$12,50».
+    Примеры: ru — «$1 234,50», «€12,50»; en — «$1,234.50».
     """
     lang = lang_of(locale)
     code = (currency or "").strip().upper()
     symbol, symbol_before, digits = CURRENCY_FORMATS.get(code, (code, False, 2))
-    if code == CurrencyCode.UZS.value:
-        symbol = UZS_SYMBOLS[lang]
 
     quantum = Decimal(1).scaleb(-digits)
     try:

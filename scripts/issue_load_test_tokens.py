@@ -76,10 +76,8 @@ ANALYZED_TABLES = ("users", "tokens", "transactions", "budgets")
 USD_RATES: dict[str, Decimal] = {
     "USD": Decimal("1"),
     "EUR": Decimal("0.92"),
-    "KZT": Decimal("480"),
-    "UZS": Decimal("12700"),
 }
-BASE_CURRENCY_WEIGHTS: dict[str, int] = {"USD": 50, "KZT": 25, "UZS": 15, "EUR": 10}
+BASE_CURRENCY_WEIGHTS: dict[str, int] = {"USD": 60, "EUR": 40}
 FOREIGN_CURRENCY_SHARE = 0.1
 INCOME_SHARE = 0.15
 

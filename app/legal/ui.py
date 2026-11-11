@@ -10,13 +10,11 @@ DEFAULT_LANGUAGE = "en"
 LANGUAGES: dict[str, str] = {
     "ru": "Русский",
     "en": "English",
-    "uz": "O‘zbekcha",
-    "kk": "Қазақша",
 }
 
 UI_STRINGS: dict[str, dict[str, str]] = {
     "ru": {
-        "updated": "Дата вступления в силу: 15 октября 2026 г.",
+        "updated": "Дата вступления в силу: 11 ноября 2026 г.",
         "contact": "Связаться с нами",
         "privacy": "Политика конфиденциальности",
         "terms": "Пользовательское соглашение",
@@ -24,27 +22,11 @@ UI_STRINGS: dict[str, dict[str, str]] = {
         "language": "Язык",
     },
     "en": {
-        "updated": "Effective date: October 15, 2026",
+        "updated": "Effective date: November 11, 2026",
         "contact": "Contact us",
         "privacy": "Privacy Policy",
         "terms": "Terms of Service",
         "delete-account": "Delete account",
         "language": "Language",
-    },
-    "uz": {
-        "updated": "Kuchga kirish sanasi: 2026-yil 15-oktabr",
-        "contact": "Biz bilan bog‘lanish",
-        "privacy": "Maxfiylik siyosati",
-        "terms": "Foydalanish shartlari",
-        "delete-account": "Hisobni o‘chirish",
-        "language": "Til",
-    },
-    "kk": {
-        "updated": "Күшіне енген күні: 2026 жылғы 15 қазан",
-        "contact": "Бізбен байланысу",
-        "privacy": "Құпиялылық саясаты",
-        "terms": "Пайдалану шарттары",
-        "delete-account": "Аккаунтты жою",
-        "language": "Тіл",
     },
 }

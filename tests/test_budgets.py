@@ -50,8 +50,6 @@ class TestBudgets:
             rates={
                 "USD": Decimal("1.0"),
                 "EUR": Decimal("0.92"),
-                "UZS": Decimal("12800.0"),
-                "KZT": Decimal("495.0"),
             },
             updated_at=datetime.now(timezone.utc),
         )
@@ -84,10 +82,10 @@ class TestBudgets:
             )
             assert cached_res.status_code == 304
 
-            # 5. Меняем базовую валюту на UZS: лимит остаётся 100 USD
-            patch_to_uzs = await client.patch("/api/v1/auth/me", json={"base_currency": "UZS"}, headers=auth_headers)
-            assert patch_to_uzs.status_code == 200
-            assert patch_to_uzs.json()["data"]["base_currency"] == "UZS"
+            # 5. Меняем базовую валюту на EUR: лимит остаётся 100 USD
+            patch_to_eur = await client.patch("/api/v1/auth/me", json={"base_currency": "EUR"}, headers=auth_headers)
+            assert patch_to_eur.status_code == 200
+            assert patch_to_eur.json()["data"]["base_currency"] == "EUR"
 
             # 6. Запрос с СТАРЫМ If-None-Match (initial_etag) НЕ должен вернуть 304!
             # ETag инвалидирован, поэтому сервер обязан вернуть 200 OK с новым ETag
@@ -127,8 +125,6 @@ class TestBudgets:
             rates={
                 "USD": Decimal("1.0"),
                 "EUR": Decimal("0.92"),
-                "UZS": Decimal("12800.0"),
-                "KZT": Decimal("495.0"),
             },
             updated_at=datetime.now(timezone.utc),
         )
@@ -158,16 +154,16 @@ class TestBudgets:
                 headers=auth_headers,
             )
 
-            # 4. Создаем транзакцию 2: 1 280 000.00 UZS (конвертируется по курсу 12800 UZS = 1 USD -> 100.00 USD)
+            # 4. Создаем транзакцию 2: 92.00 EUR без курса (конвертируется по курсу 0.92 EUR = 1 USD -> 100.00 USD)
             await client.post(
                 "/api/v1/transactions/",
                 json={
-                    "amount": 1280000.00,
-                    "currency": "UZS",
+                    "amount": 92.00,
+                    "currency": "EUR",
                     "category": "food",
                     "type": "expense",
                     "date": "2026-10-06T12:00:00Z",
-                    "description": "Ужин в Ташкенте",
+                    "description": "Ужин в Берлине",
                 },
                 headers=auth_headers,
             )
@@ -210,7 +206,7 @@ class TestBudgets:
             food_budget = data[0]
 
             assert Decimal(str(food_budget["limit_amount"])) == Decimal("500.00")
-            # spent: 50.00 (USD) + 100.00 (UZS) + 100.00 (EUR) = 250.00 USD
+            # spent: 50.00 (USD) + 100.00 (EUR по курсу сервера) + 100.00 (EUR с курсом клиента) = 250.00 USD
             assert Decimal(str(food_budget["spent"])) == Decimal("250.00")
             # remaining: 500.00 - 250.00 = 250.00 USD
             assert Decimal(str(food_budget["remaining"])) == Decimal("250.00")
@@ -400,8 +396,6 @@ def _mock_rates():
         rates={
             "USD": Decimal("1.0"),
             "EUR": Decimal("0.92"),
-            "UZS": Decimal("12800.0"),
-            "KZT": Decimal("495.0"),
         },
         updated_at=datetime.now(timezone.utc),
     )
@@ -414,13 +408,13 @@ class TestBudgetCurrency:
     async def test_budget_in_foreign_currency_counts_spent_in_its_currency(
         self, client: AsyncClient, auth_headers: dict[str, str]
     ):
-        """Лимит 500 USD при базовой UZS: траты переводятся в USD (чек в USD — как есть, остальное — по курсу)."""
+        """Лимит 500 USD при базовой EUR: траты переводятся в USD (чек в USD — как есть, остальное — по курсу)."""
         from unittest.mock import AsyncMock, patch
 
         from app.services.currency_service import CurrencyService
 
         with patch.object(CurrencyService, "get_rates", new_callable=AsyncMock, return_value=_mock_rates()):
-            await client.patch("/api/v1/auth/me", json={"base_currency": "UZS"}, headers=auth_headers)
+            await client.patch("/api/v1/auth/me", json={"base_currency": "EUR"}, headers=auth_headers)
 
             create_res = await client.post(
                 "/api/v1/budgets/",
@@ -430,7 +424,7 @@ class TestBudgetCurrency:
             assert create_res.status_code == 201
             assert create_res.json()["data"]["currency"] == "USD"
 
-            for amount, currency in (("50.00", "USD"), ("1280000.00", "UZS"), ("92.00", "EUR")):
+            for amount, currency in (("50.00", "USD"), ("92.00", "EUR"), ("92.00", "EUR")):
                 tx_res = await client.post(
                     "/api/v1/transactions/",
                     json={
@@ -450,7 +444,7 @@ class TestBudgetCurrency:
             food = res.json()["data"][0]
             assert food["currency"] == "USD"
             assert Decimal(str(food["limit_amount"])) == Decimal("500.00")
-            # 50 USD + 1 280 000 UZS (100 USD) + 92 EUR (100 USD)
+            # 50 USD + 92 EUR (100 USD) + 92 EUR (100 USD)
             assert Decimal(str(food["spent"])) == Decimal("250.00")
             assert Decimal(str(food["remaining"])) == Decimal("250.00")
 
@@ -462,7 +456,7 @@ class TestBudgetCurrency:
         from app.services.currency_service import CurrencyService
 
         with patch.object(CurrencyService, "get_rates", new_callable=AsyncMock, return_value=_mock_rates()):
-            await client.patch("/api/v1/auth/me", json={"base_currency": "KZT"}, headers=auth_headers)
+            await client.patch("/api/v1/auth/me", json={"base_currency": "EUR"}, headers=auth_headers)
 
         res = await client.post(
             "/api/v1/budgets/",
@@ -470,7 +464,7 @@ class TestBudgetCurrency:
             headers=auth_headers,
         )
         assert res.status_code == 201
-        assert res.json()["data"]["currency"] == "KZT"
+        assert res.json()["data"]["currency"] == "EUR"
 
     @pytest.mark.asyncio
     async def test_budget_upsert_changes_currency(self, client: AsyncClient, auth_headers: dict[str, str]):
@@ -498,7 +492,7 @@ class TestBudgetCurrency:
         """Неподдерживаемая валюта лимита отклоняется с 422."""
         res = await client.post(
             "/api/v1/budgets/",
-            json={"category": "food", "limit_amount": 100.00, "currency": "RUB", "month": 10, "year": 2026},
+            json={"category": "food", "limit_amount": 100.00, "currency": "XYZ", "month": 10, "year": 2026},
             headers=auth_headers,
         )
         assert res.status_code == 422
@@ -520,8 +514,8 @@ class TestBudgetCurrency:
             await client.post(
                 "/api/v1/transactions/",
                 json={
-                    "amount": "1280000.00",
-                    "currency": "UZS",
+                    "amount": "92.00",
+                    "currency": "EUR",
                     "category": "food",
                     "type": "expense",
                     "date": "2026-10-05T12:00:00Z",

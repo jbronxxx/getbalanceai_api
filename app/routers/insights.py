@@ -38,9 +38,9 @@ async def get_insights(
     currency: CurrencyCode | None = Query(None, description="Валюта отчёта (по умолчанию базовая валюта профиля)"),
     # Значения попадают в промпт LLM и в ключ кэша: только код языка, без произвольного текста
     locale: str = Query(
-        "ru",
+        "en",
         pattern=r"^[A-Za-z]{2}([_-][A-Za-z]{2})?$",
-        description="Локаль пользователя (ru, uz, en, kk; допускается ru_RU)",
+        description="Локаль пользователя (ru, en; допускается ru_RU)",
     ),
     generate: bool = Query(
         True,

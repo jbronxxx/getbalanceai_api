@@ -24,8 +24,6 @@ logger = get_logger(__name__)
 FALLBACK_RATES: dict[str, Decimal] = {
     CurrencyCode.USD.value: Decimal("1.0"),
     CurrencyCode.EUR.value: Decimal("0.92"),
-    CurrencyCode.UZS.value: Decimal("12800.0"),
-    CurrencyCode.KZT.value: Decimal("495.0"),
 }
 
 # Фиксированная временная метка актуальности базовой резервной таблицы котировок
@@ -104,7 +102,7 @@ class CurrencyService:
         Кросс-курс from_curr -> to_curr рассчитывается как: to_usd_rate / from_usd_rate.
 
         Аргументы:
-            from_curr (str): Исходная валюта (например, 'USD', 'UZS', 'KZT').
+            from_curr (str): Исходная валюта (например, 'USD', 'EUR').
             to_curr (str): Целевая валюта.
             rates (dict[str, Decimal] | None): Словарь курсов валют к USD.
 

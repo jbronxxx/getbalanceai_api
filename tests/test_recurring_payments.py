@@ -24,8 +24,8 @@ def _payment(**changes) -> dict:
         "id": str(uuid.uuid4()),
         "type": "expense",
         "category": "housing",
-        "amount": "350000",
-        "currency": "UZS",
+        "amount": "350",
+        "currency": "EUR",
         "description": "ЖКХ",
         "day_of_month": 15,
         "start_date": "2026-11-15",
@@ -48,9 +48,9 @@ class TestRecurringPaymentSchema:
     def test_valid_payment_normalized(self):
         """Валюта в верхнем регистре, пропуски без повторов по возрастанию, длинное название обрезается."""
         item = RecurringPaymentSyncItem.model_validate(
-            _payment(currency=" uzs ", skipped_periods=["2027-01", "2026-12", "2027-01"], description="а" * 300)
+            _payment(currency=" eur ", skipped_periods=["2027-01", "2026-12", "2027-01"], description="а" * 300)
         )
-        assert item.currency == "UZS"
+        assert item.currency == "EUR"
         assert item.skipped_periods == ["2026-12", "2027-01"]
         assert len(item.description) == 255
         assert item.category == Category.housing
@@ -69,7 +69,7 @@ class TestRecurringPaymentSchema:
             {"day_of_month": 0},
             {"day_of_month": 32},
             {"amount": "0"},
-            {"currency": "RUB"},
+            {"currency": "XYZ"},
             {"end_date": "2026-11-01"},  # раньше начала
             {"skipped_periods": ["2026-13"]},
             {"skipped_periods": ["11-2026"]},

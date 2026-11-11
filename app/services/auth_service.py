@@ -133,7 +133,7 @@ class AuthService:
         }
 
         # Курс передаётся как NUMERIC без масштаба: иначе литерал наследует тип amount (Numeric(18, 2)),
-        # asyncpg приводит параметр к NUMERIC(18, 2), и курс 1/12800 (UZS -> USD) округлялся до 0.00
+        # asyncpg приводит параметр к NUMERIC(18, 2), и малый курс (например, 0.0001) округлялся до 0.00
         rate_whens = [(Transaction.currency == curr, literal(rate, Numeric())) for curr, rate in rate_cases.items()]
         exchange_rate_expr = case(*rate_whens, else_=literal(Decimal("1.0"), Numeric()))
 
