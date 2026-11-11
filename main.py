@@ -20,6 +20,7 @@ from starlette.exceptions import HTTPException
 from app.database import engine, get_db
 from app.exceptions import AppException, ErrorCode
 from app.limiter import limiter
+from app.pii import get_pii_cipher
 from app.redis import get_redis
 from app.routers import (
     auth,
@@ -71,6 +72,8 @@ async def lifespan(app_instance: FastAPI):
         app_instance (FastAPI): Экземпляр веб-приложения FastAPI.
     """
     logger.info("Starting GetBalance AI API")
+    # Неверные ключи шифрования имени и email — отказ при старте, а не 500 на первом входе
+    get_pii_cipher()
     cleanup_task = asyncio.create_task(periodic_token_cleanup())
     background_tasks.add(cleanup_task)
     cleanup_task.add_done_callback(background_tasks.discard)

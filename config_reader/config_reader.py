@@ -7,6 +7,9 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 DEFAULT_SECRET_KEY = "change-me-in-production-use-long-random-string"
+# Ключи шифрования имени и email только для разработки и тестов (APP_DEBUG=true): в production запрещены
+DEV_PII_ENCRYPTION_KEYS = ["dev:HaxICj3PxIOBcOWcZ0JA4uJ58IHN2sCEs7HMV8QS3hQ="]
+DEV_PII_HMAC_KEY = "AirEgeGMpTmVT6koMrYcYbzL9hwnqmfJIiDfx95HMfc="
 
 
 class Settings(BaseSettings):
@@ -33,6 +36,11 @@ class Settings(BaseSettings):
     algorithm: str = Field("HS256", alias="AUTH_ALGORITHM")
     access_token_expire_minutes: int = Field(60, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
     refresh_token_expire_days: int = Field(7, alias="REFRESH_TOKEN_EXPIRE_DAYS")
+
+    # Шифрование имени и email в БД (app/pii.py): `id:base64-ключ` через запятую, первый — текущий, остальные —
+    # для расшифровки строк до ротации; ключ HMAC — для слепого индекса email. Ключи по 32 байта в base64
+    pii_encryption_keys: Annotated[list[str], NoDecode] = Field(DEV_PII_ENCRYPTION_KEYS, alias="PII_ENCRYPTION_KEYS")
+    pii_hmac_key: str = Field(DEV_PII_HMAC_KEY, alias="PII_HMAC_KEY")
 
     cors_origins: list[str] = Field(["*"], alias="CORS_ORIGINS")
     # Клиенты авторизуются Bearer-токеном, cookie не используются, поэтому credentials по умолчанию выключены
@@ -124,6 +132,15 @@ class Settings(BaseSettings):
             return [i.strip() for i in v.split(",") if i.strip()]
         return v
 
+    @field_validator("pii_encryption_keys", mode="before")
+    @classmethod
+    def assemble_pii_keys(cls, v: Any) -> list[str]:
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [i.strip() for i in v.split(",") if i.strip()]
+        return v
+
     @field_validator("google_client_ids", "apple_client_ids", mode="before")
     @classmethod
     def assemble_client_ids(cls, v: Any) -> list[str]:
@@ -141,6 +158,13 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Недопустимо использовать значение по умолчанию для SECRET_KEY в production режиме (debug=False). "
                 "Задайте криптографически стойкий SECRET_KEY через переменные окружения."
+            )
+        dev_keys = {key.partition(":")[2] for key in DEV_PII_ENCRYPTION_KEYS} | {DEV_PII_HMAC_KEY}
+        used_keys = {key.partition(":")[2].strip() for key in self.pii_encryption_keys} | {self.pii_hmac_key.strip()}
+        if not self.pii_encryption_keys or not self.pii_hmac_key.strip() or used_keys & dev_keys:
+            raise ValueError(
+                "В production режиме (debug=False) обязательны собственные PII_ENCRYPTION_KEYS и PII_HMAC_KEY: "
+                "ключи разработки из кода не защищают имя и email. Сгенерируйте ключ: openssl rand -base64 32."
             )
         # APPLE_CLIENT_ID необязателен: без него вход через Apple отклоняется (iOS-клиента пока нет)
         if not self.google_client_ids:

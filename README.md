@@ -50,6 +50,8 @@ POSTGRES_PASSWORD=your_postgres_password
 POSTGRES_DB=your_postgres_db
 DATABASE_URL=postgresql://your_postgres_user:your_postgres_password@db:5432/your_postgres_db
 SECRET_KEY=change-me-in-production-use-long-random-string
+PII_ENCRYPTION_KEYS=k1:<openssl rand -base64 32>
+PII_HMAC_KEY=<openssl rand -base64 32>
 ACCESS_TOKEN_EXPIRE_MINUTES=60
 REFRESH_TOKEN_EXPIRE_DAYS=7
 GEMINI_API_KEY=sk-ant-api03-...
@@ -69,8 +71,9 @@ docker compose up --build -d
 Перед запуском в production убедитесь, что вы подготовили `.env` файл:
 1. Установите `APP_DEBUG=false` (значение по умолчанию) и `LOG_LEVEL=INFO`. Для локальной разработки в `.env` нужен `APP_DEBUG=true`.
 2. Сгенерируйте криптографически стойкий секретный ключ командой `openssl rand -hex 32` и вставьте его в `SECRET_KEY`.
-3. Задайте `GOOGLE_CLIENT_ID` — client ID через запятую, который приходит в `aud` токена (обычно Web client ID). Без него приложение в production не стартует. `APPLE_CLIENT_ID` (Bundle ID, Services ID) необязателен: пока он пуст, вход через Apple отклоняется.
-4. Если нужен CORS с `CORS_ALLOW_CREDENTIALS=true`, перечислите домены в `CORS_ORIGINS`: сочетание с `*` в production запрещено.
+3. Задайте ключи шифрования имени и email: `PII_ENCRYPTION_KEYS=k1:<ключ>` и `PII_HMAC_KEY=<ключ>`, каждый ключ — `openssl rand -base64 32`. Без них (или с ключами разработки из кода) приложение и миграции в production не стартуют. Копию ключей храните вне сервера: без них имена и email в базе и резервных копиях не восстановить.
+4. Задайте `GOOGLE_CLIENT_ID` — client ID через запятую, который приходит в `aud` токена (обычно Web client ID). Без него приложение в production не стартует. `APPLE_CLIENT_ID` (Bundle ID, Services ID) необязателен: пока он пуст, вход через Apple отклоняется.
+5. Если нужен CORS с `CORS_ALLOW_CREDENTIALS=true`, перечислите домены в `CORS_ORIGINS`: сочетание с `*` в production запрещено.
 
 Для запуска на боевом сервере с Reverse Proxy (Nginx) и сертификатами (Certbot):
 1. Отредактируйте файл `nginx/conf.d/default.conf` и убедитесь, что там указан ваш домен (например, `api.getbalanceai.app`).
@@ -373,7 +376,16 @@ python scripts/cleanup_tokens.py --days 14
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.prod.yml exec api python scripts/delete_user_by_email.py --email user@example.com
 ```
-Скрипт ищет пользователя без учёта регистра, просит повторно ввести email (флаг `--yes` пропускает подтверждение) и удаляет аккаунт теми же шагами, что и `DELETE /api/v1/auth/me`. Коды возврата: `0` — удалён, `1` — не найден, `2` — найдено несколько пользователей, `3` — отменено.
+Скрипт ищет пользователя без учёта регистра по слепому индексу email (HMAC адреса, сам email в базе зашифрован), просит повторно ввести email (флаг `--yes` пропускает подтверждение) и удаляет аккаунт теми же шагами, что и `DELETE /api/v1/auth/me`. Коды возврата: `0` — удалён, `1` — не найден, `3` — отменено.
+
+## 🔑 Ротация ключей шифрования имени и email
+
+Ключ шифрования (API продолжает работать):
+1. В `PII_ENCRYPTION_KEYS` новый ключ — первым, старый — следующим (`k2:<новый>,k1:<старый>`); деплой.
+2. Перешифровать строки: `docker compose -f docker-compose.yml -f docker-compose.prod.yml exec api python scripts/rotate_pii_keys.py`.
+3. Убрать старый ключ из `PII_ENCRYPTION_KEYS`; деплой.
+
+`PII_HMAC_KEY` меняется только при остановленном API: пока слепой индекс не пересчитан, вход по email не находит пользователя и создал бы второй аккаунт. Остановить API, сменить ключ, запустить тот же скрипт (`docker compose ... run --rm api python scripts/rotate_pii_keys.py`), запустить API.
 
 ## 📈 Нагрузочное тестирование
 

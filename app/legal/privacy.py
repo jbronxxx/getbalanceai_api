@@ -102,8 +102,9 @@ PRIVACY: dict[str, PageContent] = {
                 "7. Безопасность",
                 [
                     "Мы применяем технические и организационные меры защиты, включая шифрование данных при "
-                    "передаче (HTTPS) и ограничение доступа к серверам. Однако ни одна передача данных через "
-                    "Интернет не может быть безопасной на 100%.",
+                    "передаче (HTTPS) и ограничение доступа к серверам. Имя и email хранятся в базе данных и её "
+                    "резервных копиях в зашифрованном виде (AES-256), ключи шифрования хранятся отдельно от базы. "
+                    "Однако ни одна передача данных через Интернет не может быть безопасной на 100%.",
                 ],
             ),
             (
@@ -235,8 +236,9 @@ PRIVACY: dict[str, PageContent] = {
                 "7. Security",
                 [
                     "We apply technical and organizational safeguards, including encryption in transit (HTTPS) "
-                    "and restricted access to servers. However, no transmission over the internet can be "
-                    "guaranteed to be 100% secure.",
+                    "and restricted access to servers. Your name and email are stored encrypted (AES-256) in the "
+                    "database and its backups, and the encryption keys are kept separately from the database. "
+                    "However, no transmission over the internet can be guaranteed to be 100% secure.",
                 ],
             ),
             (

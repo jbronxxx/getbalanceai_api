@@ -8,11 +8,13 @@ from typing import Optional
 
 from sqlalchemy import JSON, CheckConstraint, Date, DateTime
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import ForeignKey, Index, Numeric, String, UniqueConstraint, func
+from sqlalchemy import ForeignKey, Index, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
+from sqlalchemy.types import TypeDecorator
 
 from app.database import Base
+from app.pii import blind_index, get_pii_cipher
 
 
 class TransactionType(str, enum.Enum):
@@ -95,6 +97,47 @@ SUPPORTED_CURRENCIES: tuple[str, ...] = tuple(c.value for c in CurrencyCode)
 MONEY_DB_MAX = Decimal("9999999999999999.99")
 
 
+class EncryptedString(TypeDecorator):
+    """Строка, которая хранится в БД зашифрованной (AES-256-GCM, `app/pii.py`), а в коде видна открытой.
+
+    Шифртекст каждый раз разный, поэтому сравнение колонки в SQL (`==`, `in_`, `like`, сортировка) запрещено —
+    иначе запрос молча ничего бы не находил. Поиск — по слепому индексу (`User.email_matches`).
+    `max_length` — длина открытого значения, как у прежней колонки `String(n)`.
+    """
+
+    impl = Text
+    cache_ok = True
+
+    class Comparator(TypeDecorator.Comparator):
+        """Запрет SQL-операций над шифртекстом."""
+
+        def operate(self, op, *other, **kwargs):
+            raise TypeError("Зашифрованную колонку нельзя сравнивать в SQL: ищите по слепому индексу")
+
+        def reverse_operate(self, op, other, **kwargs):
+            raise TypeError("Зашифрованную колонку нельзя сравнивать в SQL: ищите по слепому индексу")
+
+    comparator_factory = Comparator
+
+    def __init__(self, context: str, max_length: int):
+        """`context` — имя колонки (`users.email`): входит в AAD, шифртекст не переносится в другую колонку."""
+        super().__init__()
+        self.context = context
+        self.max_length = max_length
+
+    def process_bind_param(self, value: str | None, dialect) -> str | None:
+        if value is None:
+            return None
+        if len(value) > self.max_length:
+            raise ValueError(f"Значение {self.context} длиннее {self.max_length} символов")
+        return get_pii_cipher().encrypt(value, self.context)
+
+    def process_result_value(self, value: str | None, dialect) -> str | None:
+        if value is None:
+            return None
+        return get_pii_cipher().decrypt(value, self.context)
+
+
 class User(Base):
     """ORM-модель пользователя системы.
 
@@ -102,8 +145,9 @@ class User(Base):
 
     Поля:
         id (uuid.UUID): Уникальный идентификатор пользователя (Primary Key).
-        email (str): Уникальный адрес электронной почты (логин).
-        name (str): Имя пользователя.
+        email (str): Адрес электронной почты (логин); в БД зашифрован.
+        email_hash (str): Слепой индекс email (HMAC) — уникален, по нему ищется пользователь при входе.
+        name (str): Имя пользователя; в БД зашифровано.
         avatar_url (str | None): URL аватара пользователя.
         base_currency (str): Базовая валюта учета пользователя (USD, EUR).
         created_at (datetime): Дата и время регистрации.
@@ -121,8 +165,9 @@ class User(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    email: Mapped[str] = mapped_column(EncryptedString("users.email", 255), nullable=False)
+    email_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(EncryptedString("users.name", 100), nullable=False)
     avatar_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     base_currency: Mapped[str] = mapped_column(
         String(10),
@@ -142,6 +187,17 @@ class User(Base):
         back_populates="user", cascade="all, delete-orphan", passive_deletes=True
     )
     tokens: Mapped[list["Token"]] = relationship(back_populates="user", cascade="all, delete-orphan", passive_deletes=True)
+
+    @validates("email")
+    def _sync_email_hash(self, key: str, value: str) -> str:
+        """Слепой индекс пересчитывается при каждой записи email — и в конструкторе, и при смене адреса."""
+        self.email_hash = blind_index(value)
+        return value
+
+    @classmethod
+    def email_matches(cls, email: str):
+        """Условие поиска пользователя по email (без учёта регистра) через слепой индекс."""
+        return cls.email_hash == blind_index(email)
 
 
 class Token(Base):

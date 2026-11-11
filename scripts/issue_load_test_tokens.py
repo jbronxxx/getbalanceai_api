@@ -7,7 +7,8 @@
     cleanup — удалить всех тестовых пользователей вместе с данными (каскад в БД) и их ключи в Redis.
 
 Тестовые пользователи создаются только с email loadtest+...@getbalanceai.test (зарезервированный домен .test):
-по этому шаблону их находит cleanup, реальные пользователи не затрагиваются.
+по этому шаблону их находит cleanup, реальные пользователи не затрагиваются. Email в БД зашифрован, поэтому
+шаблон проверяется после расшифровки адресов в скрипте, а не через LIKE в SQL.
 
 Использование:
     python scripts/issue_load_test_tokens.py issue --users 150 --background-users 3000 --out /tmp/loadtest_tokens.json
@@ -34,7 +35,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from redis.exceptions import RedisError  # noqa: E402
-from sqlalchemy import delete, func, insert, select, text  # noqa: E402
+from sqlalchemy import delete, insert, select, text  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 
 from app.database import async_session_maker, engine  # noqa: E402
@@ -47,6 +48,7 @@ from app.models.models import (  # noqa: E402
     TransactionType,
     User,
 )
+from app.pii import blind_index  # noqa: E402
 from app.redis import close_redis, get_budgets_version_key, get_redis  # noqa: E402
 from app.services.ai_service import AIService  # noqa: E402
 from app.services.auth_service import AuthService  # noqa: E402
@@ -61,7 +63,7 @@ EXIT_ALREADY_SEEDED = 1
 EMAIL_DOMAIN = "getbalanceai.test"
 TOKEN_USER_PREFIX = "loadtest+u-"
 BACKGROUND_USER_PREFIX = "loadtest+bg-"
-EMAIL_PATTERN = f"loadtest+%@{EMAIL_DOMAIN}"
+LOAD_TEST_EMAIL_PREFIX = "loadtest+"
 
 # Размеры пачек: строки истории генерируются потоково, чтобы сид миллиона транзакций не занимал гигабайты памяти
 # на сервере с 4 ГБ RAM, а каждая транзакция БД оставалась короткой
@@ -166,6 +168,8 @@ def generate_user_row(rng: random.Random, email: str, created_at: datetime) -> d
     return {
         "id": uuid.uuid4(),
         "email": email,
+        # Пакетная вставка идёт мимо ORM-валидатора User.email: слепой индекс задаётся явно
+        "email_hash": blind_index(email),
         "name": email.split("@")[0],
         "base_currency": base_currency,
         "created_at": created_at,
@@ -252,6 +256,17 @@ async def _insert_chunked(session: AsyncSession, model: type, rows: Iterator[dic
     return total
 
 
+def is_load_test_email(email: str) -> bool:
+    """Адрес тестового пользователя нагрузочного теста (loadtest+...@getbalanceai.test)."""
+    return email.startswith(LOAD_TEST_EMAIL_PREFIX) and email.endswith(f"@{EMAIL_DOMAIN}")
+
+
+async def find_load_test_users(session: AsyncSession) -> list[tuple[uuid.UUID, str]]:
+    """Тестовые пользователи (id, email): адреса расшифровываются при чтении и отбираются по шаблону."""
+    result = await session.execute(select(User.id, User.email))
+    return [(row.id, row.email) for row in result if is_load_test_email(row.email)]
+
+
 async def _analyze(session: AsyncSession) -> None:
     """Обновить статистику планировщика: после массовой вставки или удаления план запросов иначе устаревает."""
     for table in ANALYZED_TABLES:
@@ -303,9 +318,7 @@ async def issue_load_test_tokens(
     now = datetime.now(timezone.utc)
 
     async with session_factory() as session:
-        existing = (
-            await session.execute(select(func.count()).select_from(User).where(User.email.like(EMAIL_PATTERN)))
-        ).scalar_one()
+        existing = len(await find_load_test_users(session))
         if existing:
             print(f"В БД уже есть тестовые пользователи ({existing}). Сначала выполните команду cleanup.")
             return EXIT_ALREADY_SEEDED
@@ -361,8 +374,7 @@ async def issue_load_test_tokens(
 async def cleanup_load_test_users(session_factory: Any = async_session_maker) -> int:
     """Удалить всех тестовых пользователей с данными и их ключи в Redis; вернуть число удалённых пользователей."""
     async with session_factory() as session:
-        result = await session.execute(select(User.id, User.email).where(User.email.like(EMAIL_PATTERN)))
-        users = [(row.id, row.email) for row in result]
+        users = await find_load_test_users(session)
 
         user_ids = [user_id for user_id, _ in users]
         for start in range(0, len(user_ids), DELETE_CHUNK_SIZE):

@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.models.models import (
     Budget,
@@ -19,7 +20,6 @@ from app.models.models import (
 )
 from app.redis import get_budgets_version_key, get_redis
 from scripts.delete_user_by_email import (
-    EXIT_AMBIGUOUS,
     EXIT_CANCELLED,
     EXIT_DELETED,
     EXIT_NOT_FOUND,
@@ -115,16 +115,15 @@ class TestDeleteUserByEmail:
         assert await _count(User, existing_id) == 1
 
     @pytest.mark.asyncio
-    async def test_ambiguous_email_is_not_deleted(self):
-        """Несколько пользователей с email, различающимся регистром: код 2, ничего не удалено."""
+    async def test_same_email_in_other_case_cannot_be_second_account(self):
+        """Слепой индекс уникален без учёта регистра: второй аккаунт с тем же адресом не создаётся,
+        поэтому скрипт всегда находит одного пользователя или никого."""
         first_id = await _create_user("dup@example.com")
-        second_id = await _create_user("DUP@example.com")
 
-        code = await delete_user_by_email("dup@example.com", assume_yes=True, session_factory=TestingSessionLocal)
+        with pytest.raises(IntegrityError):
+            await _create_user("DUP@example.com")
 
-        assert code == EXIT_AMBIGUOUS
         assert await _count(User, first_id) == 1
-        assert await _count(User, second_id) == 1
 
     @pytest.mark.asyncio
     async def test_wrong_confirmation_cancels_deletion(self):

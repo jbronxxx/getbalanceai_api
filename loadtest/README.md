@@ -162,10 +162,10 @@ scp <server>:/opt/getbalanceai_api/loadtest_tokens.json . && ssh <server> rm /op
 ```bash
 # На сервере: каскадно удаляет всех пользователей loadtest+...@getbalanceai.test и их ключи в Redis, затем ANALYZE
 dc exec api python scripts/issue_load_test_tokens.py cleanup
-dc exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA' <<< "SELECT count(*) FROM users WHERE email LIKE 'loadtest+%';"
+dc exec api python scripts/issue_load_test_tokens.py cleanup   # повторный запуск: «Удалено тестовых пользователей: 0»
 df -h /
 ```
-Ожидается `0`. Освобождённое место Postgres переиспользует под новые строки после autovacuum, но операционной системе не отдаёт; вернуть его на диск (таблицы блокируются на время выполнения):
+Ожидается `0` (email в базе зашифрован, поэтому проверка — тем же скриптом, а не `LIKE` в SQL). Освобождённое место Postgres переиспользует под новые строки после autovacuum, но операционной системе не отдаёт; вернуть его на диск (таблицы блокируются на время выполнения):
 ```bash
 dc exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<< "VACUUM FULL transactions, budgets, tokens, users;"
 ```

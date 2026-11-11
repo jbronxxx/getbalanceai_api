@@ -7,3 +7,4 @@
 * FK всегда с `ondelete`; составные индексы под частые фильтры (`Index("ix_tx_user_date", "user_id", "date")`).
 * Enums — `(str, enum.Enum)`.
 * При смене схемы: миграция (см. @../../migrations/CLAUDE.md), обновить схему в ARCHITECTURE.md, при необходимости фикстуры `tests/conftest.py`.
+* Персональные данные (имя, email и подобное) — колонки `EncryptedString` (`app/pii.py`); поиск — по слепому индексу (`User.email_matches`), не по самой колонке.

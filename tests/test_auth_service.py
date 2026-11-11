@@ -207,7 +207,7 @@ class TestAuthServiceUnit:
         assert tokens.user.name == "Google User"
 
         # Убеждаемся, что пользователь создан
-        result = await db_session.execute(select(User).where(User.email == "googleuser@example.com"))
+        result = await db_session.execute(select(User).where(User.email_matches("googleuser@example.com")))
         user = result.scalar_one_or_none()
         assert user is not None
         assert user.avatar_url == "https://example.com/avatar.png"
@@ -239,7 +239,7 @@ class TestAuthServiceUnit:
         assert tokens.user.avatar_url == "https://example.com/fallback.png"
         assert tokens.user.name == "Custom Name"
 
-        result = await db_session.execute(select(User).where(User.email == "fallbackuser@example.com"))
+        result = await db_session.execute(select(User).where(User.email_matches("fallbackuser@example.com")))
         user = result.scalar_one_or_none()
         assert user is not None
         assert user.avatar_url == "https://example.com/fallback.png"
@@ -281,7 +281,7 @@ class TestAuthServiceUnit:
         assert tokens_2.user.name == "Updated Repeat User"
 
         # Проверка актуального состояния в БД
-        result = await db_session.execute(select(User).where(User.email == "repeatuser@example.com"))
+        result = await db_session.execute(select(User).where(User.email_matches("repeatuser@example.com")))
         user = result.scalar_one_or_none()
         assert user is not None
         assert user.avatar_url == "https://example.com/updated_avatar.png"
@@ -314,7 +314,7 @@ class TestAuthServiceUnit:
         assert tokens.user.avatar_url == "https://example.com/new_fresh_avatar.png"
         assert tokens.user.name == "New Fresh Name"
 
-        result = await db_session.execute(select(User).where(User.email == "stale_jwt_user@example.com"))
+        result = await db_session.execute(select(User).where(User.email_matches("stale_jwt_user@example.com")))
         user = result.scalar_one_or_none()
         assert user is not None
         assert user.avatar_url == "https://example.com/new_fresh_avatar.png"
@@ -355,7 +355,7 @@ class TestAuthServiceUnit:
         assert tokens.refresh_token is not None
 
         # Убеждаемся, что пользователь создан
-        result = await db_session.execute(select(User).where(User.email == "appleuser@example.com"))
+        result = await db_session.execute(select(User).where(User.email_matches("appleuser@example.com")))
         user = result.scalar_one_or_none()
         assert user is not None
         assert user.name == "appleuser"
@@ -497,7 +497,7 @@ class TestAuthEndpointsIntegration:
         if register:
             user = await _create_user(db_session, email)
         else:
-            user = (await db_session.execute(select(User).where(User.email == email))).scalar_one()
+            user = (await db_session.execute(select(User).where(User.email_matches(email)))).scalar_one()
         access_token, refresh_token = await AuthService(db_session)._issue_token_pair(user.id)
         await db_session.commit()
         return TokenResponse(access_token=access_token, refresh_token=refresh_token)
