@@ -1,9 +1,13 @@
-"""Общие помощники для вызовов Google Gemini: клиент, разбор JSON ответа и суточная квота вызовов в Redis."""
+"""Общие помощники для вызовов Google Gemini: клиент, вызов с повторами, разбор JSON и суточная квота в Redis."""
 
+import asyncio
 import json
 import re
 
+import httpx
 from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types
 from redis import asyncio as aioredis
 
 from config_reader.config_reader import config
@@ -13,6 +17,16 @@ logger = get_logger(__name__)
 
 # Срок жизни суточного счётчика вызовов: ключ содержит дату UTC, через сутки он больше не нужен
 DAILY_QUOTA_TTL_SECONDS = 86400
+
+# Паузы перед повторными попытками: попыток на одну больше, чем пауз
+RETRY_PAUSES_SECONDS = (0.5, 1.5)
+# Временные сбои Gemini, после которых есть смысл повторить: перегрузка модели (503, «high demand»),
+# внутренняя ошибка (500), лимит частоты (429), сбой шлюза
+RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+# Таймаут HTTP-запроса и сбой соединения (SDK ходит в Gemini через httpx)
+_REQUEST_TIMEOUT_ERRORS = (httpx.TimeoutException, httpx.TransportError)
+# Запас сверх HTTP-таймаута попытки: запрос обрывает сам HTTP-клиент, wait_for — страховка
+_ATTEMPT_GRACE_SECONDS = 1.0
 
 
 def is_placeholder_key(api_key: str) -> bool:
@@ -28,6 +42,66 @@ def gemini_configured() -> bool:
 def create_gemini_client() -> genai.Client:
     """Клиент Gemini; без настоящего ключа — с заглушкой: сервисы проверяют `gemini_configured()` до вызова LLM."""
     return genai.Client(api_key=config.gemini_api_key if gemini_configured() else "placeholder")
+
+
+def _attempt_models(model: str) -> list[str]:
+    """Модели по попыткам: основная, а последняя попытка — на запасной (другая модель реже перегружена вместе)."""
+    attempts = len(RETRY_PAUSES_SECONDS) + 1
+    fallback = config.ai_fallback_model.strip()
+    if fallback and fallback != model:
+        return [model] * (attempts - 1) + [fallback]
+    return [model] * attempts
+
+
+def _describe_failure(err: BaseException) -> str:
+    """Причина неудачной попытки для журнала: код и статус Gemini или таймаут, без текста запроса и ответа."""
+    if isinstance(err, genai_errors.APIError):
+        return f"{err.code} {err.status or ''}".strip()
+    if isinstance(err, httpx.TransportError) and not isinstance(err, httpx.TimeoutException):
+        return "обрыв соединения"
+    return "таймаут"
+
+
+async def generate_text(
+    client: genai.Client,
+    model: str,
+    contents: str,
+    gen_config: types.GenerateContentConfig,
+) -> str:
+    """Текст ответа Gemini с повторами при временных сбоях; всё — в пределах AI_REQUEST_TIMEOUT.
+
+    Каждая попытка ограничена AI_ATTEMPT_TIMEOUT на уровне HTTP-запроса (у SDK по умолчанию таймаута нет)
+    и через wait_for. Сам SDK запросы не повторяет. Перегрузка (503), 500, 429 и
+    таймаут — повтор после паузы, последняя попытка — на запасной модели (AI_FALLBACK_MODEL). Прочие ошибки
+    (неверный ключ, запрос) и исчерпанный общий срок — исключение последней попытки.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + config.ai_request_timeout
+    models = _attempt_models(model)
+    for attempt, name in enumerate(models, start=1):
+        attempt_timeout = min(config.ai_attempt_timeout, deadline - loop.time())
+        attempt_config = gen_config.model_copy(
+            update={"http_options": types.HttpOptions(timeout=max(int(attempt_timeout * 1000), 1))}
+        )
+        try:
+            response = await asyncio.wait_for(
+                client.aio.models.generate_content(model=name, contents=contents, config=attempt_config),
+                timeout=attempt_timeout + _ATTEMPT_GRACE_SECONDS,
+            )
+        except (TimeoutError, genai_errors.APIError, *_REQUEST_TIMEOUT_ERRORS) as err:
+            if isinstance(err, genai_errors.APIError) and err.code not in RETRYABLE_STATUS_CODES:
+                raise
+            logger.warning(f"Gemini {name}: попытка {attempt}/{len(models)} не удалась — {_describe_failure(err)}")
+            pause = RETRY_PAUSES_SECONDS[attempt - 1] if attempt < len(models) else 0
+            # Следующей попытке нужно хотя бы полсекунды после паузы, иначе это последняя
+            if attempt == len(models) or deadline - loop.time() - pause < 0.5:
+                raise
+            await asyncio.sleep(pause)
+            continue
+        if attempt > 1:
+            logger.info(f"Gemini {name} ответил с попытки {attempt}/{len(models)}")
+        return response.text or ""
+    raise TimeoutError("Попытки вызова Gemini закончились")
 
 
 def extract_json(text: str) -> dict:

@@ -4,7 +4,6 @@
 не пишутся в журналы — в них личные траты пользователя.
 """
 
-import asyncio
 import uuid
 from datetime import date, datetime, timezone, tzinfo
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -33,6 +32,7 @@ from app.services.gemini import (
     create_gemini_client,
     extract_json,
     gemini_configured,
+    generate_text,
     release_daily_quota,
     sanitize_prompt_text,
     take_daily_quota,
@@ -99,12 +99,10 @@ class VoiceParseService:
         # в пул и не простаивало весь вызов LLM (до AI_REQUEST_TIMEOUT секунд)
         await self.db.commit()
         try:
-            raw_records = await asyncio.wait_for(
-                self._call_gemini(phrase, locale, currency, today), timeout=config.ai_request_timeout
-            )
+            raw_records = await self._call_gemini(phrase, locale, currency, today)
         except Exception as err:
             await release_daily_quota(redis_client, quota_key)
-            logger.error(f"Ошибка разбора голосового ввода в Gemini для пользователя {user_id}: {type(err).__name__}")
+            logger.error(f"Ошибка разбора голосового ввода в Gemini для пользователя {user_id}: {type(err).__name__}: {err}")
             raise ServiceUnavailableException(message="Разбор голосового ввода недоступен") from err
 
         records = self._normalize(raw_records, currency, today)
@@ -126,16 +124,16 @@ class VoiceParseService:
             income_categories=self._categories_hint(_INCOME_ORDER, locale),
             max_records=VOICE_RECORDS_MAX,
         )
-        response = await self.client.aio.models.generate_content(
-            model=self.model_name,
-            contents=texts.prompt.format(text=phrase),
-            config=types.GenerateContentConfig(
+        text = await generate_text(
+            self.client,
+            self.model_name,
+            texts.prompt.format(text=phrase),
+            types.GenerateContentConfig(
                 response_mime_type="application/json",
                 system_instruction=system_instruction,
                 temperature=0,
             ),
         )
-        text = response.text or ""
         try:
             records = extract_json(text).get("records", [])
         except (ValueError, AttributeError) as err:
