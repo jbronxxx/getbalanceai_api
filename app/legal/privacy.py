@@ -29,9 +29,10 @@ PRIVACY: dict[str, PageContent] = {
                         "которые вы вносите сами. В гостевом режиме они хранятся только на устройстве и на "
                         "сервер не передаются.",
                         "Технические данные в серверных технических журналах — для безопасности и стабильной "
-                        "работы: IP-адрес, идентификатор аккаунта, версия приложения и метаданные запросов "
-                        "(адрес, время и результат запроса, код ошибки). Содержимое запросов — суммы, описания "
-                        "операций, токены входа — в журналы не записывается.",
+                        "работы: IP-адрес, идентификатор аккаунта, версия приложения, модель устройства, версия "
+                        "операционной системы, язык интерфейса и метаданные запросов (адрес, время и результат "
+                        "запроса, код ошибки). Содержимое запросов — суммы, описания операций, токены входа — в "
+                        "журналы не записывается.",
                         "Отчёты о сбоях (только в Android-версии): модель устройства, версия операционной "
                         "системы и приложения, идентификатор установки и техническое описание ошибки. Имя, "
                         "email и финансовые данные в отчёты о сбоях не добавляются.",
@@ -166,9 +167,10 @@ PRIVACY: dict[str, PageContent] = {
                         "that you enter yourself. In guest mode they are stored only on your device and are not "
                         "sent to the server.",
                         "Technical data in server technical logs, used for security and stability: IP address, "
-                        "account identifier, app version and request metadata (address, time and outcome of the "
-                        "request, error code). Request contents such as amounts, transaction descriptions and "
-                        "sign-in tokens are not written to logs.",
+                        "account identifier, app version, device model, operating system version, interface "
+                        "language and request metadata (address, time and outcome of the request, error code). "
+                        "Request contents such as amounts, transaction descriptions and sign-in tokens are not "
+                        "written to logs.",
                         "Crash reports (Android version only): device model, operating system and app version, "
                         "installation identifier and a technical description of the error. Your name, email and "
                         "financial data are not added to crash reports.",
