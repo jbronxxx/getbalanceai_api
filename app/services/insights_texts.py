@@ -32,7 +32,6 @@ class InsightTexts:
     income: str
     expense: str
     equivalent: str
-    no_description: str
     system_instruction: str
     prompt: str
 
@@ -58,7 +57,6 @@ INSIGHT_TEXTS: dict[str, InsightTexts] = {
         income="Доход",
         expense="Расход",
         equivalent="{amount} (эквивалент: {base})",
-        no_description="Без описания",
         system_instruction=(
             "Ты — персональный финансовый ассистент. Анализируй расходы пользователя и соблюдение им "
             "установленных месячных лимитов бюджетов по категориям. Формируй практичные, понятные "
@@ -71,6 +69,8 @@ INSIGHT_TEXTS: dict[str, InsightTexts] = {
             "разрядов и обозначение валюты (например: {money_example}). Не заменяй обозначения валют "
             "банковскими кодами (USD, EUR), если в данных их нет.\n"
             "4. Не пересчитывай и не округляй суммы из данных: пользователь сверяет их с экраном приложения.\n"
+            "5. В данных нет описаний операций — только категории. Не придумывай, на что именно потрачены "
+            "деньги (конкретные покупки, магазины, люди), опирайся на категории и суммы.\n"
             'Ответ всегда возвращай строго в формате JSON: {{"insights": ["совет 1", "совет 2", "совет 3"]}}.'
         ),
         prompt=(
@@ -107,7 +107,6 @@ INSIGHT_TEXTS: dict[str, InsightTexts] = {
         income="Income",
         expense="Expense",
         equivalent="{amount} (equivalent: {base})",
-        no_description="No description",
         system_instruction=(
             "You are a personal finance assistant. Analyze the user's spending and how well they stay "
             "within their monthly category budget limits. Give practical, clear and actionable tips "
@@ -120,6 +119,8 @@ INSIGHT_TEXTS: dict[str, InsightTexts] = {
             "a currency symbol (for example: {money_example}). Do not replace currency symbols with "
             "bank codes (USD, EUR) unless the data uses them.\n"
             "4. Do not convert or round amounts from the data: the user compares them with the app screen.\n"
+            "5. The data has no transaction descriptions, only categories. Do not guess what exactly the money "
+            "was spent on (specific purchases, shops, people); rely on categories and amounts.\n"
             'Always return the answer strictly as JSON: {{"insights": ["tip 1", "tip 2", "tip 3"]}}.'
         ),
         prompt=(
