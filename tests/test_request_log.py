@@ -11,7 +11,13 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app.models.models import User
-from logger.request_log import MAX_BODY_CHARS, _error_body, log_request
+from logger.request_log import (
+    MAX_BODY_CHARS,
+    MAX_CLIENT_CHARS,
+    MAX_HEADER_CHARS,
+    _error_body,
+    log_request,
+)
 
 
 def _records(caplog: pytest.LogCaptureFixture) -> list[dict]:
@@ -134,6 +140,39 @@ class TestRequestLog:
         assert record["status"] == 500
         assert record["level"] == "ERROR"
         assert "error" not in record
+
+    @pytest.mark.asyncio
+    async def test_client_fields(self, client: AsyncClient, caplog: pytest.LogCaptureFixture):
+        """Данные клиента из заголовков приложения — отдельным полем client; без них поля нет."""
+        headers = {
+            "X-App-Version": "1.2.3+42",
+            "X-Platform": "Android 15; API 35",
+            "X-Device-Model": "samsung SM-S921B",
+            "X-App-Language": "ru",
+        }
+        with caplog.at_level(logging.INFO, logger="request"):
+            await client.get("/privacy", headers=headers)
+            await client.get("/privacy")
+
+        with_client, without_client = _records(caplog)
+        assert with_client["client"] == {
+            "app_version": "1.2.3+42",
+            "platform": "Android 15; API 35",
+            "device_model": "samsung SM-S921B",
+            "language": "ru",
+        }
+        assert "client" not in without_client
+
+    @pytest.mark.asyncio
+    async def test_long_header_values_truncated(self, client: AsyncClient, caplog: pytest.LogCaptureFixture):
+        """Длинные значения заголовков обрезаются: клиент не раздует запись журнала."""
+        headers = {"User-Agent": "u" * 1000, "X-Device-Model": "m" * 1000}
+        with caplog.at_level(logging.INFO, logger="request"):
+            await client.get("/privacy", headers=headers)
+
+        [record] = _records(caplog)
+        assert record["headers"]["user-agent"] == "u" * MAX_HEADER_CHARS + "…"
+        assert record["client"]["device_model"] == "m" * MAX_CLIENT_CHARS + "…"
 
     def test_long_error_body_truncated(self):
         """Длинное тело ответа с ошибкой обрезается до предела; короткий JSON пишется объектом."""

@@ -19,12 +19,24 @@ from logger.logger import _get_log_level, get_request_id
 # (Authorization, Cookie, токены) не окажется в журнале, даже если про него забыть
 LOGGED_HEADERS = ("user-agent", "accept-language", "content-type", "content-length", "if-none-match")
 
+# Данные клиента от мобильного приложения (OBS-02) → поле `client` записи: версия приложения, ОС с уровнем API,
+# производитель и модель устройства, язык интерфейса. Постоянных идентификаторов устройства среди них нет
+CLIENT_HEADERS = {
+    "x-app-version": "app_version",
+    "x-platform": "platform",
+    "x-device-model": "device_model",
+    "x-app-language": "language",
+}
+
 # Служебные пути без записи в журнал: их каждые несколько секунд опрашивают Prometheus и healthcheck Docker
 SKIPPED_PATHS = frozenset({"/health", "/metrics"})
 
-# Предел длины тела ответа с ошибкой и строки запроса в журнале
+# Пределы длины в журнале: тело ответа с ошибкой, строка запроса, значение заголовка, поле клиента.
+# Заголовки присылает клиент — без предела одна запись могла бы занять сколько угодно места
 MAX_BODY_CHARS = 2048
 MAX_QUERY_CHARS = 512
+MAX_HEADER_CHARS = 256
+MAX_CLIENT_CHARS = 64
 
 request_logger = logging.getLogger("request")
 
@@ -95,9 +107,18 @@ def _write(request: Request, status: int, started: float, response: Response | N
         record["query"] = _truncate(request.url.query, MAX_QUERY_CHARS)
     if response is not None and "content-length" in response.headers:
         record["response_size"] = int(response.headers["content-length"])
-    headers = {name: request.headers[name] for name in LOGGED_HEADERS if name in request.headers}
+    headers = {
+        name: _truncate(request.headers[name], MAX_HEADER_CHARS) for name in LOGGED_HEADERS if name in request.headers
+    }
     if headers:
         record["headers"] = headers
+    client = {
+        field: _truncate(request.headers[name], MAX_CLIENT_CHARS)
+        for name, field in CLIENT_HEADERS.items()
+        if name in request.headers
+    }
+    if client:
+        record["client"] = client
     if body is not None:
         record["error"] = _error_body(body)
     request_logger.log(_level(status), json.dumps(record, ensure_ascii=False, default=str))
