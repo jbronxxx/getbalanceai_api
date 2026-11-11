@@ -14,6 +14,7 @@ from httpx import AsyncClient
 from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request
 
 from app.exceptions import (
     NotFoundException,
@@ -25,6 +26,11 @@ from app.redis import get_revoked_jti_key
 from app.schemas.schemas import AppleSignInRequest, GoogleSignInRequest, TokenResponse
 from app.services.auth_service import AuthService, get_current_user
 from config_reader.config_reader import config
+
+
+def _request() -> Request:
+    """Запрос для прямого вызова зависимости get_current_user: в его state она пишет ID пользователя для журнала."""
+    return Request({"type": "http"})
 
 
 async def _create_user(db_session: AsyncSession, email: str) -> User:
@@ -115,7 +121,7 @@ class TestAuthServiceUnit:
 
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_str)
         with pytest.raises(UnauthorizedException) as exc_info:
-            await get_current_user(credentials=creds, db=db_session)
+            await get_current_user(request=_request(), credentials=creds, db=db_session)
         assert exc_info.value.code == "TOKEN_REVOKED"
 
     @pytest.mark.asyncio
@@ -163,7 +169,7 @@ class TestAuthServiceUnit:
 
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_str)
         with pytest.raises(UnauthorizedException) as exc_info:
-            await get_current_user(credentials=creds, db=db_session)
+            await get_current_user(request=_request(), credentials=creds, db=db_session)
         assert exc_info.value.code == "TOKEN_REVOKED"
 
     @pytest.mark.asyncio
@@ -181,8 +187,10 @@ class TestAuthServiceUnit:
         assert exc_info.value.status_code == 503
 
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_str)
-        user = await get_current_user(credentials=creds, db=db_session)
+        request = _request()
+        user = await get_current_user(request=request, credentials=creds, db=db_session)
         assert user.id == test_user.id
+        assert request.state.user_id == str(test_user.id)
 
     @pytest.mark.asyncio
     @patch("app.services.auth_service.PyJWKClient")
@@ -391,7 +399,7 @@ class TestGetCurrentUserDependency:
         token_str = service.create_access_token(test_user.id)
 
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_str)
-        user = await get_current_user(credentials=creds, db=db_session)
+        user = await get_current_user(request=_request(), credentials=creds, db=db_session)
         assert user.id == test_user.id
         assert user.email == test_user.email
 
@@ -405,7 +413,7 @@ class TestGetCurrentUserDependency:
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_str)
 
         with caplog.at_level(logging.DEBUG):
-            user = await get_current_user(credentials=creds, db=db_session)
+            user = await get_current_user(request=_request(), credentials=creds, db=db_session)
             assert user.id == test_user.id
 
         assert not any("Аутентификация успешна" in record.message for record in caplog.records)
@@ -419,7 +427,7 @@ class TestGetCurrentUserDependency:
 
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_str)
         with pytest.raises(UnauthorizedException) as exc_info:
-            await get_current_user(credentials=creds, db=db_session)
+            await get_current_user(request=_request(), credentials=creds, db=db_session)
         assert exc_info.value.code == "TOKEN_REVOKED"
 
     @pytest.mark.asyncio
@@ -440,7 +448,7 @@ class TestGetCurrentUserDependency:
 
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_str)
         with pytest.raises(UnauthorizedException) as exc_info:
-            await get_current_user(credentials=creds, db=db_session)
+            await get_current_user(request=_request(), credentials=creds, db=db_session)
         assert exc_info.value.code == "INVALID_TOKEN"
 
 
@@ -679,7 +687,9 @@ class TestAuthLogsWithoutPii:
         with caplog.at_level(logging.DEBUG):
             with pytest.raises(UnauthorizedException):
                 await get_current_user(
-                    credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=expired), db=db_session
+                    request=_request(),
+                    credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=expired),
+                    db=db_session,
                 )
         assert not any(record.levelno >= logging.WARNING for record in caplog.records)
 
@@ -687,6 +697,7 @@ class TestAuthLogsWithoutPii:
         with caplog.at_level(logging.DEBUG):
             with pytest.raises(UnauthorizedException):
                 await get_current_user(
+                    request=_request(),
                     credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials="bad.token.value"),
                     db=db_session,
                 )

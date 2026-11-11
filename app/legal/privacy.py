@@ -28,8 +28,10 @@ PRIVACY: dict[str, PageContent] = {
                         "Финансовые данные: операции, категории, бюджеты, регулярные платежи и базовая валюта, "
                         "которые вы вносите сами. В гостевом режиме они хранятся только на устройстве и на "
                         "сервер не передаются.",
-                        "Технические данные: IP-адрес, версия приложения и метаданные запросов в серверных "
-                        "технических журналах — для безопасности и стабильной работы.",
+                        "Технические данные в серверных технических журналах — для безопасности и стабильной "
+                        "работы: IP-адрес, идентификатор аккаунта, версия приложения и метаданные запросов "
+                        "(адрес, время и результат запроса, код ошибки). Содержимое запросов — суммы, описания "
+                        "операций, токены входа — в журналы не записывается.",
                         "Отчёты о сбоях (только в Android-версии): модель устройства, версия операционной "
                         "системы и приложения, идентификатор установки и техническое описание ошибки. Имя, "
                         "email и финансовые данные в отчёты о сбоях не добавляются.",
@@ -163,8 +165,10 @@ PRIVACY: dict[str, PageContent] = {
                         "Financial data: transactions, categories, budgets, recurring payments and base currency "
                         "that you enter yourself. In guest mode they are stored only on your device and are not "
                         "sent to the server.",
-                        "Technical data: IP address, app version and request metadata in server technical logs, "
-                        "used for security and stability.",
+                        "Technical data in server technical logs, used for security and stability: IP address, "
+                        "account identifier, app version and request metadata (address, time and outcome of the "
+                        "request, error code). Request contents such as amounts, transaction descriptions and "
+                        "sign-in tokens are not written to logs.",
                         "Crash reports (Android version only): device model, operating system and app version, "
                         "installation identifier and a technical description of the error. Your name, email and "
                         "financial data are not added to crash reports.",
