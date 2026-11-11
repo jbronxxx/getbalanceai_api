@@ -30,6 +30,7 @@ from app.routers import (
     recurring_payments,
     sync,
     transactions,
+    voice,
 )
 from app.schemas.schemas import ErrorResponse
 from app.tasks.token_cleanup import periodic_token_cleanup
@@ -233,6 +234,7 @@ app.include_router(transactions.router, prefix="/api/v1/transactions", tags=["tr
 app.include_router(budgets.router, prefix="/api/v1/budgets", tags=["budgets"])
 app.include_router(recurring_payments.router, prefix="/api/v1/recurring-payments", tags=["recurring-payments"])
 app.include_router(insights.router, prefix="/api/v1/insights", tags=["insights"])
+app.include_router(voice.router, prefix="/api/v1/voice", tags=["voice"])
 app.include_router(sync.router, prefix="/api/v1/sync", tags=["sync"])
 app.include_router(currencies.router, prefix="/api/v1/currencies", tags=["currencies"])
 app.include_router(public.router)

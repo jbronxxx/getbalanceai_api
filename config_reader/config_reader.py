@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     gemini_api_key: str = Field("", alias="GEMINI_API_KEY")
     ai_model: str = Field("gemini-3.5-flash-lite", alias="AI_MODEL")
     ai_daily_limit_per_user: int = Field(5, alias="AI_DAILY_LIMIT_PER_USER")
+    # Суточный лимит разборов голосового ввода через Gemini на пользователя
+    voice_daily_limit_per_user: int = Field(30, alias="VOICE_DAILY_LIMIT_PER_USER")
     # Предел ожидания ответа Gemini: зависший вызов иначе держал бы воркер и запрос клиента без ответа
     ai_request_timeout: float = Field(30.0, alias="AI_REQUEST_TIMEOUT")
 

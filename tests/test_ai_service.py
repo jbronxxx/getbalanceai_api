@@ -20,6 +20,7 @@ from app.services.ai_service import (
     AIService,
     MonthFingerprint,
 )
+from app.services.gemini import extract_json
 
 
 def _patch_fingerprint(tx_count: int = MIN_TRANSACTIONS_FOR_INSIGHTS, signature: str = "sig"):
@@ -59,38 +60,38 @@ class TestAIService:
     def test_extract_json_pure_json(self):
         """Проверка парсинга чистого JSON."""
         raw = '{"insights": ["Совет 1", "Совет 2"]}'
-        result = AIService._extract_json(raw)
+        result = extract_json(raw)
         assert result == {"insights": ["Совет 1", "Совет 2"]}
 
     def test_extract_json_markdown_block(self):
         """Проверка извлечения JSON из markdown-блока ```json ... ```."""
         raw = '```json\n{"insights": ["Совет 1", "Совет 2"]}\n```'
-        result = AIService._extract_json(raw)
+        result = extract_json(raw)
         assert result == {"insights": ["Совет 1", "Совет 2"]}
 
     def test_extract_json_markdown_block_without_tag(self):
         """Проверка извлечения JSON из markdown-блока без указания языка ``` ... ```."""
         raw = '```\n{"insights": ["Совет 1"]}\n```'
-        result = AIService._extract_json(raw)
+        result = extract_json(raw)
         assert result == {"insights": ["Совет 1"]}
 
     def test_extract_json_with_conversational_text(self):
         """Проверка извлечения JSON при наличии вводного и завершающего текста модели."""
         raw = 'Конечно!\n```json\n{\n  "insights": [\n    "Оптимизируйте"\n  ]\n}\n```\nНадеюсь!'
-        result = AIService._extract_json(raw)
+        result = extract_json(raw)
         assert result == {"insights": ["Оптимизируйте"]}
 
     def test_extract_json_embedded_brackets_without_code_block(self):
         """Проверка извлечения JSON, заключенного в фигурные скобки посреди текста."""
         raw = 'Вот ваш результат: {"insights": ["Экономьте на такси"]} Всего доброго!'
-        result = AIService._extract_json(raw)
+        result = extract_json(raw)
         assert result == {"insights": ["Экономьте на такси"]}
 
     def test_extract_json_invalid_raises_error(self):
         """Если валидный JSON отсутствует, выбрасывается JSONDecodeError."""
         raw = "Извините, я не могу проанализировать эти транзакции."
         with pytest.raises(json.JSONDecodeError):
-            AIService._extract_json(raw)
+            extract_json(raw)
 
     # =========================================================================
     # TASK-1.1 & TASK-1.3: Вызов Gemini, асинхронность и UTC время

@@ -33,6 +33,10 @@ PRIVACY: dict[str, PageContent] = {
                         "Отчёты о сбоях (только в Android-версии): модель устройства, версия операционной "
                         "системы и приложения, идентификатор установки и техническое описание ошибки. Имя, "
                         "email и финансовые данные в отчёты о сбоях не добавляются.",
+                        "Голосовой ввод (если вы им пользуетесь, нужен доступ к микрофону): речь распознаёт "
+                        "сервис распознавания речи вашего устройства, приложение не записывает и не хранит звук. "
+                        "Распознанный текст фразы передаётся на наш сервер только для разбора на записи, "
+                        "которые вы подтверждаете сами; текст не сохраняется и не попадает в журналы.",
                     ],
                 ],
             ),
@@ -43,6 +47,7 @@ PRIVACY: dict[str, PageContent] = {
                         "Создание и управление вашей учётной записью.",
                         "Синхронизация операций, бюджетов и регулярных платежей между устройствами.",
                         "Формирование персонализированной финансовой аналитики с помощью ИИ.",
+                        "Разбор фраз голосового ввода на записи.",
                         "Поиск и исправление ошибок в приложении.",
                         "Защита от злоупотреблений, поддержка и улучшение сервиса.",
                     ],
@@ -54,8 +59,9 @@ PRIVACY: dict[str, PageContent] = {
                 "4. Сторонние сервисы",
                 [
                     [
-                        "Google (Gemini API) — генерация ИИ-аналитики. Передаются обезличенные записи: даты, "
-                        "типы, категории, суммы, валюта и текстовые описания операций; имя, email и "
+                        "Google (Gemini API) — генерация ИИ-аналитики и разбор голосового ввода. Для аналитики "
+                        "передаются обезличенные записи: даты, типы, категории, суммы, валюта и текстовые "
+                        "описания операций; для голосового ввода — только текст фразы. Имя, email и "
                         "идентификатор пользователя не передаются. Мы используем коммерческий (платный) тариф "
                         "Gemini API: переданные данные применяются только для формирования ответа и не "
                         "используются Google для обучения моделей ИИ. Не указывайте в описаниях операций "
@@ -161,6 +167,10 @@ PRIVACY: dict[str, PageContent] = {
                         "Crash reports (Android version only): device model, operating system and app version, "
                         "installation identifier and a technical description of the error. Your name, email and "
                         "financial data are not added to crash reports.",
+                        "Voice input (if you use it; requires microphone access): speech is recognized by your "
+                        "device's speech recognition service, and the app does not record or store audio. The "
+                        "recognized text is sent to our server only to turn it into records that you confirm "
+                        "yourself; the text is not stored and is not written to logs.",
                     ],
                 ],
             ),
@@ -171,6 +181,7 @@ PRIVACY: dict[str, PageContent] = {
                         "To create and manage your account.",
                         "To sync transactions, budgets and recurring payments across your devices.",
                         "To generate personalized financial insights using AI.",
+                        "To turn voice input phrases into records.",
                         "To find and fix errors in the app.",
                         "To prevent abuse, provide support and improve the service.",
                     ],
@@ -182,9 +193,10 @@ PRIVACY: dict[str, PageContent] = {
                 "4. Third-party services",
                 [
                     [
-                        "Google (Gemini API) generates AI insights. It receives de-identified records: dates, "
-                        "types, categories, amounts, currency and free-text descriptions of transactions; your "
-                        "name, email and user identifier are not sent. We use the commercial (paid) tier of the "
+                        "Google (Gemini API) generates AI insights and parses voice input. For insights it "
+                        "receives de-identified records: dates, types, categories, amounts, currency and free-text "
+                        "descriptions of transactions; for voice input, only the text of the phrase. Your name, "
+                        "email and user identifier are not sent. We use the commercial (paid) tier of the "
                         "Gemini API: the data is used only to produce the response and is not used by Google to "
                         "train AI models. Do not put personal data in transaction descriptions.",
                         "Google (Firebase Crashlytics) collects crash reports in the Android version (see "

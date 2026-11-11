@@ -835,6 +835,60 @@ class InsightResponse(BaseModel):
 
 
 # ============================================================================
+# Схемы голосового ввода
+# ============================================================================
+
+# Распознанная фраза длиннее не бывает: несколько трат — это десятки слов
+VOICE_TEXT_MAX_LENGTH = 500
+# Больше записей из одной фразы не принимается: остальное модель, скорее всего, выдумала
+VOICE_RECORDS_MAX = 10
+# Тип поля `date` в черновике: имя поля совпадает с именем типа, а Pydantic такое не разбирает
+_Day = date
+
+
+class VoiceParseRequest(BaseModel):
+    """Запрос разбора распознанной на устройстве фразы на записи."""
+
+    text: str = Field(
+        ...,
+        min_length=1,
+        max_length=VOICE_TEXT_MAX_LENGTH,
+        description="Распознанный текст фразы; не сохраняется и не пишется в журналы",
+    )
+    # Попадает в промпт LLM: только код языка, без произвольного текста
+    locale: str = Field(
+        "en",
+        pattern=r"^[A-Za-z]{2}([_-][A-Za-z]{2})?$",
+        description="Язык интерфейса (ru, en; допускается ru_RU): язык инструкции модели",
+    )
+    currency: CurrencyCode = Field(..., description="Валюта записи, если в фразе валюта не названа")
+
+    @field_validator("text")
+    @classmethod
+    def _text_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise PydanticCustomError("blank_text", "Текст фразы пуст")
+        return value
+
+
+class VoiceRecordDraft(BaseModel):
+    """Черновик записи из фразы: приложение показывает его на подтверждение, сервер ничего не сохраняет."""
+
+    type: TransactionType = Field(..., description="Тип записи")
+    category: Category = Field(..., description="Категория, подходящая к типу")
+    amount: Decimal = Field(..., description="Сумма (> 0, не больше 10^12, два знака после запятой)")
+    currency: CurrencyCode = Field(..., description="Валюта суммы")
+    description: str = Field(..., max_length=DESCRIPTION_MAX_LENGTH, description="Короткое название; может быть пустым")
+    date: _Day = Field(..., description="День записи по часам клиента, не позже сегодняшнего")
+
+
+class VoiceParseResponse(BaseModel):
+    """Результат разбора фразы: пустой список — в фразе не нашлось ни одной суммы."""
+
+    records: list[VoiceRecordDraft] = Field(..., max_length=VOICE_RECORDS_MAX, description="Черновики записей")
+
+
+# ============================================================================
 # Схемы котировок валют
 # ============================================================================
 
