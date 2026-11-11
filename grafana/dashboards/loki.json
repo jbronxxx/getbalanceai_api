@@ -111,6 +111,82 @@
       ],
       "title": "API Logs",
       "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki"
+      },
+      "description": "Журнал запросов (logger/request_log.py): ответы с ошибкой; в поле error — ответ API с кодом и деталями",
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 19
+      },
+      "id": 3,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "Loki"
+          },
+          "editorMode": "code",
+          "expr": "{service=\"api\"} |= `\"type\": \"request\"` | json | status >= 400",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Ошибки API (4xx/5xx)",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki"
+      },
+      "description": "Журнал запросов: ответы дольше секунды; ИИ-отчёт и голосовой разбор могут занимать до 30 с",
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      },
+      "id": 4,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "Loki"
+          },
+          "editorMode": "code",
+          "expr": "{service=\"api\"} |= `\"type\": \"request\"` | json | duration_ms > 1000",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Медленные запросы (> 1 с)",
+      "type": "logs"
     }
   ],
   "schemaVersion": 39,

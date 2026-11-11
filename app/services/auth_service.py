@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import NoReturn, Union
 
 import jwt
-from fastapi import Depends
+from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
 from jwt.exceptions import InvalidTokenError as JWTError
@@ -595,6 +595,7 @@ class AuthService:
 
 
 async def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> User:
@@ -666,4 +667,6 @@ async def get_current_user(
             message="Пользователь не найден",
         )
 
+    # ID пользователя для журнала запросов (logger/request_log.py) — только после проверки токена
+    request.state.user_id = str(user.id)
     return user

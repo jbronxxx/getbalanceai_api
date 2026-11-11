@@ -233,7 +233,8 @@ getbalanceai_api/
 ├── config_reader/              # Загрузка и объединение YAML + .env
 │   └── config_reader.py
 ├── logger/                     # Структурированное логирование
-│   └── logger.py
+│   ├── logger.py
+│   └── request_log.py          # Журнал HTTP-запросов: JSON-строка на запрос
 ├── migrations/                 # Alembic миграции
 │   ├── versions/
 │   ├── env.py
@@ -262,6 +263,7 @@ getbalanceai_api/
 │   ├── test_income_categories.py # Тесты категорий доходов и валидации типов
 │   ├── test_multi_currency.py  # Тесты мультивалютности
 │   ├── test_observability.py   # Тесты healthcheck и сквозного Correlation ID
+│   ├── test_request_log.py     # Журнал запросов: состав записи, без тел запросов, токенов и ПДн
 │   ├── test_public_pages.py    # Тесты публичных страниц (/privacy, /terms, /delete-account)
 │   ├── test_redis_module.py    # Модульные тесты централизованного клиента и ключей Redis
 │   ├── test_oauth_verification.py # Проверка ID-токенов Google/Apple на реальной RSA-подписи (aud, iss, email_verified)
@@ -408,6 +410,7 @@ getbalanceai_api/
   * Уровни: INFO — бизнес-события (регистрация и вход с указанием способа: google, apple; ротация и отзыв токенов, создание/удаление транзакций и бюджетов, генерация AI-инсайтов, синхронизация); WARNING — отклонённые запросы и деградация внешних сервисов; ERROR — сбои сервера (500 с методом и путём, ошибки Gemini). Чтения, попадания в кэш, инвалидация ETag и истёкший access-токен — DEBUG.
   * Персональные данные в логи не пишутся: пользователь идентифицируется по `user_id`, при неудачном входе email маскируется (`j***@gmail.com`, `mask_email` в `logger/logger.py`); ответ LLM не логируется — при ошибке разбора только текст ошибки и длина ответа.
   * Каждая строка лога содержит ID запроса из `X-Request-ID` / `X-Correlation-ID`. Входящее значение принимается, только если это ≤ 64 символов `[A-Za-z0-9-]` (`normalize_request_id`), иначе генерируется UUID4 — так клиент не может подделать строки лога или раздуть записи.
+  * **Журнал запросов** (`logger/request_log.py`, вызывается из `correlation_id_middleware` в `main.py`): на каждый запрос — одна JSON-строка логгера `request` без префикса формата, чтобы Loki разбирал её через `| json`. Поля: `type=request`, `level`, `request_id`, `method`, `path`, `route` (шаблон маршрута, `/api/v1/transactions/{transaction_id}`), `query` (до 512 символов), `status`, `duration_ms`, `response_size`, `user_id` (ставит `get_current_user` в `request.state` после проверки токена; у входа и публичных страниц — `null`), `client_ip`, `headers` — только белый список `LOGGED_HEADERS` (`user-agent`, `accept-language`, `content-type`, `content-length`, `if-none-match`): `Authorization`, `Cookie` и любые новые заголовки в журнал не попадают. Тела запросов не пишутся никогда (суммы, описания, текст голосовой фразы, ID-токены входа). При 4xx/5xx в поле `error` — тело ответа API (`code`, `message`, `details`) до 2048 символов; ответ клиенту отдаётся без изменений. Уровень: 5xx — ERROR, 4xx — WARNING, остальные — INFO; необработанное исключение пишется как 500 и пробрасывается в общий обработчик. `/health` и `/metrics` не пишутся (их опрашивают healthcheck и Prometheus). Access-лог gunicorn выключен (по умолчанию), поэтому это единственная запись о запросе.
 * **Сбор метрик (Prometheus + cAdvisor)**:
   * `cadvisor` (Container Advisor) экспонирует системные метрики (потребление CPU, RAM, Network, Disk) по каждому контейнеру.
   * `cadvisor` работает без `privileged` и без `/dev/kmsg` (события OOM из журнала ядра не собираются), к Docker API обращается через `docker-socket-proxy` (`-docker=tcp://docker-socket-proxy:2375`), а не через `docker.sock`. Корень хоста смонтирован только на чтение (`/:/rootfs:ro`): через него читается сетевая статистика контейнеров, поэтому файлы хоста, включая `.env`, cadvisor по-прежнему может прочитать, но не изменить.
@@ -417,7 +420,7 @@ getbalanceai_api/
   * Версия Prometheus 3.x. Запросы дашбордов совместимы с её изменениями (нормализация значений меток `le`/`quantile`, строгая проверка `Content-Type` при сборе): точных сравнений по `le` нет, `/metrics` и cAdvisor отдают корректный `Content-Type`. Prometheus 3 читает данные 2.x из тома `prometheus_data`; откат на 2.x возможен только на v2.55+ — более ранние версии данные 3.x не прочитают.
 * **Визуализация (Grafana)**:
   * В Grafana настроен автоматический провижининг (provisioning) источников данных (Loki и Prometheus).
-  * Предустановлены готовые дашборды для метрик API (FastAPI), утилизации ресурсов контейнеров (cAdvisor) и просмотра логов приложения (Loki).
+  * Предустановлены готовые дашборды для метрик API (FastAPI), утилизации ресурсов контейнеров (cAdvisor) и просмотра логов приложения (Loki). В дашборде Loki, кроме всех логов API, — панели журнала запросов «Ошибки API (4xx/5xx)» (`status >= 400`) и «Медленные запросы (> 1 с)» (`duration_ms > 1000`).
   * Дашборд **Load Testing** (`grafana/dashboards/loadtest.json`, uid `load-testing`) собирает на одном экране всё для нагрузочного теста: сводку с порогами критериев успеха (RPS, доля 5xx, p95/p99, CPU/RAM хоста, обмен со свопом, соединения и idle in transaction Postgres, память Redis, OOM, перезапуски), затем разделы API, сервер, контейнеры, PostgreSQL, Redis и свёрнутый раздел логов ошибок (`ERROR`/`CRITICAL`/`FATAL`, `QueuePool`, `WORKER TIMEOUT`, `Traceback`, `deadlock` в логах api, db, nginx, redis). Раздел логов свёрнут намеренно: его запросы к Loki просматривают все логи за окно дашборда при каждом обновлении, и на нагрузочном тесте Loki занимал до 0.6 ядра из 2, отнимая CPU у API. Общие перцентили считаются по `http_request_duration_highr_seconds` (границы до 60 с), перцентили по эндпоинтам — по `http_request_duration_seconds` с границами `LATENCY_BUCKETS_SECONDS` в `main.py` (0.05–30 с): с границами по умолчанию (0.1, 0.5, 1) все ответы дольше секунды попадали в `+Inf`, и p95 упирался в 1 с.
   * Запросы дашборда FastAPI строятся на `rate()`/`increase()` за окно, а не на сырых значениях счётчиков: счётчики накапливаются с запуска воркеров и обнуляются при деплое, поэтому доля 5xx или средняя длительность «с момента старта» скрывали бы свежие всплески.
   * Версия Grafana 11.x; поддержка Angular выключена (`GF_SECURITY_ANGULAR_SUPPORT_ENABLED=false`), дашборды используют только React-панели (`timeseries`, `stat`, `table`, `bargauge`, `logs`). Панели `graph`/`singlestat`/`table-old` из импортированных комьюнити-дашбордов в `grafana/dashboards` не добавлять — их нужно конвертировать.

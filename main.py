@@ -42,6 +42,7 @@ from logger.logger import (
     reset_request_id,
     set_request_id,
 )
+from logger.request_log import log_request
 
 logger = get_logger(__name__)
 
@@ -123,11 +124,11 @@ app.add_middleware(
 
 @app.middleware("http")
 async def correlation_id_middleware(request: Request, call_next):
-    """Middleware для сквозной трассировки запросов через X-Request-ID."""
+    """Middleware для сквозной трассировки запросов через X-Request-ID и записи запроса в журнал."""
     request_id = normalize_request_id(request.headers.get("X-Request-ID") or request.headers.get("X-Correlation-ID"))
     token = set_request_id(request_id)
     try:
-        response: Response = await call_next(request)
+        response: Response = await log_request(request, call_next)
         response.headers["X-Request-ID"] = request_id
         return response
     finally:
