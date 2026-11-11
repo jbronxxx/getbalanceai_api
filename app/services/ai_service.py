@@ -2,13 +2,11 @@
 
 import asyncio
 import json
-import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone, tzinfo
 from decimal import Decimal
 
-from google import genai
 from google.genai import types
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +20,14 @@ from app.redis import (
 )
 from app.schemas.schemas import BudgetResponse, InsightResponse, InsightState
 from app.services.budget_service import BudgetService
+from app.services.gemini import (
+    create_gemini_client,
+    extract_json,
+    gemini_configured,
+    release_daily_quota,
+    sanitize_prompt_text,
+    take_daily_quota,
+)
 from app.services.insights_formatting import category_name, format_money
 from app.services.insights_texts import insight_texts
 from app.services.period import current_month as client_current_month
@@ -57,18 +63,8 @@ class AIService:
     def __init__(self, db: AsyncSession, client=None, model_name=None):
         """Инициализация сервиса с сессией базы данных и клиентом Gemini."""
         self.db = db
-        if client:
-            self.client = client
-        else:
-            # Без настоящего ключа клиент создаётся с заглушкой: get_insights до вызова LLM не дойдёт
-            api_key = "placeholder" if self._is_placeholder_key(config.gemini_api_key) else config.gemini_api_key
-            self.client = genai.Client(api_key=api_key)
+        self.client = client or create_gemini_client()
         self.model_name = model_name or config.ai_model
-
-    @staticmethod
-    def _is_placeholder_key(api_key: str) -> bool:
-        """Ключ не задан или остался шаблоном из .env.example (sk-..., your-...)."""
-        return not api_key or api_key.startswith(("sk-", "your-"))
 
     @classmethod
     async def invalidate_cache(cls, user_id: uuid.UUID) -> None:
@@ -103,27 +99,6 @@ class AIService:
                 await client.unlink(*batch)
         except Exception as err:
             logger.warning(f"Ошибка полной очистки кэша Redis: {err}")
-
-    @staticmethod
-    def _extract_json(text: str) -> dict:
-        """Извлечь и распарсить JSON-объект из ответа модели, очищая markdown и лишний текст."""
-        cleaned = text.strip()
-
-        # Удаляем markdown-блоки вида ```json ... ``` или ``` ... ```
-        if "```" in cleaned:
-            pattern = r"```(?:json)?\s*([\s\S]*?)\s*```"
-            match = re.search(pattern, cleaned)
-            if match:
-                cleaned = match.group(1).strip()
-
-        # Находим границы JSON-объекта от первой { до последней }
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start != -1 and end != -1 and end >= start:
-            end_idx = end + 1
-            cleaned = cleaned[start:end_idx]
-
-        return json.loads(cleaned)
 
     @staticmethod
     def _month_bounds(month: int, year: int, tz: tzinfo = timezone.utc) -> tuple[datetime, datetime]:
@@ -230,7 +205,7 @@ class AIService:
         if (target_year, target_month) > (current_year, current_month):
             return InsightResponse(insights=[], generated_at=now, state=InsightState.no_data)
 
-        if self._is_placeholder_key(config.gemini_api_key):
+        if not gemini_configured():
             logger.warning("GEMINI_API_KEY is not set or is a placeholder, returning stub insights")
             return InsightResponse(insights=[texts.stub], generated_at=now)
 
@@ -264,14 +239,11 @@ class AIService:
                 return self._response_from_cache(cached, is_outdated=True)
             return InsightResponse(insights=[], generated_at=now, state=InsightState.not_generated)
 
-        # Суточная квота занимается атомарным INCR до вызова LLM: при чтении и последующей записи
-        # параллельные запросы видели одно значение счётчика и все проходили лимит
+        # Суточная квота занимается до вызова LLM (атомарный INCR, см. take_daily_quota)
         date_str = now.strftime("%Y-%m-%d")
         daily_quota_key = get_insights_daily_quota_key(user_id, date_str)
         try:
-            daily_calls = await redis_client.incr(daily_quota_key)
-            if daily_calls == 1:
-                await redis_client.expire(daily_quota_key, 86400)
+            daily_calls = await take_daily_quota(redis_client, daily_quota_key)
         except Exception as err:
             # Без счётчика лимит не проверить, а каждый вызов LLM платный: генерацию не запускаем
             logger.warning(f"Не удалось занять квоту AI в Redis для пользователя {user_id}: {err}")
@@ -336,7 +308,7 @@ class AIService:
             response = InsightResponse(insights=insights, generated_at=datetime.now(timezone.utc))
         except Exception as e:
             logger.error(f"Ошибка запроса инсайтов к Gemini для пользователя {user_id}: {type(e).__name__}: {e}")
-            await self._release_quota(daily_quota_key, user_id)
+            await release_daily_quota(redis_client, daily_quota_key)
             # Сообщение остаётся в insights для старых клиентов; новые по state показывают свою карточку
             return InsightResponse(
                 insights=list(texts.busy),
@@ -363,14 +335,6 @@ class AIService:
             f"{len(insights)} советов, вызовов за сутки {daily_calls}/{config.ai_daily_limit_per_user}"
         )
         return response
-
-    @staticmethod
-    async def _release_quota(daily_quota_key: str, user_id: uuid.UUID) -> None:
-        """Вернуть занятый вызов квоты: неудачная генерация не должна расходовать суточный лимит."""
-        try:
-            await redis_client.decr(daily_quota_key)
-        except Exception as err:
-            logger.warning(f"Не удалось вернуть квоту AI в Redis для пользователя {user_id}: {err}")
 
     def _build_summary(
         self,
@@ -425,12 +389,7 @@ class AIService:
                 cat_val = category_name(getattr(tx.category, "value", tx.category), locale)
                 date_str = tx.date.strftime("%Y-%m-%d") if hasattr(tx.date, "strftime") else str(tx.date)
 
-                # Очистка описания от управляющих символов, переводов строк и разделителей (|) для защиты от Prompt Injection
-                raw_desc = getattr(tx, "description", None) or ""
-                clean_desc = re.sub(r"[\r\n\t|]+", " ", raw_desc)
-                clean_desc = "".join(ch for ch in clean_desc if ch >= " ")
-                clean_desc = re.sub(r"\s+", " ", clean_desc).strip()
-                clean_desc = clean_desc or texts.no_description
+                clean_desc = sanitize_prompt_text(getattr(tx, "description", None) or "") or texts.no_description
 
                 parts = [
                     date_str,
@@ -464,7 +423,7 @@ class AIService:
         )
         text = response.text
         try:
-            data = self._extract_json(text)
+            data = extract_json(text)
             return data.get("insights", [])
         except (json.JSONDecodeError, ValueError) as err:
             # Сырой ответ модели не логируется: в нём пересказ финансовых данных пользователя.

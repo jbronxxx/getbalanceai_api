@@ -51,6 +51,8 @@ class ErrorCode(StrEnum):
 
     # Безопасность и лимиты
     RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED"
+    # Суточная квота вызовов ИИ исчерпана (голосовой ввод): обновится в 00:00 UTC
+    AI_QUOTA_EXCEEDED = "AI_QUOTA_EXCEEDED"
 
     # Валюты
     INVALID_CURRENCY = "INVALID_CURRENCY"
@@ -166,6 +168,22 @@ class ServiceUnavailableException(AppException):
             code=code,
             message=message,
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            details=details,
+        )
+
+
+class AIQuotaExceededException(AppException):
+    """Исключение при исчерпании суточной квоты вызовов ИИ (HTTP 429)."""
+
+    def __init__(
+        self,
+        message: str = "Суточный лимит запросов к ИИ исчерпан",
+        details: Optional[dict[str, Any]] = None,
+    ):
+        super().__init__(
+            code=ErrorCode.AI_QUOTA_EXCEEDED,
+            message=message,
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             details=details,
         )
 

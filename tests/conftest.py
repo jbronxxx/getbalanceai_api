@@ -137,6 +137,7 @@ def mock_redis_client():
         patch("app.redis.redis_client", fake_redis),
         patch("app.redis._redis_client", fake_redis),
         patch("app.services.ai_service.redis_client", fake_redis),
+        patch("app.services.voice_service.redis_client", fake_redis),
         patch("app.services.currency_service.redis_client", fake_redis),
     ):
         yield fake_redis
