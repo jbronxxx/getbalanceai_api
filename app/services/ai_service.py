@@ -1,6 +1,5 @@
 """Сервис формирования персональных финансовых инсайтов с использованием Google Gemini."""
 
-import asyncio
 import json
 import uuid
 from dataclasses import dataclass
@@ -24,6 +23,7 @@ from app.services.gemini import (
     create_gemini_client,
     extract_json,
     gemini_configured,
+    generate_text,
     release_daily_quota,
     take_daily_quota,
 )
@@ -301,9 +301,7 @@ class AIService:
         await self.db.commit()
 
         try:
-            insights = await asyncio.wait_for(
-                self._call_gemini(summary, locale, currency), timeout=config.ai_request_timeout
-            )
+            insights = await self._call_gemini(summary, locale, currency)
             response = InsightResponse(insights=insights, generated_at=datetime.now(timezone.utc))
         except Exception as e:
             logger.error(f"Ошибка запроса инсайтов к Gemini для пользователя {user_id}: {type(e).__name__}: {e}")
@@ -409,12 +407,7 @@ class AIService:
             system_instruction=system_instruction,
         )
 
-        response = await self.client.aio.models.generate_content(
-            model=self.model_name,
-            contents=prompt,
-            config=gen_config,
-        )
-        text = response.text
+        text = await generate_text(self.client, self.model_name, prompt, gen_config)
         try:
             data = extract_json(text)
             return data.get("insights", [])

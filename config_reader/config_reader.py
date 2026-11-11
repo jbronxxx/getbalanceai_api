@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     voice_daily_limit_per_user: int = Field(30, alias="VOICE_DAILY_LIMIT_PER_USER")
     # Предел ожидания ответа Gemini: зависший вызов иначе держал бы воркер и запрос клиента без ответа
     ai_request_timeout: float = Field(30.0, alias="AI_REQUEST_TIMEOUT")
+    # Предел одной попытки: HTTP-запрос к Gemini обрывается сам (SDK держит его в отдельном потоке), дальше —
+    # повтор в пределах AI_REQUEST_TIMEOUT
+    ai_attempt_timeout: float = Field(10.0, alias="AI_ATTEMPT_TIMEOUT")
+    # Модель последней попытки, если основная перегружена; пусто — все попытки на основной
+    ai_fallback_model: str = Field("gemini-3.1-flash-lite", alias="AI_FALLBACK_MODEL")
 
     redis_url: str = Field("redis://localhost:6379/0", alias="REDIS_URL")
     # Хранилище счётчиков rate limiting; в Docker — Redis, чтобы лимит был общим для всех воркеров gunicorn
