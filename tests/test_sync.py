@@ -920,6 +920,13 @@ class TestSyncInputLimits:
         assert response.json()["data"]["rejected"] == []
 
     @pytest.mark.asyncio
+    async def test_invalid_items_not_in_api_schema(self, client: AsyncClient):
+        """Служебного поля нет в схеме запроса /sync: клиенты его не видят и не передают."""
+        schema = (await client.get("/openapi.json")).json()
+        payload = schema["components"]["schemas"]["SyncPayload"]
+        assert "invalid_items" not in payload["properties"]
+
+    @pytest.mark.asyncio
     async def test_sync_base_amount_overflow_rejected_without_failing_batch(
         self,
         client: AsyncClient,
