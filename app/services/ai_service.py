@@ -25,7 +25,6 @@ from app.services.gemini import (
     extract_json,
     gemini_configured,
     release_daily_quota,
-    sanitize_prompt_text,
     take_daily_quota,
 )
 from app.services.insights_formatting import category_name, format_money
@@ -347,6 +346,9 @@ class AIService:
 
         Подписи, категории и суммы — на языке отчёта, как их показывает приложение («Питание»,
         «$1 234,50»): модель повторяет их в советах дословно и отвечает на том же языке.
+
+        Операция передаётся только датой, типом, категорией и суммой. Описание не передаётся: в свободном
+        тексте могут быть личные данные (имена, адреса, телефоны, номера карт), и надёжно вычистить их нельзя.
         """
         texts = insight_texts(locale)
         if isinstance(budgets, str):
@@ -389,16 +391,7 @@ class AIService:
                 cat_val = category_name(getattr(tx.category, "value", tx.category), locale)
                 date_str = tx.date.strftime("%Y-%m-%d") if hasattr(tx.date, "strftime") else str(tx.date)
 
-                clean_desc = sanitize_prompt_text(getattr(tx, "description", None) or "") or texts.no_description
-
-                parts = [
-                    date_str,
-                    type_val,
-                    cat_val,
-                    amount_str,
-                    clean_desc,
-                ]
-                blocks.append(" | ".join(parts))
+                blocks.append(" | ".join((date_str, type_val, cat_val, amount_str)))
         else:
             blocks.append(texts.no_transactions)
 
