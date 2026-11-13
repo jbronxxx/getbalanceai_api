@@ -9,8 +9,10 @@ TERMS: dict[str, PageContent] = {
             (
                 "1. Принятие условий",
                 [
-                    "Скачивая или используя приложение GetBalance AI, вы принимаете настоящее Соглашение. "
-                    "Если вы не согласны с условиями, не используйте приложение.",
+                    "Чтобы войти в аккаунт, нужно явно принять настоящее Соглашение и Политику "
+                    "конфиденциальности — отметкой на экране входа. Используя приложение без аккаунта "
+                    "(гостевой режим), вы также принимаете Соглашение. Если вы не согласны с условиями, "
+                    "не используйте приложение.",
                 ],
             ),
             (
@@ -74,7 +76,10 @@ TERMS: dict[str, PageContent] = {
                 "9. Изменения условий",
                 [
                     "Мы можем обновлять Соглашение. Актуальная версия и дата вступления в силу указаны "
-                    "на этой странице; продолжение использования означает согласие с изменениями.",
+                    "на этой странице. О новой версии мы сообщаем в приложении вместе с кратким списком "
+                    "изменений; чтобы пользоваться аккаунтом дальше, новую версию нужно принять. Если вы "
+                    "не согласны, вы можете выйти из аккаунта или удалить его. В гостевом режиме "
+                    "продолжение использования означает согласие с изменениями.",
                 ],
             ),
             ("10. Контакты", ["Вопросы и предложения по Соглашению направляйте на email:"]),
@@ -86,8 +91,9 @@ TERMS: dict[str, PageContent] = {
             (
                 "1. Acceptance of terms",
                 [
-                    "By downloading or using the GetBalance AI app you accept these Terms. "
-                    "If you do not agree, please do not use the app.",
+                    "To sign in to an account, you must explicitly accept these Terms and the Privacy "
+                    "Policy by ticking the box on the sign-in screen. By using the app without an account "
+                    "(guest mode) you also accept these Terms. If you do not agree, please do not use the app.",
                 ],
             ),
             (
@@ -153,7 +159,9 @@ TERMS: dict[str, PageContent] = {
                 "9. Changes to terms",
                 [
                     "We may update these Terms. The current version and effective date are shown on this "
-                    "page; continued use means you accept the changes.",
+                    "page. We announce a new version in the app together with a short list of changes; to "
+                    "keep using your account, you need to accept it. If you do not agree, you can sign out "
+                    "or delete your account. In guest mode, continued use means you accept the changes.",
                 ],
             ),
             ("10. Contact", ["Send questions and suggestions about these Terms to:"]),

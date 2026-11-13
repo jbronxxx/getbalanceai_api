@@ -93,6 +93,16 @@ class CurrencyCode(str, enum.Enum):
 
 SUPPORTED_CURRENCIES: tuple[str, ...] = tuple(c.value for c in CurrencyCode)
 
+
+class LegalDocument(str, enum.Enum):
+    """Юридические документы, принятие которых записывается (версии — `app/legal/versions.py`)."""
+
+    terms = "terms"  # Пользовательское соглашение
+    privacy = "privacy"  # Политика конфиденциальности
+
+
+LEGAL_DOCUMENT_VALUES: tuple[str, ...] = tuple(d.value for d in LegalDocument)
+
 # Наибольшее значение денежной колонки Numeric(18, 2): сумма больше не запишется в БД
 MONEY_DB_MAX = Decimal("9999999999999999.99")
 
@@ -151,6 +161,8 @@ class User(Base):
         avatar_url (str | None): URL аватара пользователя.
         base_currency (str): Базовая валюта учета пользователя (USD, EUR).
         created_at (datetime): Дата и время регистрации.
+        accepted_terms_version (str | None): Принятая версия соглашения (дата ISO); None — не принято.
+        accepted_privacy_version (str | None): Версия политики, с которой пользователь ознакомлен.
         transactions (list[Transaction]): Список связанных транзакций пользователя.
         budgets (list[Budget]): Список связанных бюджетов пользователя.
         recurring_payments (list[RecurringPayment]): Регулярные платежи и доходы пользователя.
@@ -176,6 +188,9 @@ class User(Base):
         nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    # Последние принятые версии документов: проверка доступа на каждом запросе без чтения истории user_consents
+    accepted_terms_version: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    accepted_privacy_version: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
 
     # Связи с другими сущностями. Удаление пользователя каскадирует БД (ON DELETE CASCADE): passive_deletes
     # не даёт ORM загружать все транзакции и удалять их по одной
@@ -296,6 +311,52 @@ class Transaction(Base):
 
     # Связь с пользователем
     user: Mapped["User"] = relationship(back_populates="transactions")
+
+
+class UserConsent(Base):
+    """ORM-модель записи о принятии юридического документа (история согласий, GDPR ст. 7(1)).
+
+    Таблица: user_consents
+
+    Записи только добавляются. Имени, email и IP в записи нет: владельца после удаления аккаунта находит
+    только слепой индекс email (тот же HMAC, что `users.email_hash`), если человек сам назовёт адрес.
+    Удаление аккаунта не удаляет записи: user_id обнуляется, проставляется account_deleted_at, и запись
+    хранится ещё CONSENT_RETENTION_DAYS (`app/services/consent_service.py`) — для защиты от правовых
+    претензий (GDPR ст. 17(3)(e)), затем её удаляет регламентная очистка.
+
+    Поля:
+        id (uuid.UUID): Идентификатор записи (Primary Key).
+        user_id (uuid.UUID | None): Пользователь (users.id); None — аккаунт удалён.
+        email_hash (str): Слепой индекс email на момент принятия.
+        document (str): Документ — terms или privacy.
+        version (str): Принятая версия документа (дата вступления в силу, ISO).
+        accepted_at (datetime): Момент принятия (UTC).
+        language (str | None): Язык интерфейса приложения (X-App-Language).
+        platform (str | None): Платформа и версия ОС (X-Platform).
+        app_version (str | None): Версия приложения (X-App-Version).
+        account_deleted_at (datetime | None): Момент удаления аккаунта — от него отсчитывается срок хранения.
+    """
+
+    __tablename__ = "user_consents"
+    __table_args__ = (
+        CheckConstraint(f"document IN {LEGAL_DOCUMENT_VALUES}", name="ck_user_consents_document"),
+        Index("ix_user_consents_user_id", "user_id"),
+        Index("ix_user_consents_email_hash", "email_hash"),
+        Index("ix_user_consents_account_deleted_at", "account_deleted_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    email_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    document: Mapped[str] = mapped_column(String(20), nullable=False)
+    version: Mapped[str] = mapped_column(String(10), nullable=False)
+    accepted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+    language: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    platform: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    app_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    account_deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class TransactionDeletion(Base):

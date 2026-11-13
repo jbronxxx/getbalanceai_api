@@ -50,9 +50,12 @@ API использует единообразный формат ответов 
 {
   "id_token": "eyJhbGciOiJSUzI1NiIs...",
   "avatar_url": "https://lh3.googleusercontent.com/avatar.png",
-  "name": "John Doe"
+  "name": "John Doe",
+  "accept_legal": true
 }
 ```
+
+`accept_legal` обязателен и должен быть `true` (отметка «Принимаю условия» на экране входа, иначе `422`): вход записывает принятие текущих версий соглашения и политики. То же поле — в `POST /api/v1/auth/apple`.
 
 **Успешный ответ (`ApiResponse[TokenResponse]`):**
 ```json
@@ -68,7 +71,13 @@ API использует единообразный формат ответов 
       "name": "John Doe",
       "avatar_url": "https://lh3.googleusercontent.com/avatar.png",
       "base_currency": "EUR",
-      "created_at": "2026-09-10T10:30:00Z"
+      "created_at": "2026-09-10T10:30:00Z",
+      "legal": {
+        "terms_version": "2026-11-13",
+        "terms_accepted": true,
+        "privacy_version": "2026-11-13",
+        "privacy_accepted": true
+      }
     }
   }
 }
@@ -87,10 +96,50 @@ API использует единообразный формат ответов 
     "name": "John Doe",
     "avatar_url": "https://example.com/avatar.png",
     "base_currency": "EUR",
-    "created_at": "2026-09-10T10:30:00Z"
+    "created_at": "2026-09-10T10:30:00Z",
+    "legal": {
+      "terms_version": "2026-11-13",
+      "terms_accepted": true,
+      "privacy_version": "2026-11-13",
+      "privacy_accepted": true
+    }
   }
 }
 ```
+
+`legal` есть в каждом профиле (`/auth/google`, `/auth/apple`, `GET`/`PATCH /auth/me`, `/legal/accept`): текущие версии документов и приняты ли они. `terms_accepted: false` — приложение показывает экран новой версии соглашения (данные до принятия закрыты, `403 TERMS_NOT_ACCEPTED`); `privacy_accepted: false` — уведомление о новой политике, доступ не закрыт. `PATCH /auth/me` тоже требует принятой текущей версии соглашения.
+
+#### Версии документов (GET /api/v1/legal)
+
+Без авторизации. Язык пунктов `changes`: `?lang=` → `X-App-Language` → `Accept-Language` → `en`.
+
+```json
+{
+  "status": "success",
+  "data": {
+    "terms": {
+      "version": "2026-11-13",
+      "effective_date": "2026-11-13",
+      "changes": ["Условия нужно принять явно — отметкой на экране входа.", "…"]
+    },
+    "privacy": {
+      "version": "2026-11-13",
+      "effective_date": "2026-11-13",
+      "changes": ["Мы храним дату и версию принятых вами документов.", "…"]
+    }
+  }
+}
+```
+
+#### Принятие версий (POST /api/v1/legal/accept)
+
+Доступен и без принятой текущей версии соглашения. Тело — показанные пользователю версии, хотя бы одна (`ГГГГ-ММ-ДД`):
+
+```json
+{ "terms_version": "2026-11-13", "privacy_version": "2026-11-13" }
+```
+
+Ответ — профиль (`ApiResponse[UserResponse]`) с обновлённым `legal`. Версия не текущая (вышла новая, пока экран был открыт) — `409 LEGAL_VERSION_OUTDATED`, `details: {"document": "terms", "current_version": "…"}`: запросить `GET /legal` заново. Лимит — 10 запросов в минуту.
 
 #### Создание транзакции (POST /api/v1/transactions/)
 
@@ -395,6 +444,8 @@ API использует единообразный формат ответов 
 | `INVALID_TOKEN` | 401 | Некорректная подпись, структура или тип JWT токена |
 | `TOKEN_REVOKED` | 401 | Токен был отозван (например, после logout или ротации) |
 | `TOKEN_NOT_FOUND` | 404 | Токен для отзыва при logout некорректен (нет `jti` или `exp`) |
+| `TERMS_NOT_ACCEPTED` | 403 | Не принята текущая версия пользовательского соглашения: данные закрыты до `POST /legal/accept` (открыты `GET /auth/me`, выход, `DELETE /auth/me`) |
+| `LEGAL_VERSION_OUTDATED` | 409 | `POST /legal/accept` с версией, которая уже не текущая; `details.current_version` — текущая |
 | `TRANSACTION_NOT_FOUND` | 404 | Транзакция с указанным ID не найдена |
 | `BUDGET_NOT_FOUND` | 404 | Бюджет с указанным ID/категорией не найден |
 | `BUDGET_LIMIT_EXCEEDED` | 400 | Превышен установленный лимит бюджета по категории |
@@ -512,7 +563,7 @@ API использует единообразный формат ответов 
 
 ## Исключение: публичные HTML-страницы
 
-`GET /privacy`, `GET /terms`, `GET /delete-account` не входят в API-контракт: они отдают `text/html` (не `ApiResponse`), доступны без авторизации и скрыты из OpenAPI. Единственный параметр — `lang` (`ru|en`, до 10 символов; иначе 422 в формате `ErrorResponse`).
+`GET /privacy`, `GET /terms`, `GET /delete-account` не входят в API-контракт: они отдают `text/html` (не `ApiResponse`), доступны без авторизации и скрыты из OpenAPI. Параметры: `lang` (`ru|en`, до 10 символов; иначе 422 в формате `ErrorResponse`) и у `/privacy`, `/terms` — `version` (`ГГГГ-ММ-ДД`, прежний текст из архива; неизвестная версия — 404, не дата — 422).
 
 ---
 

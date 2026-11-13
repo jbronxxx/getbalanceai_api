@@ -27,6 +27,8 @@ DELETE_ACCOUNT: dict[str, PageContent] = {
                     "Из резервных копий базы данных (хранятся до 7 суток) и серверных журналов (до 30 дней) "
                     "данные исчезают по истечении этих сроков. "
                     "Данные об оплатах хранят Google Play и Apple — мы их не получаем.",
+                    "Запись о принятии условий (версии документов и дата, без имени и email) хранится 3 года "
+                    "после удаления аккаунта — чтобы при споре подтвердить, какие условия были приняты.",
                 ],
             ),
             (
@@ -63,6 +65,9 @@ DELETE_ACCOUNT: dict[str, PageContent] = {
                     "Data disappears from database backups (kept up to 7 days) and server logs (up to 30 days) "
                     "once these periods expire. "
                     "Payment records are held by Google Play and Apple; we do not receive them.",
+                    "The record of your acceptance of terms (document versions and date, without your name or "
+                    "email) is kept for 3 years after account deletion, to confirm which terms were accepted "
+                    "in case of a dispute.",
                 ],
             ),
             (

@@ -2,13 +2,18 @@
 
 from html import escape
 
+from app.exceptions import ErrorCode, NotFoundException
 from app.legal import (
+    ARCHIVE,
     DEFAULT_LANGUAGE,
     LANGUAGES,
+    LEGAL_HISTORY,
     PAGES,
     SUPPORT_EMAIL,
     UI_STRINGS,
     Block,
+    PageContent,
+    format_date,
 )
 
 # Порядок страниц в навигации футера
@@ -66,9 +71,32 @@ def _render_block(block: Block) -> str:
     return "<ul>" + "".join(f"<li>{escape(item)}</li>" for item in block) + "</ul>"
 
 
-def render_page(page: str, lang: str) -> str:
-    """Собрать HTML-страницу `page` на языке `lang` (оба значения должны быть из реестра PAGES / LANGUAGES)."""
-    content = PAGES[page][lang]
+def _page_content(page: str, lang: str, version: str | None) -> tuple[PageContent, str | None]:
+    """Содержимое страницы и строка «Дата вступления в силу»: текущая версия или версия `version` из архива.
+
+    У страниц без версий (удаление аккаунта) даты нет и `version` не принимается. Неизвестная версия — 404:
+    по ссылке из записи о согласии нельзя показать другой текст вместо принятого.
+    """
+    history = LEGAL_HISTORY.get(page)
+    if history is None:
+        return PAGES[page][lang], None
+
+    effective = {item.version: item.effective for item in history}
+    if version is None or version == history[-1].version:
+        content, version = PAGES[page][lang], history[-1].version
+    elif version in effective and version in ARCHIVE[page]:
+        content = ARCHIVE[page][version][lang]
+    else:
+        raise NotFoundException(code=ErrorCode.NOT_FOUND, message="Версия документа не найдена")
+    return content, UI_STRINGS[lang]["updated"].format(date=format_date(effective[version], lang))
+
+
+def render_page(page: str, lang: str, version: str | None = None) -> str:
+    """Собрать HTML-страницу `page` на языке `lang` (оба значения должны быть из реестра PAGES / LANGUAGES).
+
+    `version` — версия документа из `LEGAL_HISTORY` (дата ISO); без неё — текущий текст.
+    """
+    content, updated = _page_content(page, lang, version)
     ui = UI_STRINGS[lang]
     title = escape(content["title"])
     mail = escape(SUPPORT_EMAIL)
@@ -78,10 +106,13 @@ def render_page(page: str, lang: str) -> str:
         for heading, blocks in content["sections"]
     )
     current = ' aria-current="true"'
+    # Смена языка не уводит с архивной версии на текущую
+    version_query = f"&amp;version={escape(version)}" if version else ""
     lang_links = " ".join(
-        f'<a href="?lang={code}" hreflang="{code}"{current if code == lang else ""}>{escape(name)}</a>'
+        f'<a href="?lang={code}{version_query}" hreflang="{code}"{current if code == lang else ""}>{escape(name)}</a>'
         for code, name in LANGUAGES.items()
     )
+    meta = f'<p class="meta">{escape(updated)}</p>' if updated else ""
     page_links = " ".join(f'<a href="/{slug}?lang={lang}">{escape(ui[slug])}</a>' for slug in _NAV_ORDER)
 
     return (
@@ -92,7 +123,7 @@ def render_page(page: str, lang: str) -> str:
         f"<header><h1>{title}</h1></header><main>"
         f'<nav class="panel langs" aria-label="{escape(ui["language"])}"><strong>{escape(ui["language"])}:</strong> '
         f"{lang_links}</nav>"
-        f'<p class="meta">{escape(ui["updated"])}</p>'
+        f"{meta}"
         f"{sections}"
         f'<section><p>{escape(ui["contact"])}: <a href="mailto:{mail}">{mail}</a></p></section>'
         f'<nav class="panel links">{page_links}</nav>'

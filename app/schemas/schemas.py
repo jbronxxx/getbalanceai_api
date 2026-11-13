@@ -13,12 +13,14 @@ from pydantic import (
     Field,
     PrivateAttr,
     ValidationError,
+    computed_field,
     field_validator,
     model_validator,
 )
 from pydantic_core import PydanticCustomError
 
 from app.exceptions import ErrorCode
+from app.legal import current_version
 from app.models.models import (
     EXPENSE_CATEGORIES,
     INCOME_CATEGORIES,
@@ -116,7 +118,27 @@ class UserBase(BaseModel):
     user_id: uuid.UUID = Field(..., description="ID пользователя")
 
 
-class GoogleSignInRequest(BaseModel):
+# Версия юридического документа — дата вступления в силу (ISO)
+LEGAL_VERSION_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
+
+
+class LegalAcceptanceMixin(BaseModel):
+    """Отметка на экране входа: пользователь принял соглашение и политику (их текущие версии)."""
+
+    accept_legal: bool = Field(
+        ..., description="Пользователь отметил принятие пользовательского соглашения и политики конфиденциальности"
+    )
+
+    @field_validator("accept_legal")
+    @classmethod
+    def validate_accept_legal(cls, v: bool) -> bool:
+        """Без принятия документов вход невозможен (приложение не даёт нажать кнопку входа без отметки)."""
+        if not v:
+            raise ValueError("Нужно принять пользовательское соглашение и политику конфиденциальности")
+        return v
+
+
+class GoogleSignInRequest(LegalAcceptanceMixin):
     """Схема запроса для аутентификации через Google."""
 
     id_token: str = Field(..., description="Токен идентификации от Google")
@@ -128,7 +150,7 @@ class GoogleSignInRequest(BaseModel):
     )
 
 
-class AppleSignInRequest(BaseModel):
+class AppleSignInRequest(LegalAcceptanceMixin):
     """Схема запроса для аутентификации через Apple."""
 
     identity_token: str = Field(..., description="Токен идентификации от Apple")
@@ -144,6 +166,17 @@ class RefreshTokenRequest(BaseModel):
     refresh_token: str = Field(..., description="JWT refresh токен для обновления access токена")
 
 
+class LegalStatus(BaseModel):
+    """Текущие версии документов и принял ли их пользователь."""
+
+    terms_version: str = Field(..., description="Текущая версия соглашения (дата вступления в силу, ISO)")
+    terms_accepted: bool = Field(
+        ..., description="Текущая версия соглашения принята; false — экран повторного принятия, данные недоступны"
+    )
+    privacy_version: str = Field(..., description="Текущая версия политики конфиденциальности")
+    privacy_accepted: bool = Field(..., description="Пользователь ознакомлен с текущей политикой; false — уведомление")
+
+
 class UserResponse(BaseModel):
     """Схема ответа с публичными данными пользователя.
 
@@ -154,6 +187,7 @@ class UserResponse(BaseModel):
         avatar_url (str | None): URL аватара пользователя.
         base_currency (str): Основная валюта учета пользователя.
         created_at (datetime): Дата регистрации аккаунта.
+        legal (LegalStatus): Текущие версии соглашения и политики и принял ли их пользователь.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -164,6 +198,59 @@ class UserResponse(BaseModel):
     avatar_url: Optional[str] = Field(default=None, description="URL аватара пользователя")
     base_currency: str = Field(default=CurrencyCode.USD.value, description="Основная валюта учета пользователя")
     created_at: datetime = Field(..., description="Дата и время создания аккаунта")
+    # Принятые версии из модели: в ответ не идут, из них считается legal
+    accepted_terms_version: Optional[str] = Field(default=None, exclude=True)
+    accepted_privacy_version: Optional[str] = Field(default=None, exclude=True)
+
+    @computed_field(description="Текущие версии соглашения и политики и принял ли их пользователь")
+    @property
+    def legal(self) -> LegalStatus:
+        """Статус документов: сравнение принятых версий с текущими."""
+        terms, privacy = current_version("terms").version, current_version("privacy").version
+        return LegalStatus(
+            terms_version=terms,
+            terms_accepted=self.accepted_terms_version == terms,
+            privacy_version=privacy,
+            privacy_accepted=self.accepted_privacy_version == privacy,
+        )
+
+
+class LegalAcceptRequest(BaseModel):
+    """Принятие версий документов, показанных пользователю (экран новой версии соглашения, уведомление о политике)."""
+
+    terms_version: Optional[str] = Field(
+        default=None, pattern=LEGAL_VERSION_PATTERN, description="Принимаемая версия соглашения"
+    )
+    privacy_version: Optional[str] = Field(
+        default=None, pattern=LEGAL_VERSION_PATTERN, description="Версия политики, с которой пользователь ознакомлен"
+    )
+
+    @model_validator(mode="after")
+    def validate_any_version(self) -> "LegalAcceptRequest":
+        """Пустой запрос ничего не принимает."""
+        if self.terms_version is None and self.privacy_version is None:
+            raise ValueError("Укажите версию хотя бы одного документа")
+        return self
+
+    def versions(self) -> dict[str, str]:
+        """Документ -> принимаемая версия (только указанные)."""
+        pairs = {"terms": self.terms_version, "privacy": self.privacy_version}
+        return {document: version for document, version in pairs.items() if version is not None}
+
+
+class LegalDocumentInfo(BaseModel):
+    """Текущая версия документа и пункты «Что изменилось» на языке интерфейса."""
+
+    version: str = Field(..., description="Версия (дата вступления в силу, ISO)")
+    effective_date: date = Field(..., description="Дата вступления в силу")
+    changes: list[str] = Field(..., description="Что изменилось в этой версии: 2–3 коротких пункта")
+
+
+class LegalVersionsResponse(BaseModel):
+    """Текущие версии пользовательского соглашения и политики конфиденциальности."""
+
+    terms: LegalDocumentInfo = Field(..., description="Пользовательское соглашение")
+    privacy: LegalDocumentInfo = Field(..., description="Политика конфиденциальности")
 
 
 class TokenResponse(BaseModel):

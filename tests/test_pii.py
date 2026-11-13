@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import Text, select, type_coerce
 from sqlalchemy.exc import StatementError
 
-from app.models.models import User
+from app.models.models import User, UserConsent
 from app.pii import (
     PiiCipher,
     PiiDecryptError,
@@ -197,8 +197,8 @@ class TestPiiInApiAndLogs:
     @pytest.mark.asyncio
     async def test_oauth_login_logs_neither_email_nor_name(self, db_session, caplog: pytest.LogCaptureFixture):
         with caplog.at_level(logging.DEBUG, logger="app"):
-            await AuthService(db_session)._handle_oauth_user("google", "Ivan.Petrov@Example.com", "Иван Петров")
-            await AuthService(db_session)._handle_oauth_user("google", "ivan.petrov@example.com", "Иван Петров")
+            await AuthService(db_session)._handle_oauth_user("google", "Ivan.Petrov@Example.com", "Иван Петров", None, {})
+            await AuthService(db_session)._handle_oauth_user("google", "ivan.petrov@example.com", "Иван Петров", None, {})
 
         logs = "\n".join(record.getMessage() for record in caplog.records if record.name.startswith("app"))
         assert "Зарегистрирован новый пользователь" in logs and "успешно авторизован" in logs
@@ -214,7 +214,13 @@ class TestRotatePiiKeys:
         use_pii_keys(["old:" + _key(b"o")], b"1")
         user_id = uuid.uuid4()
         async with TestingSessionLocal() as session:
-            session.add(User(id=user_id, email="rotate@example.com", name="Ротация"))
+            user = User(id=user_id, email="rotate@example.com", name="Ротация")
+            session.add(user)
+            await session.flush()
+            old_hash = user.email_hash
+            # Согласие живого аккаунта и согласие удалённого (user_id пуст, email неизвестен)
+            session.add(UserConsent(user_id=user_id, email_hash=old_hash, document="terms", version="2026-11-13"))
+            session.add(UserConsent(user_id=None, email_hash="deleted-hash", document="terms", version="2026-11-13"))
             await session.commit()
         assert (await _raw_user(user_id))[0].startswith("old:")
 
@@ -224,6 +230,11 @@ class TestRotatePiiKeys:
         email, name, email_hash = await _raw_user(user_id)
         assert email.startswith("new:") and name.startswith("new:")
         assert email_hash == get_pii_cipher().blind_index("rotate@example.com")
+        async with TestingSessionLocal() as session:
+            hashes = (await session.execute(select(UserConsent.user_id, UserConsent.email_hash))).all()
+            assert {row.user_id: row.email_hash for row in hashes} == {user_id: email_hash, None: "deleted-hash"}
+            await session.execute(UserConsent.__table__.delete())
+            await session.commit()
 
         # Старый ключ больше не нужен: строки читаются и находятся только с новыми ключами
         use_pii_keys(["new:" + _key(b"n")], b"2")

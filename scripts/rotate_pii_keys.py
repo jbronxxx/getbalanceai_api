@@ -1,7 +1,8 @@
 """CLI-скрипт ротации ключей шифрования имени и email пользователей (app/pii.py).
 
 Перешифровывает `users.email` и `users.name` текущим ключом (первым в `PII_ENCRYPTION_KEYS`) и пересчитывает
-слепой индекс `users.email_hash` текущим `PII_HMAC_KEY`. Повторный запуск безопасен.
+слепой индекс `users.email_hash` текущим `PII_HMAC_KEY`, а за ним — `user_consents.email_hash` согласий живых
+аккаунтов. Повторный запуск безопасен.
 
 Ротация ключа шифрования (API работает):
     1. Новый ключ — первым в PII_ENCRYPTION_KEYS, старый оставить следующим; деплой.
@@ -10,6 +11,8 @@
 
 Смена PII_HMAC_KEY — только с остановленным API: пока индекс не пересчитан, вход по email не находит
 пользователя и создал бы второй аккаунт. Остановить API, сменить ключ, запустить скрипт, запустить API.
+Email удалённых аккаунтов неизвестен, их согласия остаются со старым индексом: старый PII_HMAC_KEY хранить
+вне сервера, пока не истечёт срок хранения согласий (3 года), — иначе такую запись не найти по адресу.
 
 Использование:
     python scripts/rotate_pii_keys.py
@@ -26,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import select, update  # noqa: E402
 
 from app.database import async_session_maker, engine  # noqa: E402
-from app.models.models import User  # noqa: E402
+from app.models.models import User, UserConsent  # noqa: E402
 from app.pii import blind_index, get_pii_cipher  # noqa: E402
 from logger.logger import get_logger  # noqa: E402
 
@@ -57,6 +60,13 @@ async def rotate_pii_keys(session_factory: Any = async_session_maker, batch_size
             await session.commit()
             total += len(chunk)
             print(f"Перешифровано пользователей: {total}/{len(rows)}")
+        # Индекс в согласиях живых аккаунтов — тот же, что у владельца
+        await session.execute(
+            update(UserConsent)
+            .where(UserConsent.user_id.is_not(None))
+            .values(email_hash=select(User.email_hash).where(User.id == UserConsent.user_id).scalar_subquery())
+        )
+        await session.commit()
 
     logger.info(f"Имя и email пользователей перешифрованы ключом {current_key_id}: {total}")
     print(f"Готово. Пользователей: {total}, текущий ключ: {current_key_id}.")

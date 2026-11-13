@@ -15,13 +15,13 @@ from app.schemas.schemas import (
     VoiceParseRequest,
     VoiceParseResponse,
 )
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_consented_user
 from app.services.voice_service import VoiceParseService
 
 router = APIRouter(
     responses={
         401: {"model": ErrorResponse, "description": "Требуется авторизация"},
-        403: {"model": ErrorResponse, "description": "Доступ запрещен"},
+        403: {"model": ErrorResponse, "description": "TERMS_NOT_ACCEPTED — не принята текущая версия соглашения"},
         422: {"model": ErrorResponse, "description": "Пустой или слишком длинный текст, неподдерживаемая валюта"},
         429: {
             "model": ErrorResponse,
@@ -43,7 +43,7 @@ async def parse_voice(
     request: Request,
     payload: VoiceParseRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_consented_user),
     tz: tzinfo = Depends(get_client_timezone),
 ):
     """Вернуть черновики записей из фразы, распознанной на устройстве; сервер ничего не сохраняет.

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool, StaticPool
 
 from app.database import Base, get_db
+from app.legal import current_version
 from app.limiter import limiter
 from app.models.models import User
 from app.services.auth_service import AuthService
@@ -102,6 +103,14 @@ async def client(db_session: AsyncSession) -> AsyncClient:
     app.dependency_overrides.pop(get_db, None)
 
 
+def accepted_legal() -> dict[str, str]:
+    """Поля пользователя, принявшего текущие версии соглашения и политики (без них данные закрыты — 403)."""
+    return {
+        "accepted_terms_version": current_version("terms").version,
+        "accepted_privacy_version": current_version("privacy").version,
+    }
+
+
 @pytest_asyncio.fixture
 async def test_user(db_session: AsyncSession) -> User:
     """Фикстура созданного тестового пользователя в базе данных."""
@@ -110,6 +119,7 @@ async def test_user(db_session: AsyncSession) -> User:
         id=user_id,
         email=f"user_{user_id.hex[:8]}@example.com",
         name="Test User",
+        **accepted_legal(),
     )
     db_session.add(user)
     await db_session.commit()

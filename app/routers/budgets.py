@@ -17,14 +17,14 @@ from app.schemas.schemas import (
     BudgetResponse,
     ErrorResponse,
 )
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_consented_user
 from app.services.budget_service import BudgetService
 
 router = APIRouter(
     responses={
         400: {"model": ErrorResponse, "description": "Ошибка бизнес-логики"},
         401: {"model": ErrorResponse, "description": "Требуется авторизация"},
-        403: {"model": ErrorResponse, "description": "Доступ запрещен"},
+        403: {"model": ErrorResponse, "description": "TERMS_NOT_ACCEPTED — не принята текущая версия соглашения"},
         404: {"model": ErrorResponse, "description": "Ресурс не найден"},
         422: {"model": ErrorResponse, "description": "Ошибка валидации входных данных"},
         500: {"model": ErrorResponse, "description": "Внутренняя ошибка сервера"},
@@ -41,7 +41,7 @@ router = APIRouter(
 async def create_budget(
     payload: BudgetCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_consented_user),
     tz: tzinfo = Depends(get_client_timezone),
 ):
     """Установить лимит бюджета по определенной категории на месяц и год."""
@@ -77,7 +77,7 @@ async def list_budgets(
         description="ETag предыдущего ответа для условного кэширования",
     ),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_consented_user),
     tz: tzinfo = Depends(get_client_timezone),
 ):
     """Получить список бюджетов с расчетом израсходованных средств и остатка лимита.
@@ -120,7 +120,7 @@ async def list_budgets(
 async def get_budget(
     budget_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_consented_user),
     tz: tzinfo = Depends(get_client_timezone),
 ):
     """Получить информацию о бюджете по его уникальному ID."""
@@ -142,7 +142,7 @@ async def get_budget(
 async def delete_budget(
     budget_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_consented_user),
 ):
     """Удалить запись бюджета по её уникальному идентификатору."""
     service = BudgetService(db)
@@ -160,7 +160,7 @@ async def delete_budget_by_category_period(
     month: int,
     year: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_consented_user),
 ):
     """Удалить бюджет по названию категории, месяцу и году."""
     service = BudgetService(db)

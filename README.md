@@ -262,16 +262,19 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000 --timeout-keep-alive 75
 
 ### Основные API-эндпоинты:
 - **Аутентификация (`/api/v1/auth`):**
-  - `POST /api/v1/auth/google`, `POST /api/v1/auth/apple` — вход или регистрация по ID-токену провайдера и получение пары `access_token` и `refresh_token`
+  - `POST /api/v1/auth/google`, `POST /api/v1/auth/apple` — вход или регистрация по ID-токену провайдера (с `accept_legal: true` — принятие соглашения и политики) и получение пары `access_token` и `refresh_token`
   - `POST /api/v1/auth/refresh` — бессрочное/бесшовное обновление `access_token` с помощью `refresh_token` (механизм Refresh Token Rotation)
   - `POST /api/v1/auth/logout` — выход из системы и отзыв активного токена
   - `GET /api/v1/auth/me` — получение данных текущего авторизованного пользователя
   - `PATCH /api/v1/auth/me` — обновление профиля (имя, аватар, базовая валюта `base_currency`)
+- **Юридические документы (`/api/v1/legal`):**
+  - `GET /api/v1/legal` — текущие версии соглашения и политики и «Что изменилось» (без авторизации)
+  - `POST /api/v1/legal/accept` — принятие показанных версий; без принятой текущей версии соглашения остальные эндпоинты данных отвечают `403 TERMS_NOT_ACCEPTED`
 - **Публичные страницы (без авторизации):**
   - `GET /privacy` — политика конфиденциальности (ru/en)
   - `GET /terms` — пользовательское соглашение (ru/en)
   - `GET /delete-account` — порядок удаления аккаунта и данных; URL для Data Safety в Google Play
-  - Язык выбирается параметром `?lang=ru|en`, иначе по `Accept-Language` (по умолчанию `en`), например `https://<домен>/privacy?lang=ru`
+  - Язык выбирается параметром `?lang=ru|en`, иначе по `Accept-Language` (по умолчанию `en`), например `https://<домен>/privacy?lang=ru`; прежняя версия документа — `?version=ГГГГ-ММ-ДД`
 - **Валютные котировки (`/api/v1/currencies`):**
   - `GET /api/v1/currencies/rates` — актуальный справочник курсов валют (кэширование в Redis)
 - **Операции и Бюджеты:**

@@ -7,13 +7,13 @@ from app.database import get_db
 from app.models.models import User
 from app.routers.dependencies import not_modified_response
 from app.schemas.schemas import ApiResponse, ErrorResponse, RecurringPaymentResponse
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_consented_user
 from app.services.recurring_payment_service import RecurringPaymentService
 
 router = APIRouter(
     responses={
         401: {"model": ErrorResponse, "description": "Требуется авторизация"},
-        403: {"model": ErrorResponse, "description": "Доступ запрещен"},
+        403: {"model": ErrorResponse, "description": "TERMS_NOT_ACCEPTED — не принята текущая версия соглашения"},
         500: {"model": ErrorResponse, "description": "Внутренняя ошибка сервера"},
     }
 )
@@ -39,7 +39,7 @@ async def list_recurring_payments(
         description="ETag предыдущего ответа для условного кэширования",
     ),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_consented_user),
 ):
     """Весь список регулярных платежей: клиент сверяет его с локальным (отсутствующий платёж удалён).
 
