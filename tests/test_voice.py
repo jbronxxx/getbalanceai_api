@@ -13,6 +13,7 @@ from httpx import AsyncClient
 from app.models.models import Category, CurrencyCode, TransactionType
 from app.redis import get_voice_daily_quota_key
 from app.schemas.schemas import VOICE_RECORDS_MAX, VOICE_TEXT_MAX_LENGTH
+from app.services.llm import LLMClient
 from app.services.voice_service import VoiceParseService
 from config_reader.config_reader import config
 
@@ -21,13 +22,13 @@ PHRASE = "кофе четыре евро и такси двенадцать"
 
 
 def _model_client(payload: dict | str | Exception) -> MagicMock:
-    """Фиктивный клиент Gemini: возвращает payload как текст ответа или бросает исключение."""
-    client = MagicMock(spec=genai.Client)
+    """Фиктивный клиент LLM: возвращает payload как текст ответа или бросает исключение."""
+    client = MagicMock(spec=LLMClient)
     if isinstance(payload, Exception):
-        client.aio.models.generate_content = AsyncMock(side_effect=payload)
+        client.generate = AsyncMock(side_effect=payload)
     else:
         text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
-        client.aio.models.generate_content = AsyncMock(return_value=MagicMock(text=text))
+        client.generate = AsyncMock(return_value=text)
     return client
 
 
@@ -39,7 +40,7 @@ def gemini_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _use_client(client: MagicMock):
     """Подставить фиктивный клиент во все экземпляры сервиса, создаваемые роутером."""
-    return patch("app.services.voice_service.create_gemini_client", return_value=client)
+    return patch("app.services.voice_service.get_llm_client", return_value=client)
 
 
 def _today_utc() -> date:
@@ -96,7 +97,7 @@ async def test_parse_returns_drafts(client: AsyncClient, auth_headers: dict, gem
             "date": today,
         },
     ]
-    model.aio.models.generate_content.assert_awaited_once()
+    model.generate.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -124,15 +125,15 @@ async def test_prompt_language_date_and_sanitized_phrase(client: AsyncClient, au
         )
         await client.post(URL, json={"text": "Kaffee 4 Euro", "locale": "de", "currency": "EUR"}, headers=auth_headers)
 
-    ru_call, de_call = model.aio.models.generate_content.await_args_list
-    ru_instruction = ru_call.kwargs["config"].system_instruction
+    ru_request, de_request = (call.args[0] for call in model.generate.await_args_list)
+    ru_instruction = ru_request.system
     assert f"Сегодня {client_today}" in ru_instruction
     assert "food (Питание)" in ru_instruction
     assert "salary (Зарплата)" in ru_instruction
-    assert ru_call.kwargs["contents"] == "Фраза пользователя: «кофе 4 евро»"
-    assert ru_call.kwargs["config"].temperature == 0
+    assert ru_request.prompt == "Фраза пользователя: «кофе 4 евро»"
+    assert ru_request.temperature == 0
 
-    de_instruction = de_call.kwargs["config"].system_instruction
+    de_instruction = de_request.system
     assert de_instruction.startswith("You turn a phrase")
     assert "food (Food)" in de_instruction
     assert not any("а" <= ch <= "я" for ch in de_instruction.lower())
@@ -200,13 +201,13 @@ async def test_daily_quota_exceeded(
 
     assert [r.status_code for r in statuses] == [200, 200, 429]
     assert statuses[2].json()["code"] == "AI_QUOTA_EXCEEDED"
-    assert model.aio.models.generate_content.await_count == 2
+    assert model.generate.await_count == 2
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "failure",
-    [RuntimeError("Gemini недоступен"), "не JSON: кофе 4 евро", '{"records": "кофе"}'],
+    [RuntimeError("LLM недоступна"), "не JSON: кофе 4 евро", '{"records": "кофе"}'],
     ids=["model_error", "invalid_json", "records_not_list"],
 )
 async def test_model_failure_returns_503_and_keeps_quota(
@@ -237,11 +238,12 @@ async def test_hanging_model_is_cut_by_timeout(
     """Зависший вызов модели обрывается по AI_REQUEST_TIMEOUT — 503."""
     monkeypatch.setattr(config, "ai_request_timeout", 0.05)
 
-    async def _hang(*_args, **_kwargs):
+    async def _hang(**_kwargs):
         await asyncio.sleep(5)
 
-    model = MagicMock(spec=genai.Client)
-    model.aio.models.generate_content = AsyncMock(side_effect=_hang)
+    gemini = MagicMock(spec=genai.Client)
+    gemini.aio.models.generate_content = AsyncMock(side_effect=_hang)
+    model = LLMClient(claude=MagicMock(), gemini=gemini)
     with _use_client(model):
         response = await client.post(URL, json={"text": PHRASE, "currency": "EUR"}, headers=auth_headers)
 
@@ -269,14 +271,14 @@ async def test_success_logs_no_phrase(
 async def test_placeholder_key_returns_503_without_model_call(
     client: AsyncClient, auth_headers: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Ключ Gemini не задан — 503, модель не вызывается."""
+    """Ключи LLM не заданы — 503, модель не вызывается."""
     monkeypatch.setattr(config, "gemini_api_key", "")
     model = _model_client({"records": []})
     with _use_client(model):
         response = await client.post(URL, json={"text": PHRASE, "currency": "EUR"}, headers=auth_headers)
 
     assert response.status_code == 503
-    model.aio.models.generate_content.assert_not_called()
+    model.generate.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -290,7 +292,7 @@ async def test_redis_failure_returns_503(
         response = await client.post(URL, json={"text": PHRASE, "currency": "EUR"}, headers=auth_headers)
 
     assert response.status_code == 503
-    model.aio.models.generate_content.assert_not_called()
+    model.generate.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -320,4 +322,4 @@ async def test_validation_errors(client: AsyncClient, auth_headers: dict, gemini
         response = await client.post(URL, json=payload, headers=auth_headers)
 
     assert response.status_code == 422
-    model.aio.models.generate_content.assert_not_called()
+    model.generate.assert_not_called()

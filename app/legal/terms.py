@@ -34,8 +34,9 @@ TERMS: dict[str, PageContent] = {
             (
                 "4. Контент, созданный ИИ",
                 [
-                    "Аналитика формируется с помощью ИИ (Google Gemini). Мы стремимся к точности, но не "
-                    "гарантируем полноту, надёжность и точность этой информации. Вы используете её на свой риск.",
+                    "Аналитика формируется с помощью ИИ сторонних поставщиков (они указаны в Политике "
+                    "конфиденциальности). Мы стремимся к точности, но не гарантируем полноту, надёжность и "
+                    "точность этой информации. Вы используете её на свой риск.",
                 ],
             ),
             (
@@ -115,9 +116,9 @@ TERMS: dict[str, PageContent] = {
             (
                 "4. AI-generated content",
                 [
-                    "Insights are generated with AI (Google Gemini). We strive for accuracy but do not "
-                    "guarantee the completeness, reliability or accuracy of this information. You use it "
-                    "at your own risk.",
+                    "Insights are generated with AI from third-party providers (listed in the Privacy "
+                    "Policy). We strive for accuracy but do not guarantee the completeness, reliability or "
+                    "accuracy of this information. You use it at your own risk.",
                 ],
             ),
             (

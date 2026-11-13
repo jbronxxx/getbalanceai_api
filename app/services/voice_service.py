@@ -1,4 +1,4 @@
-"""Разбор голосового ввода: распознанная на устройстве фраза → черновики записей через Google Gemini.
+"""Разбор голосового ввода: распознанная на устройстве фраза → черновики записей через LLM.
 
 Сервер ничего не сохраняет: черновики возвращаются приложению на подтверждение. Текст фразы и ответ модели
 не пишутся в журналы — в них личные траты пользователя.
@@ -8,7 +8,6 @@ import uuid
 from datetime import date, datetime, timezone, tzinfo
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
-from google.genai import types
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.exceptions import AIQuotaExceededException, ServiceUnavailableException
@@ -29,16 +28,17 @@ from app.schemas.schemas import (
     VoiceRecordDraft,
 )
 from app.services.ai_usage import AIRequestKind
-from app.services.gemini import (
-    create_gemini_client,
+from app.services.insights_formatting import category_name
+from app.services.llm import (
+    LLMClient,
+    LLMRequest,
+    ai_configured,
     extract_json,
-    gemini_configured,
-    generate_text,
+    get_llm_client,
     release_daily_quota,
     sanitize_prompt_text,
     take_daily_quota,
 )
-from app.services.insights_formatting import category_name
 from app.services.voice_texts import voice_texts
 from config_reader.config_reader import config
 from logger.logger import get_logger
@@ -57,11 +57,10 @@ _INCOME_ORDER = [c for c in Category if c in INCOME_CATEGORIES and c is not Cate
 class VoiceParseService:
     """Разбор фразы на записи через LLM с суточной квотой на пользователя."""
 
-    def __init__(self, db: AsyncSession, client=None, model_name=None):
-        """Сессия запроса (только чтобы отпустить соединение до вызова LLM); клиент Gemini подменяется в тестах."""
+    def __init__(self, db: AsyncSession, client: LLMClient | None = None):
+        """Сессия запроса (только чтобы отпустить соединение до вызова LLM); клиент LLM подменяется в тестах."""
         self.db = db
-        self.client = client or create_gemini_client()
-        self.model_name = model_name or config.ai_model
+        self.client = client or get_llm_client()
 
     async def parse(
         self,
@@ -74,12 +73,12 @@ class VoiceParseService:
         """Разобрать фразу на черновики записей.
 
         Исключения: `AIQuotaExceededException` (429) — суточная квота исчерпана;
-        `ServiceUnavailableException` (503) — ключ Gemini не задан, Redis или модель недоступны, ответ модели
+        `ServiceUnavailableException` (503) — ключи LLM не заданы, Redis или модель недоступны, ответ модели
         не разобран. Неудачный вызов модели квоту не расходует.
         """
         phrase = sanitize_prompt_text(text)
-        if not gemini_configured():
-            logger.warning("GEMINI_API_KEY не задан: голосовой ввод недоступен")
+        if not ai_configured():
+            logger.warning("Ключи LLM не заданы (ANTHROPIC_API_KEY, GEMINI_API_KEY): голосовой ввод недоступен")
             raise ServiceUnavailableException(message="Разбор голосового ввода недоступен")
 
         now = datetime.now(timezone.utc)
@@ -100,10 +99,10 @@ class VoiceParseService:
         # в пул и не простаивало весь вызов LLM (до AI_REQUEST_TIMEOUT секунд)
         await self.db.commit()
         try:
-            raw_records = await self._call_gemini(phrase, locale, currency, today)
+            raw_records = await self._call_model(phrase, locale, currency, today)
         except Exception as err:
             await release_daily_quota(redis_client, quota_key)
-            logger.error(f"Ошибка разбора голосового ввода в Gemini для пользователя {user_id}: {type(err).__name__}: {err}")
+            logger.error(f"Ошибка разбора голосового ввода в LLM для пользователя {user_id}: {type(err).__name__}: {err}")
             raise ServiceUnavailableException(message="Разбор голосового ввода недоступен") from err
 
         records = self._normalize(raw_records, currency, today)
@@ -128,20 +127,11 @@ class VoiceParseService:
         )
         return system_instruction, texts.prompt.format(text=phrase)
 
-    async def _call_gemini(self, phrase: str, locale: str, currency: CurrencyCode, today: date) -> list:
-        """Запрос к Gemini со Structured Outputs; возвращает сырой список записей из ответа."""
+    async def _call_model(self, phrase: str, locale: str, currency: CurrencyCode, today: date) -> list:
+        """Запрос к LLM; возвращает сырой список записей из ответа."""
         system_instruction, prompt = self.build_request(phrase, locale, currency, today)
-        text = await generate_text(
-            self.client,
-            self.model_name,
-            prompt,
-            types.GenerateContentConfig(
-                response_mime_type="application/json",
-                system_instruction=system_instruction,
-                temperature=0,
-            ),
-            AIRequestKind.voice,
-        )
+        # temperature=0 — только для запасной Gemini: разбор должен быть воспроизводимым
+        text = await self.client.generate(LLMRequest(AIRequestKind.voice, system_instruction, prompt, temperature=0))
         try:
             records = extract_json(text).get("records", [])
         except (ValueError, AttributeError) as err:

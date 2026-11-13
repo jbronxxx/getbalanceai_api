@@ -1,7 +1,7 @@
 """Модуль чтения и валидации конфигурации приложения."""
 
 import os
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -48,18 +48,24 @@ class Settings(BaseSettings):
     cors_allow_methods: list[str] = Field(["*"], alias="CORS_ALLOW_METHODS")
     cors_allow_headers: list[str] = Field(["*"], alias="CORS_ALLOW_HEADERS")
 
+    # Ключи провайдеров LLM: Anthropic — основная модель (Claude), Google — запасная (Gemini)
+    anthropic_api_key: str = Field("", alias="ANTHROPIC_API_KEY")
     gemini_api_key: str = Field("", alias="GEMINI_API_KEY")
-    ai_model: str = Field("gemini-3.5-flash-lite", alias="AI_MODEL")
+    # Основная модель ИИ-отчёта и голосового разбора; провайдер — по префиксу имени (claude-, gemini-)
+    ai_model: str = Field("claude-haiku-5-5", alias="AI_MODEL")
+    # Глубина размышлений Claude (output_config.effort): low выбран по итогу проверки качества AI-02
+    ai_effort: Literal["low", "medium", "high"] = Field("low", alias="AI_EFFORT")
     ai_daily_limit_per_user: int = Field(5, alias="AI_DAILY_LIMIT_PER_USER")
-    # Суточный лимит разборов голосового ввода через Gemini на пользователя
+    # Суточный лимит разборов голосового ввода через LLM на пользователя
     voice_daily_limit_per_user: int = Field(30, alias="VOICE_DAILY_LIMIT_PER_USER")
-    # Предел ожидания ответа Gemini: зависший вызов иначе держал бы воркер и запрос клиента без ответа
+    # Предел ожидания ответа LLM: зависший вызов иначе держал бы воркер и запрос клиента без ответа
     ai_request_timeout: float = Field(30.0, alias="AI_REQUEST_TIMEOUT")
-    # Предел одной попытки: HTTP-запрос к Gemini обрывается сам (SDK держит его в отдельном потоке), дальше —
+    # Предел одной попытки: HTTP-запрос к LLM обрывается по таймауту клиента, дальше —
     # повтор в пределах AI_REQUEST_TIMEOUT
     ai_attempt_timeout: float = Field(10.0, alias="AI_ATTEMPT_TIMEOUT")
-    # Модель последней попытки, если основная перегружена; пусто — все попытки на основной
-    ai_fallback_model: str = Field("gemini-3.1-flash-lite", alias="AI_FALLBACK_MODEL")
+    # Запасная модель другого провайдера: последняя попытка, если основная перегружена, отказала в ответе
+    # или недоступна (ключ, оплата); пусто — все попытки на основной
+    ai_fallback_model: str = Field("gemini-3.5-flash-lite", alias="AI_FALLBACK_MODEL")
 
     redis_url: str = Field("redis://localhost:6379/0", alias="REDIS_URL")
     # Хранилище счётчиков rate limiting; в Docker — Redis, чтобы лимит был общим для всех воркеров gunicorn

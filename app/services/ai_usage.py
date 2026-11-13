@@ -1,4 +1,4 @@
-"""Учёт расхода токенов LLM: строка журнала и счётчики Prometheus по модели и виду запроса, стоимость по прайсу.
+"""Учёт вызовов LLM: расход токенов и стоимость по прайсу, сбои по причинам — журнал и счётчики Prometheus.
 
 Счётчики работают и в multiprocess-режиме gunicorn (PROMETHEUS_MULTIPROC_DIR): значения воркеров суммируются.
 """
@@ -20,6 +20,22 @@ class AIRequestKind(str, enum.Enum):
     voice = "voice"
 
 
+class AIFailureReason(str, enum.Enum):
+    """Причина неудачной попытки вызова модели — метка `reason` в `ai_failures_total`."""
+
+    timeout = "timeout"
+    connection = "connection"
+    rate_limit = "rate_limit"
+    overloaded = "overloaded"
+    server_error = "server_error"
+    auth = "auth"
+    billing = "billing"
+    bad_request = "bad_request"
+    refusal = "refusal"
+    max_tokens = "max_tokens"
+    other = "other"
+
+
 @dataclass(frozen=True)
 class ModelPrice:
     """Цена модели в долларах за 1M токенов."""
@@ -32,7 +48,6 @@ class ModelPrice:
 # Скидка за кэш промпта не учитывается: стоимость — оценка сверху. У Claude Haiku 5.5 цена — для промпта до 100K токенов.
 MODEL_PRICES: dict[str, ModelPrice] = {
     "gemini-3.5-flash-lite": ModelPrice(input_per_mtok=0.30, output_per_mtok=2.50),
-    "gemini-3.1-flash-lite": ModelPrice(input_per_mtok=0.25, output_per_mtok=1.50),
     "claude-haiku-5-5": ModelPrice(input_per_mtok=0.10, output_per_mtok=0.50),
 }
 
@@ -53,11 +68,15 @@ class TokenUsage:
         return (self.input * price.input_per_mtok + (self.output + self.thinking) * price.output_per_mtok) / 1_000_000
 
 
-AI_CALLS = Counter("ai_calls", "Успешные вызовы LLM", ["model", "kind"])
+AI_CALLS = Counter("ai_calls", "Оплаченные ответы LLM (и отказ модели, и обрезанный ответ)", ["model", "kind"])
 AI_TOKENS = Counter(
     "ai_tokens", "Токены LLM: input — входные, output — ответ, thinking — размышления", ["model", "kind", "type"]
 )
 AI_COST_USD = Counter("ai_cost_usd", "Стоимость вызовов LLM в долларах по прайсу приложения", ["model", "kind"])
+AI_FAILURES = Counter("ai_failures", "Неудачные попытки вызова LLM по причинам", ["model", "kind", "reason"])
+AI_REQUESTS_FAILED = Counter(
+    "ai_requests_failed", "Запросы к ИИ без ответа: не помогли ни повторы, ни запасная модель", ["kind"]
+)
 
 
 def _token_count(meta: object, field: str) -> int:
@@ -110,3 +129,13 @@ def record_usage(model: str, kind: AIRequestKind, usage: TokenUsage) -> None:
         f"Расход LLM {model} ({kind.value}): вход {usage.input}, ответ {usage.output}, "
         f"размышления {usage.thinking}, стоимость {cost_text}"
     )
+
+
+def record_failure(model: str, kind: AIRequestKind, reason: AIFailureReason) -> None:
+    """Учесть неудачную попытку вызова модели (`ai_failures_total`)."""
+    AI_FAILURES.labels(model=model, kind=kind.value, reason=reason.value).inc()
+
+
+def record_request_failed(kind: AIRequestKind) -> None:
+    """Учесть запрос, оставшийся без ответа после всех попыток (`ai_requests_failed_total`)."""
+    AI_REQUESTS_FAILED.labels(kind=kind.value).inc()

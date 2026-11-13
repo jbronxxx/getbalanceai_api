@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "description": "Расход токенов и стоимость вызовов LLM (AI-01)",
+  "description": "Расход токенов, стоимость и сбои вызовов LLM (AI-01, переход на Claude Haiku)",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -81,7 +81,7 @@
         "type": "prometheus",
         "uid": "Prometheus"
       },
-      "description": "Успешные вызовы модели: insights — ИИ-отчёт, voice — голосовой разбор",
+      "description": "Оплаченные ответы модели (и отказ, и обрезанный ответ): insights — ИИ-отчёт, voice — голосовой разбор",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -455,6 +455,228 @@
       ],
       "title": "Токены на один вызов (среднее за сутки)",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "description": "Не помогли ни повторы, ни запасная модель: пользователь получил «ИИ занят» (отчёт) или 503 (голосовой разбор)",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 24
+      },
+      "id": 7,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (kind) (increase(ai_requests_failed_total[24h]))",
+          "interval": "",
+          "legendFormat": "{{kind}}",
+          "range": false,
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "title": "Запросы без ответа за 24 ч",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "description": "Каждая неудачная попытка вызова модели (ответ мог прийти со следующей). refusal — отказ модели, auth / billing — ключ или оплата провайдера, overloaded / rate_limit / server_error / timeout / connection — временные сбои",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 16,
+        "x": 8,
+        "y": 24
+      },
+      "id": 8,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (reason) (increase(ai_failures_total[24h]))",
+          "interval": "",
+          "legendFormat": "{{reason}}",
+          "range": false,
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "title": "Неудачные попытки за 24 ч по причинам",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "description": "Рост refusal, auth или billing у Claude — запросы уходят на запасную Gemini; смотреть журнал и консоль Anthropic",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "barAlignment": 0,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "axisPlacement": "auto",
+            "spanNulls": false,
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "interval": "1d",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (model, reason) (increase(ai_failures_total[1d]))",
+          "interval": "1d",
+          "legendFormat": "{{model}} · {{reason}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Неудачные попытки в сутки по модели и причине",
+      "type": "timeseries"
     }
   ],
   "refresh": "5m",
@@ -471,7 +693,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "ИИ: токены и стоимость",
+  "title": "ИИ: токены, стоимость и сбои",
   "uid": "ai-usage",
   "version": 1
 }

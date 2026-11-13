@@ -138,7 +138,7 @@ class TestInsights:
         with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
             with patch.object(
                 AIService,
-                "_call_gemini",
+                "_call_model",
                 new_callable=AsyncMock,
                 return_value=["Совет 1", "Совет 2"],
             ) as mock_claude, _patch_fingerprint(10):
@@ -188,7 +188,7 @@ class TestInsights:
             return ["Медленный совет"]
 
         with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
-            with patch.object(AIService, "_call_gemini", side_effect=slow_claude_call), _patch_fingerprint(10):
+            with patch.object(AIService, "_call_model", side_effect=slow_claude_call), _patch_fingerprint(10):
                 tx = MagicMock()
                 tx.date = MagicMock()
                 tx.date.strftime.return_value = "2026-10-01"

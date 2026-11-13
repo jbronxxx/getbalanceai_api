@@ -55,7 +55,7 @@ from app.services.ai_service import (  # noqa: E402
     AIService,
 )
 from app.services.ai_usage import AIRequestKind, TokenUsage, claude_usage  # noqa: E402
-from app.services.gemini import extract_json  # noqa: E402
+from app.services.llm import extract_json  # noqa: E402
 from app.services.voice_service import VoiceParseService  # noqa: E402
 from config_reader.config_reader import config  # noqa: E402
 

@@ -1,6 +1,6 @@
 # Сервисы (app/services/)
 
-* Конструктор: `__init__(self, db: AsyncSession)`; внешние клиенты (Gemini) мокаемые: `__init__(self, db, client=None)`.
+* Конструктор: `__init__(self, db: AsyncSession)`; внешние клиенты мокаемые: `__init__(self, db, client=None)` (LLM — `LLMClient` из `app/services/llm.py`, в тестах мок `generate`).
 * Промежуточные объекты: `await self.db.flush()` / `refresh(...)`; атомарные составные операции — `UnitOfWork(session_factory)` из `app/database.py`.
 * Ошибки — только из `app.exceptions` (`NotFoundException(ErrorCode.TRANSACTION_NOT_FOUND, "...")`, `BadRequestException`, `ConflictException`, `UnauthorizedException`, `ForbiddenException`); без сырых `HTTPException` и исключений БД.
 * N+1: `selectinload`/`joinedload`. Списки транзакций/событий — keyset-пагинация по `(date, id)` или `(created_at, id)`.

@@ -77,6 +77,8 @@ class TestLegalContent:
         assert "Crashlytics" in text and "Sentry" not in text
         assert "open.er-api.com" in text
         assert "Cloudflare" in text and "R2" in text
+        # ИИ: основной обработчик — Anthropic (Claude), запасной — Google (Gemini)
+        assert "Anthropic (Claude API)" in text and "Google (Gemini API)" in text
         assert "GDPR" in text
         assert "парол" not in text.replace("Пароль от аккаунта Google", "")
         assert "password hash" not in text and "password hashing" not in text

@@ -1,4 +1,4 @@
-"""Сервис формирования персональных финансовых инсайтов с использованием Google Gemini."""
+"""Сервис формирования персональных финансовых инсайтов через LLM (Claude, запасная — Gemini)."""
 
 import json
 import uuid
@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, tzinfo
 from decimal import Decimal
 
-from google.genai import types
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,16 +19,17 @@ from app.redis import (
 from app.schemas.schemas import BudgetResponse, InsightResponse, InsightState
 from app.services.ai_usage import AIRequestKind
 from app.services.budget_service import BudgetService
-from app.services.gemini import (
-    create_gemini_client,
+from app.services.insights_formatting import category_name, format_money
+from app.services.insights_texts import insight_texts
+from app.services.llm import (
+    LLMClient,
+    LLMRequest,
+    ai_configured,
     extract_json,
-    gemini_configured,
-    generate_text,
+    get_llm_client,
     release_daily_quota,
     take_daily_quota,
 )
-from app.services.insights_formatting import category_name, format_money
-from app.services.insights_texts import insight_texts
 from app.services.period import current_month as client_current_month
 from app.services.period import month_bounds
 from config_reader.config_reader import config
@@ -58,13 +58,12 @@ class MonthFingerprint:
 
 
 class AIService:
-    """Сервис взаимодействия с LLM (Google Gemini) для анализа транзакций пользователя."""
+    """Сервис взаимодействия с LLM для анализа транзакций пользователя."""
 
-    def __init__(self, db: AsyncSession, client=None, model_name=None):
-        """Инициализация сервиса с сессией базы данных и клиентом Gemini."""
+    def __init__(self, db: AsyncSession, client: LLMClient | None = None):
+        """Инициализация сервиса с сессией базы данных и клиентом LLM (в тестах — мок)."""
         self.db = db
-        self.client = client or create_gemini_client()
-        self.model_name = model_name or config.ai_model
+        self.client = client or get_llm_client()
 
     @classmethod
     async def invalidate_cache(cls, user_id: uuid.UUID) -> None:
@@ -205,8 +204,8 @@ class AIService:
         if (target_year, target_month) > (current_year, current_month):
             return InsightResponse(insights=[], generated_at=now, state=InsightState.no_data)
 
-        if not gemini_configured():
-            logger.warning("GEMINI_API_KEY is not set or is a placeholder, returning stub insights")
+        if not ai_configured():
+            logger.warning("Ключи LLM не заданы (ANTHROPIC_API_KEY, GEMINI_API_KEY): отчёт — заглушка")
             return InsightResponse(insights=[texts.stub], generated_at=now)
 
         fingerprint = await self._month_fingerprint(user_id, target_month, target_year, tz)
@@ -302,10 +301,10 @@ class AIService:
         await self.db.commit()
 
         try:
-            insights = await self._call_gemini(summary, locale, currency)
+            insights = await self._call_model(summary, locale, currency)
             response = InsightResponse(insights=insights, generated_at=datetime.now(timezone.utc))
         except Exception as e:
-            logger.error(f"Ошибка запроса инсайтов к Gemini для пользователя {user_id}: {type(e).__name__}: {e}")
+            logger.error(f"Ошибка запроса инсайтов к LLM для пользователя {user_id}: {type(e).__name__}: {e}")
             await release_daily_quota(redis_client, daily_quota_key)
             # Сообщение остаётся в insights для старых клиентов; новые по state показывают свою карточку
             return InsightResponse(
@@ -404,16 +403,10 @@ class AIService:
         system_instruction = texts.system_instruction.format(money_example=format_money(154771, currency, locale))
         return system_instruction, texts.prompt.format(summary=summary, currency=currency)
 
-    async def _call_gemini(self, summary: str, locale: str, currency: str) -> list[str]:
-        """Отправить запрос в Gemini API со Structured Outputs и распарсить JSON с рекомендациями."""
+    async def _call_model(self, summary: str, locale: str, currency: str) -> list[str]:
+        """Запросить отчёт у LLM и распарсить JSON с рекомендациями."""
         system_instruction, prompt = self.build_request(summary, locale, currency)
-
-        gen_config = types.GenerateContentConfig(
-            response_mime_type="application/json",
-            system_instruction=system_instruction,
-        )
-
-        text = await generate_text(self.client, self.model_name, prompt, gen_config, AIRequestKind.insights)
+        text = await self.client.generate(LLMRequest(AIRequestKind.insights, system_instruction, prompt))
         try:
             data = extract_json(text)
             return data.get("insights", [])

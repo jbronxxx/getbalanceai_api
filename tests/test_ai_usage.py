@@ -6,21 +6,23 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from google import genai
 from google.genai import types
 from prometheus_client import REGISTRY
 
 from app.models.models import CurrencyCode
-from app.services import gemini
 from app.services.ai_service import AIService
 from app.services.ai_usage import (
     MODEL_PRICES,
+    AIFailureReason,
     AIRequestKind,
     TokenUsage,
     claude_usage,
     gemini_usage,
+    record_failure,
+    record_request_failed,
     record_usage,
 )
+from app.services.llm import LLMClient
 from app.services.voice_service import VoiceParseService
 
 
@@ -122,25 +124,38 @@ def test_record_usage_without_price_counts_tokens_only(caplog: pytest.LogCapture
 
 
 def _client(text: str) -> MagicMock:
-    client = MagicMock(spec=genai.Client)
-    response = MagicMock(text=text)
-    response.usage_metadata = types.GenerateContentResponseUsageMetadata(prompt_token_count=1, candidates_token_count=1)
-    client.aio.models.generate_content = AsyncMock(return_value=response)
+    client = MagicMock(spec=LLMClient)
+    client.generate = AsyncMock(return_value=text)
     return client
 
 
 @pytest.mark.asyncio
-async def test_services_record_their_request_kind(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Отчёт пишется с kind=insights, голосовой разбор — с kind=voice."""
-    kinds = []
-    monkeypatch.setattr(gemini, "record_usage", lambda _model, kind, _usage: kinds.append(kind))
+async def test_services_send_their_request_kind() -> None:
+    """Отчёт уходит в LLM с kind=insights, голосовой разбор — с kind=voice (метка в метриках)."""
+    insights_client = _client('{"insights": ["совет"]}')
+    await AIService(db=MagicMock(), client=insights_client)._call_model("сводка", "ru", "EUR")
+    voice_client = _client('{"records": []}')
+    await VoiceParseService(db=MagicMock(), client=voice_client)._call_model(
+        "кофе 4 евро", "ru", CurrencyCode.EUR, date(2026, 11, 13)
+    )
 
-    insights = AIService(db=MagicMock(), client=_client('{"insights": ["совет"]}'), model_name="gemini-3.5-flash-lite")
-    await insights._call_gemini("сводка", "ru", "EUR")
-    voice = VoiceParseService(db=MagicMock(), client=_client('{"records": []}'), model_name="gemini-3.5-flash-lite")
-    await voice._call_gemini("кофе 4 евро", "ru", CurrencyCode.EUR, date(2026, 11, 13))
+    assert insights_client.generate.await_args.args[0].kind is AIRequestKind.insights
+    voice_request = voice_client.generate.await_args.args[0]
+    assert voice_request.kind is AIRequestKind.voice
+    assert voice_request.temperature == 0
 
-    assert kinds == [AIRequestKind.insights, AIRequestKind.voice]
+
+def test_record_failure_and_failed_request_counters() -> None:
+    """Сбой попытки — в ai_failures_total по модели, виду и причине; запрос без ответа — в ai_requests_failed_total."""
+    labels = {"model": "claude-haiku-5-5", "kind": AIRequestKind.voice.value, "reason": AIFailureReason.refusal.value}
+    before_failures = _sample("ai_failures_total", **labels)
+    before_failed = _sample("ai_requests_failed_total", kind=AIRequestKind.voice.value)
+
+    record_failure("claude-haiku-5-5", AIRequestKind.voice, AIFailureReason.refusal)
+    record_request_failed(AIRequestKind.voice)
+
+    assert _sample("ai_failures_total", **labels) == before_failures + 1
+    assert _sample("ai_requests_failed_total", kind=AIRequestKind.voice.value) == before_failed + 1
 
 
 def test_build_request_matches_locale() -> None:
