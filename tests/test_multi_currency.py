@@ -242,7 +242,7 @@ class TestMultiCurrencyBackend:
 
     @pytest.mark.asyncio
     async def test_ai_service_multi_currency_summary(self, db_session: AsyncSession, test_user: User):
-        """AIService._build_summary отображает валюту операции и эквивалент в базовой валюте."""
+        """AIService.build_summary отображает валюту операции и эквивалент в базовой валюте."""
         ai_service = AIService(db_session)
         tx = Transaction(
             id=uuid.uuid4(),
@@ -257,7 +257,7 @@ class TestMultiCurrencyBackend:
             date=datetime(2026, 10, 10, 10, 0, 0, tzinfo=timezone.utc),
         )
 
-        summary = ai_service._build_summary([tx], currency="USD", locale="ru")
+        summary = ai_service.build_summary([tx], currency="USD", locale="ru")
         # Суммы — как в приложении: обозначения валют вместо кодов, разряды через пробел
         assert "€5 000,00 (эквивалент: $5 434,79)" in summary
         assert "EUR" not in summary

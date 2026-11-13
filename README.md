@@ -303,6 +303,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000 --timeout-keep-alive 75
     ```
 * **Loki + Grafana Alloy** — автоматический сбор всех логов контейнеров (конфиг `alloy/config.alloy`).
 * **Prometheus + cAdvisor** — сбор системных метрик контейнеров (CPU, RAM) и метрик самого приложения FastAPI (`/metrics`).
+* **Расход ИИ** — дашборд **ИИ: токены и стоимость**: токены и стоимость вызовов Gemini в сутки по модели и виду запроса (отчёт, голосовой разбор). Себестоимость Claude Haiku на тестовых данных замеряет ручной скрипт `python scripts/measure_ai_cost.py` (платные вызовы, < $1; `--dry-run` — без вызовов; нужен `ANTHROPIC_API_KEY` в `.env`, SDK `anthropic` из `requirements-dev.txt`); он же проверяет качество ответов, а `--evaluate <файл --out>` оценивает сохранённый прогон без вызовов, `--blind <папка>` готовит отчёты для слепой оценки.
 * **node-exporter, postgres-exporter, redis-exporter** — метрики хоста, Postgres и Redis; вместе с остальными собраны на дашборде **Load Testing** для нагрузочных тестов.
 
 Базовые дашборды для метрик и логов уже преднастроены и доступны в Grafana сразу после запуска контейнеров!

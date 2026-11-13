@@ -11,6 +11,7 @@ from google.genai import errors as genai_errors
 from google.genai import types
 
 from app.services import gemini
+from app.services.ai_usage import AIRequestKind, TokenUsage
 from app.services.gemini import generate_text
 from config_reader.config_reader import config
 
@@ -63,7 +64,7 @@ async def test_overloaded_model_retried_then_fallback(caplog: pytest.LogCaptureF
     client = _client(overloaded, overloaded, _ok("готово"))
 
     with caplog.at_level(logging.INFO):
-        text = await generate_text(client, "main-model", PROMPT, types.GenerateContentConfig())
+        text = await generate_text(client, "main-model", PROMPT, types.GenerateContentConfig(), AIRequestKind.voice)
 
     assert text == "готово"
     assert _models(client) == ["main-model", "main-model", "fallback-model"]
@@ -76,7 +77,7 @@ async def test_overloaded_model_retried_then_fallback(caplog: pytest.LogCaptureF
 @pytest.mark.asyncio
 async def test_first_attempt_success_makes_one_call() -> None:
     client = _client(_ok("ок"))
-    assert await generate_text(client, "main-model", PROMPT, types.GenerateContentConfig()) == "ок"
+    assert await generate_text(client, "main-model", PROMPT, types.GenerateContentConfig(), AIRequestKind.voice) == "ок"
     assert _models(client) == ["main-model"]
 
 
@@ -86,7 +87,7 @@ async def test_each_attempt_has_http_timeout() -> None:
     client = _client(_ok())
     base_config = types.GenerateContentConfig(temperature=0)
 
-    await generate_text(client, "main-model", PROMPT, base_config)
+    await generate_text(client, "main-model", PROMPT, base_config, AIRequestKind.voice)
 
     sent = client.aio.models.generate_content.await_args.kwargs["config"]
     assert sent.http_options.timeout == 10_000
@@ -107,7 +108,7 @@ async def test_each_attempt_has_http_timeout() -> None:
 )
 async def test_transient_failures_are_retried(failure: BaseException) -> None:
     client = _client(failure, _ok("ок"))
-    assert await generate_text(client, "main-model", PROMPT, types.GenerateContentConfig()) == "ок"
+    assert await generate_text(client, "main-model", PROMPT, types.GenerateContentConfig(), AIRequestKind.voice) == "ок"
     assert _models(client) == ["main-model", "main-model"]
 
 
@@ -118,7 +119,7 @@ async def test_hanging_attempt_is_cut_and_retried(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(gemini, "_ATTEMPT_GRACE_SECONDS", 0.05)
     client = _client("hang", _ok("ок"))
 
-    assert await generate_text(client, "main-model", PROMPT, types.GenerateContentConfig()) == "ок"
+    assert await generate_text(client, "main-model", PROMPT, types.GenerateContentConfig(), AIRequestKind.voice) == "ок"
     assert len(_models(client)) == 2
 
 
@@ -136,7 +137,7 @@ async def test_permanent_failures_are_not_retried(failure: BaseException) -> Non
     """Неверный ключ или запрос повтором не исправить — сразу исключение."""
     client = _client(failure, _ok())
     with pytest.raises(type(failure)):
-        await generate_text(client, "main-model", PROMPT, types.GenerateContentConfig())
+        await generate_text(client, "main-model", PROMPT, types.GenerateContentConfig(), AIRequestKind.voice)
     assert len(_models(client)) == 1
 
 
@@ -145,7 +146,7 @@ async def test_all_attempts_fail_raises_last_error() -> None:
     overloaded = _api_error(genai_errors.ServerError, 503, "UNAVAILABLE")
     client = _client(overloaded, overloaded, overloaded)
     with pytest.raises(genai_errors.ServerError):
-        await generate_text(client, "main-model", PROMPT, types.GenerateContentConfig())
+        await generate_text(client, "main-model", PROMPT, types.GenerateContentConfig(), AIRequestKind.voice)
     assert len(_models(client)) == 3
 
 
@@ -155,7 +156,7 @@ async def test_without_fallback_all_attempts_on_main_model(monkeypatch: pytest.M
     monkeypatch.setattr(config, "ai_fallback_model", fallback)
     overloaded = _api_error(genai_errors.ServerError, 503, "UNAVAILABLE")
     client = _client(overloaded, overloaded, _ok())
-    await generate_text(client, "main-model", PROMPT, types.GenerateContentConfig())
+    await generate_text(client, "main-model", PROMPT, types.GenerateContentConfig(), AIRequestKind.voice)
     assert _models(client) == ["main-model"] * 3
 
 
@@ -166,5 +167,45 @@ async def test_no_retry_past_overall_deadline(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(gemini, "_ATTEMPT_GRACE_SECONDS", 0.05)
     client = _client("hang", _ok())
     with pytest.raises(TimeoutError):
-        await generate_text(client, "main-model", PROMPT, types.GenerateContentConfig())
+        await generate_text(client, "main-model", PROMPT, types.GenerateContentConfig(), AIRequestKind.voice)
     assert len(_models(client)) == 1
+
+
+@pytest.mark.asyncio
+async def test_usage_recorded_for_answering_model_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Расход пишется один раз — по модели, которая ответила; неудачные попытки не учитываются."""
+    recorded = []
+    monkeypatch.setattr(gemini, "record_usage", lambda model, kind, usage: recorded.append((model, kind, usage)))
+    response = MagicMock(text="ок")
+    response.usage_metadata = types.GenerateContentResponseUsageMetadata(
+        prompt_token_count=120, candidates_token_count=30, thoughts_token_count=7
+    )
+    overloaded = _api_error(genai_errors.ServerError, 503, "UNAVAILABLE")
+    client = _client(overloaded, overloaded, response)
+
+    assert await generate_text(client, "main-model", PROMPT, types.GenerateContentConfig(), AIRequestKind.insights) == "ок"
+    assert recorded == [("fallback-model", AIRequestKind.insights, TokenUsage(input=120, output=30, thinking=7))]
+
+
+@pytest.mark.asyncio
+async def test_usage_recording_failure_keeps_answer(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Сбой учёта токенов не теряет оплаченный ответ модели."""
+
+    def _broken(*_args) -> None:
+        raise RuntimeError("каталог метрик недоступен")
+
+    monkeypatch.setattr(gemini, "record_usage", _broken)
+    with caplog.at_level(logging.WARNING):
+        assert (
+            await generate_text(
+                client=_client(_ok("ок")),
+                model="main-model",
+                contents=PROMPT,
+                gen_config=types.GenerateContentConfig(),
+                kind=AIRequestKind.voice,
+            )
+            == "ок"
+        )
+    assert "Не удалось записать расход токенов" in caplog.text

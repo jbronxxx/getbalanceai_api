@@ -28,6 +28,7 @@ from app.schemas.schemas import (
     VoiceParseResponse,
     VoiceRecordDraft,
 )
+from app.services.ai_usage import AIRequestKind
 from app.services.gemini import (
     create_gemini_client,
     extract_json,
@@ -112,27 +113,34 @@ class VoiceParseService:
         )
         return VoiceParseResponse(records=records)
 
-    async def _call_gemini(self, phrase: str, locale: str, currency: CurrencyCode, today: date) -> list:
-        """Запрос к Gemini со Structured Outputs; возвращает сырой список записей из ответа."""
+    @classmethod
+    def build_request(cls, phrase: str, locale: str, currency: CurrencyCode, today: date) -> tuple[str, str]:
+        """Системная инструкция и промпт разбора; тот же запрос шлёт скрипт замера scripts/measure_ai_cost.py."""
         texts = voice_texts(locale)
         system_instruction = texts.system_instruction.format(
             today=today.isoformat(),
             weekday=texts.weekdays[today.weekday()],
             currency=currency.value,
             currencies=", ".join(SUPPORTED_CURRENCIES),
-            expense_categories=self._categories_hint(_EXPENSE_ORDER, locale),
-            income_categories=self._categories_hint(_INCOME_ORDER, locale),
+            expense_categories=cls._categories_hint(_EXPENSE_ORDER, locale),
+            income_categories=cls._categories_hint(_INCOME_ORDER, locale),
             max_records=VOICE_RECORDS_MAX,
         )
+        return system_instruction, texts.prompt.format(text=phrase)
+
+    async def _call_gemini(self, phrase: str, locale: str, currency: CurrencyCode, today: date) -> list:
+        """Запрос к Gemini со Structured Outputs; возвращает сырой список записей из ответа."""
+        system_instruction, prompt = self.build_request(phrase, locale, currency, today)
         text = await generate_text(
             self.client,
             self.model_name,
-            texts.prompt.format(text=phrase),
+            prompt,
             types.GenerateContentConfig(
                 response_mime_type="application/json",
                 system_instruction=system_instruction,
                 temperature=0,
             ),
+            AIRequestKind.voice,
         )
         try:
             records = extract_json(text).get("records", [])
