@@ -18,6 +18,7 @@ from app.redis import (
     get_redis,
 )
 from app.schemas.schemas import BudgetResponse, InsightResponse, InsightState
+from app.services.ai_usage import AIRequestKind
 from app.services.budget_service import BudgetService
 from app.services.gemini import (
     create_gemini_client,
@@ -295,7 +296,7 @@ class AIService:
         except Exception as err:
             logger.warning(f"Не удалось загрузить бюджеты для пользователя {user_id}: {err}")
 
-        summary = self._build_summary(transactions, budgets, currency, locale)
+        summary = self.build_summary(transactions, budgets, currency, locale)
         # Данные прочитаны: завершаем читающую транзакцию, чтобы соединение вернулось в пул
         # и не простаивало весь вызов LLM (до AI_REQUEST_TIMEOUT секунд)
         await self.db.commit()
@@ -333,8 +334,8 @@ class AIService:
         )
         return response
 
-    def _build_summary(
-        self,
+    @staticmethod
+    def build_summary(
         transactions: list[Transaction],
         budgets: list[BudgetResponse] | str | None = None,
         currency: str = "USD",
@@ -395,19 +396,24 @@ class AIService:
 
         return "\n".join(blocks)
 
-    async def _call_gemini(self, summary: str, locale: str, currency: str) -> list[str]:
-        """Отправить запрос в Gemini API со Structured Outputs и распарсить JSON с рекомендациями."""
+    @staticmethod
+    def build_request(summary: str, locale: str, currency: str) -> tuple[str, str]:
+        """Системная инструкция и промпт отчёта; тот же запрос шлёт скрипт замера scripts/measure_ai_cost.py."""
         texts = insight_texts(locale)
         # Пример суммы в том виде, в каком она дана в данных: модель должна повторять этот формат
         system_instruction = texts.system_instruction.format(money_example=format_money(154771, currency, locale))
-        prompt = texts.prompt.format(summary=summary, currency=currency)
+        return system_instruction, texts.prompt.format(summary=summary, currency=currency)
+
+    async def _call_gemini(self, summary: str, locale: str, currency: str) -> list[str]:
+        """Отправить запрос в Gemini API со Structured Outputs и распарсить JSON с рекомендациями."""
+        system_instruction, prompt = self.build_request(summary, locale, currency)
 
         gen_config = types.GenerateContentConfig(
             response_mime_type="application/json",
             system_instruction=system_instruction,
         )
 
-        text = await generate_text(self.client, self.model_name, prompt, gen_config)
+        text = await generate_text(self.client, self.model_name, prompt, gen_config, AIRequestKind.insights)
         try:
             data = extract_json(text)
             return data.get("insights", [])

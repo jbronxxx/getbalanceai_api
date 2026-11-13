@@ -1,4 +1,4 @@
-"""Общие помощники для вызовов Google Gemini: клиент, вызов с повторами, разбор JSON и суточная квота в Redis."""
+"""Общие помощники для вызовов Google Gemini: клиент, вызов с повторами и учётом токенов, разбор JSON, квота в Redis."""
 
 import asyncio
 import json
@@ -10,6 +10,7 @@ from google.genai import errors as genai_errors
 from google.genai import types
 from redis import asyncio as aioredis
 
+from app.services.ai_usage import AIRequestKind, gemini_usage, record_usage
 from config_reader.config_reader import config
 from logger.logger import get_logger
 
@@ -67,6 +68,7 @@ async def generate_text(
     model: str,
     contents: str,
     gen_config: types.GenerateContentConfig,
+    kind: AIRequestKind,
 ) -> str:
     """Текст ответа Gemini с повторами при временных сбоях; всё — в пределах AI_REQUEST_TIMEOUT.
 
@@ -74,6 +76,7 @@ async def generate_text(
     и через wait_for. Сам SDK запросы не повторяет. Перегрузка (503), 500, 429 и
     таймаут — повтор после паузы, последняя попытка — на запасной модели (AI_FALLBACK_MODEL). Прочие ошибки
     (неверный ключ, запрос) и исчерпанный общий срок — исключение последней попытки.
+    Расход токенов успешной попытки пишется с меткой ответившей модели и вида запроса `kind` (см. ai_usage).
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + config.ai_request_timeout
@@ -100,6 +103,11 @@ async def generate_text(
             continue
         if attempt > 1:
             logger.info(f"Gemini {name} ответил с попытки {attempt}/{len(models)}")
+        try:
+            record_usage(name, kind, gemini_usage(response))
+        except Exception as err:
+            # Сбой учёта не должен терять уже оплаченный ответ модели
+            logger.warning(f"Не удалось записать расход токенов Gemini {name}: {err}")
         return response.text or ""
     raise TimeoutError("Попытки вызова Gemini закончились")
 
