@@ -18,7 +18,8 @@ from app.schemas.schemas import (
     UserResponse,
     UserUpdateRequest,
 )
-from app.services.auth_service import AuthService, get_current_user
+from app.services.auth_service import AuthService, get_consented_user, get_current_user
+from logger.request_log import client_info
 
 router = APIRouter(
     responses={
@@ -30,7 +31,7 @@ router = APIRouter(
             "model": ErrorResponse,
             "description": "Ошибка авторизации (INVALID_CREDENTIALS, INVALID_TOKEN, TOKEN_REVOKED, EXPIRED_TOKEN)",
         },
-        403: {"model": ErrorResponse, "description": "Доступ запрещен"},
+        403: {"model": ErrorResponse, "description": "TERMS_NOT_ACCEPTED — не принята текущая версия соглашения"},
         404: {"model": ErrorResponse, "description": "Ресурс не найден"},
         422: {"model": ErrorResponse, "description": "Ошибка валидации данных"},
         429: {"model": ErrorResponse, "description": "Превышен лимит частоты запросов"},
@@ -49,9 +50,9 @@ router = APIRouter(
 async def google_login(
     request: Request, payload: GoogleSignInRequest, db: AsyncSession = Depends(get_db)
 ) -> dict[str, str | TokenResponse]:
-    """Аутентификация через Google (OAuth 2.0)."""
+    """Аутентификация через Google (OAuth 2.0); `accept_legal` записывает принятие текущих версий документов."""
     service = AuthService(db)
-    tokens = await service.google_login(payload)
+    tokens = await service.google_login(payload, client_info(request))
     return {"status": "success", "data": tokens}
 
 
@@ -64,9 +65,9 @@ async def google_login(
 async def apple_login(
     request: Request, payload: AppleSignInRequest, db: AsyncSession = Depends(get_db)
 ) -> dict[str, str | TokenResponse]:
-    """Аутентификация через Apple."""
+    """Аутентификация через Apple; `accept_legal` записывает принятие текущих версий документов."""
     service = AuthService(db)
-    tokens = await service.apple_login(payload)
+    tokens = await service.apple_login(payload, client_info(request))
     return {"status": "success", "data": tokens}
 
 
@@ -127,7 +128,7 @@ async def update_me(
     request: Request,
     payload: UserUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_consented_user),
 ) -> dict[str, str | User]:
     """Обновить профиль пользователя (имя, аватар, базовая валюта).
 

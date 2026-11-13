@@ -57,6 +57,7 @@ erDiagram
     users ||--o{ tokens : "has"
     users ||--o{ transaction_deletions : "has"
     users ||--o{ recurring_payments : "has"
+    users |o--o{ user_consents : "accepted"
 
     users {
         uuid id PK
@@ -66,6 +67,21 @@ erDiagram
         string avatar_url
         string base_currency
         datetime created_at
+        string accepted_terms_version
+        string accepted_privacy_version
+    }
+
+    user_consents {
+        uuid id PK
+        uuid user_id FK "SET NULL"
+        string email_hash "HMAC email"
+        string document
+        string version
+        datetime accepted_at
+        string language
+        string platform
+        string app_version
+        datetime account_deleted_at
     }
 
     tokens {
@@ -127,7 +143,8 @@ erDiagram
 ```
 
 ### Таблицы:
-* `users`: Пользователи системы (email в нижнем регистре; имя, аватар `avatar_url`, базовая расчетная валюта `base_currency`). `email` и `name` хранятся зашифрованными (`TEXT`, AES-256-GCM, см. «Шифрование имени и email»), поиск — по уникальному слепому индексу `email_hash` (HMAC-SHA256 адреса в нижнем регистре): один адрес в разном регистре даёт один аккаунт
+* `users`: Пользователи системы (email в нижнем регистре; имя, аватар `avatar_url`, базовая расчетная валюта `base_currency`). `email` и `name` хранятся зашифрованными (`TEXT`, AES-256-GCM, см. «Шифрование имени и email»), поиск — по уникальному слепому индексу `email_hash` (HMAC-SHA256 адреса в нижнем регистре): один адрес в разном регистре даёт один аккаунт. `accepted_terms_version` / `accepted_privacy_version` — последние принятые версии документов (см. «Принятие юридических документов»)
+* `user_consents`: История принятия соглашения и политики (GDPR ст. 7(1)): документ (CHECK `ck_user_consents_document`), версия, время, язык, платформа и версия приложения из заголовков OBS-02, слепой индекс email; имени, email и IP нет. Записи только добавляются. `user_id` → `users` — `ON DELETE SET NULL`: при удалении аккаунта запись остаётся с `account_deleted_at` и удаляется регламентной очисткой через 3 года
 * Внешние ключи `transactions`, `budgets`, `tokens`, `transaction_deletions`, `recurring_payments` → `users` — `ON DELETE CASCADE`; связи `User` с `passive_deletes=True`: удаление аккаунта — один `DELETE` пользователя, без загрузки его данных в память
 * `tokens`: refresh-токены сессий пользователей (SHA-256 хеш) со статусом (`active`, `revoked`, `expired`), временем отзыва `revoked_at` и преемником по ротации `replaced_by_id` (без внешнего ключа: пакетная очистка токенов не сканирует таблицу на каждую удалённую строку)
 * `transactions`: Финансовые операции (доход/расход с категорией, датой и мультивалютными полями стандарта `NUMERIC(18, 2)` и `NUMERIC(18, 6)`: `amount`, `currency`, `exchange_rate`, `base_amount`; `updated_at` — время последней правки для ETag списка и выборки `GET /sync/changes`, индекс `(user_id, updated_at)`)
@@ -193,7 +210,8 @@ erDiagram
 ```
 getbalanceai_api/
 ├── app/                        # Основной пакет приложения
-│   ├── legal/                  # Тексты публичных страниц (ru/en): privacy.py, terms.py, delete_account.py, ui.py
+│   ├── legal/                  # Тексты публичных страниц (ru/en): privacy.py, terms.py, delete_account.py, ui.py;
+│   │                           # versions.py — версии соглашения и политики с «Что изменилось», archive.py — прежние тексты
 │   ├── models/                 # ORM-модели SQLAlchemy 2.0
 │   │   └── models.py           # Модели User, Token, Transaction, Budget и Enum-типы
 │   ├── routers/                # Эндпоинты FastAPI (Контроллеры)
@@ -217,6 +235,7 @@ getbalanceai_api/
 │   │   ├── insights_texts.py   # Тексты AI-отчёта на языке пользователя: инструкция и запрос к модели, подписи данных, служебные сообщения
 │   │   ├── auth_service.py     # OAuth-вход, JWT, ротация и очистка токенов
 │   │   ├── budget_service.py   # Лимиты бюджетов и подсчет расходов
+│   │   ├── consent_service.py  # Принятие документов: запись согласий, проверка версии, срок хранения
 │   │   ├── currency_service.py # Получение и кэширование котировок валют (Redis, fallback)
 │   │   ├── legal_pages.py      # Выбор языка и HTML-рендеринг публичных страниц
 │   │   ├── period.py           # Границы месяцев в часовом поясе клиента
@@ -224,7 +243,7 @@ getbalanceai_api/
 │   │   ├── transaction_deletion_log.py # Журнал удалённых транзакций для GET /sync/changes
 │   │   └── transaction_service.py # Операции с транзакциями и генерация ETag
 │   ├── tasks/                  # Фоновые и регламентные процессы
-│   │   └── token_cleanup.py    # Регламентная очистка устаревших токенов
+│   │   └── token_cleanup.py    # Регламентная очистка устаревших токенов и просроченных согласий
 │   ├── database.py             # Подключение к PostgreSQL, SessionLocal, UnitOfWork и get_db
 │   ├── exceptions.py           # Доменные исключения (AppException) и коды ошибок ErrorCode
 │   ├── limiter.py              # Инициализация Rate Limiter (SlowAPI)
@@ -353,16 +372,23 @@ getbalanceai_api/
    * **Отказоустойчивость пула соединений (Pool Resilience)**: В `create_async_engine` включен `pool_pre_ping=True` (пессимистическая проверка доступности соединений перед выдачей из пула для защиты от `InterfaceError: connection is closed` при перезапуске БД или сбросе idle-соединений), а также `pool_recycle=1800` для упреждающей ротации TCP-сессий и корректное освобождение ресурсов `engine.dispose()` в `lifespan`.
 
 6. **Фоновые и регламентные процессы (Token Cleanup)**:
-   * **Периодическая очистка токенов**: Корутина `periodic_token_cleanup` (`app/tasks/token_cleanup.py`) запускается в `lifespan` каждого воркера gunicorn и удаляет истекшие или отозванные токены старше 30 дней (`expires_at < now() - interval '30 days'`).
+   * **Периодическая очистка токенов**: Корутина `periodic_token_cleanup` (`app/tasks/token_cleanup.py`) запускается в `lifespan` каждого воркера gunicorn и удаляет истекшие или отозванные токены старше 30 дней (`expires_at < now() - interval '30 days'`), а затем записи `user_consents` удалённых аккаунтов старше `CONSENT_RETENTION_DAYS` (3 года после `account_deleted_at`).
    * **Один запуск на кластер**: раз в час каждый воркер пытается занять блокировку `lock:token_cleanup` в Redis (`SET NX EX 86400`). Очистку выполняет только воркер, занявший её, — не чаще раза в сутки; остальные пропускают проверку (DEBUG). Сутки отсчитывает TTL блокировки, а не таймер процесса, поэтому рестарты при деплое не откладывают очистку. При сбое очистки блокировка снимается, и ближайшая проверка любого воркера повторяет её; при недоступном Redis проверка пропускается (WARNING), а не выполняется всеми воркерами.
    * **Автономный CLI-скрипт**: Для запуска регламентной очистки через системный планировщик (cron, Kubernetes CronJob) реализован скрипт `scripts/cleanup_tokens.py` с поддержкой параметра `--days`.
-7. **Публичные юридические страницы (Google Play / App Store)**:
+7. **Принятие юридических документов (LEG-01)**:
+   * Вход (`POST /auth/google`, `/auth/apple`) требует `accept_legal: true` — отметку на экране входа (иначе `422`); она принимает текущие версии соглашения и политики (`ConsentService.accept_current`). Запись в `user_consents` добавляется только при смене версии, повторный вход историю не множит.
+   * `GET /api/v1/legal` (без авторизации) — текущие версии и «Что изменилось» на языке `lang` → `X-App-Language` → `Accept-Language` → `en`. `POST /api/v1/legal/accept` — принятие показанных версий (экран новой версии соглашения, уведомление о политике); не текущая версия — `409 LEGAL_VERSION_OUTDATED` с `current_version` в `details`.
+   * Доступ к данным: роутеры транзакций, бюджетов, регулярных платежей, синхронизации, ИИ-отчёта, голосового ввода и `PATCH /auth/me` используют `get_consented_user` — без принятой текущей версии соглашения `403 TERMS_NOT_ACCEPTED`. `GET /auth/me`, выход, `DELETE /auth/me` и `/legal/accept` — на `get_current_user`. Новая версия политики доступ не закрывает: только `legal.privacy_accepted=false` в профиле.
+   * Статус в профиле — вычисляемое поле `UserResponse.legal` (текущие версии и `*_accepted`) по колонкам `users.accepted_*_version`, без запроса к истории.
+   * Удаление аккаунта не удаляет согласия: `ConsentService.mark_account_deleted` ставит `account_deleted_at`, `user_id` обнуляет БД. Найти запись можно по слепому индексу email (`scripts/rotate_pii_keys.py` пересчитывает его в согласиях живых аккаунтов; для удалённых старый `PII_HMAC_KEY` хранить вне сервера до истечения срока). Основание хранения — защита от правовых претензий (GDPR ст. 17(3)(e)); срок 3 года — до подтверждения юристом.
+8. **Публичные юридические страницы (Google Play / App Store)**:
    * `GET /privacy`, `GET /terms`, `GET /delete-account` (`app/routers/public.py`, без авторизации, вне `/api/v1`, не входят в OpenAPI) возвращают адаптивный `HTMLResponse` в цветах бренда `#0D9488` (светлая и тёмная тема).
    * Язык — `?lang=ru|en`, иначе по `Accept-Language`, иначе `en` (`resolve_language`). Неподдерживаемое значение `lang` игнорируется и в разметку не попадает. Ответ кэшируется (`Cache-Control: public, max-age=3600`, `Vary: Accept-Language`).
    * Тексты хранятся в пакете `app/legal/` (данные), рендеринг и выбор языка — `app/services/legal_pages.py`; весь пользовательский контент экранируется через `html.escape`. Контактный email — `SUPPORT_EMAIL` в `app/legal/ui.py`.
    * Страница удаления описывает удаление в приложении (*Профиль → Удалить аккаунт*), перечень безвозвратно удаляемых данных и удаление по email без входа в приложение (срок — 30 дней). URL указываются в Play Console (Data Safety, Privacy Policy) и открываются из мобильного приложения.
    * Nginx проксирует пути на API, кроме закрытого `/metrics` и `/docs`, `/redoc`, `/openapi.json` за basic auth (см. раздел 7). Для `/privacy`, `/terms`, `/delete-account` в `nginx/conf.d/default.conf` действует лимит `5r/s` на IP (`limit_req_zone` по ключу из `map $uri`, `burst=20 nodelay`, при превышении — `429`); остальные пути лимитом Nginx не затрагиваются.
    * Сроки хранения, указанные в текстах, должны совпадать с настройками: резервные копии БД — 7 последних файлов `scripts/backup_db.sh` при ежедневном cron (≈7 суток) и не более 3 копий перед деплоем (`predeploy`, не дольше 7 суток); зашифрованные копии в Cloudflare R2 удаляются lifecycle-правилом бакета через 7 дней, логи Loki — 30 дней. При изменении настроек обновляйте `app/legal/`.
+   * **Версии документов** (`app/legal/versions.py`): у соглашения и политики своя история `LEGAL_HISTORY`, версия — дата вступления в силу (ISO), последняя — текущая; к каждой версии — 1–3 пункта «Что изменилось» на всех языках. Дата на странице берётся из текущей версии (`format_date`). `?version=ГГГГ-ММ-ДД` показывает прежний текст из `app/legal/archive.py`, неизвестная версия — `404`. Выпуск новой версии: перенести текущие тексты документа в `ARCHIVE` под прежней версией, поправить тексты, добавить `LegalVersion` в конец истории (тест проверяет, что все прежние версии есть в архиве).
    * Запросы на удаление по email выполняются администратором скриптом `scripts/delete_user_by_email.py`: он находит пользователя по слепому индексу (`AuthService.find_user_by_email`) и вызывает `AuthService.delete_account` (те же шаги, что у `DELETE /auth/me`: каскадное удаление в БД и очистка ключей Redis).
    * Нагрузочное тестирование прода: `scripts/issue_load_test_tokens.py` создаёт пользователей только с email `loadtest+…@getbalanceai.test` (зарезервированный домен), вставляет их историю пачками напрямую в БД (без API и его лимитов) и выдаёт токены через `AuthService._issue_token_pair`; `cleanup` удаляет их по этому шаблону каскадом (email зашифрован, поэтому адреса расшифровываются в скрипте и отбираются по шаблону, а не `LIKE` в SQL), реальные пользователи не затрагиваются. Входа по паролю для тестов нет. Сценарии и критерии — `loadtest/README.md`.
 

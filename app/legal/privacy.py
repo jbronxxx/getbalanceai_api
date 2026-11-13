@@ -33,6 +33,8 @@ PRIVACY: dict[str, PageContent] = {
                         "операционной системы, язык интерфейса и метаданные запросов (адрес, время и результат "
                         "запроса, код ошибки). Содержимое запросов — суммы, описания операций, токены входа — в "
                         "журналы не записывается.",
+                        "Принятие условий: версии принятых Пользовательского соглашения и Политики, дата и время "
+                        "принятия, язык интерфейса, платформа и версия приложения.",
                         "Отчёты о сбоях (только в Android-версии): модель устройства, версия операционной "
                         "системы и приложения, идентификатор установки и техническое описание ошибки. Имя, "
                         "email и финансовые данные в отчёты о сбоях не добавляются.",
@@ -48,6 +50,7 @@ PRIVACY: dict[str, PageContent] = {
                 [
                     [
                         "Создание и управление вашей учётной записью.",
+                        "Подтверждение того, что вы приняли Пользовательское соглашение и Политику.",
                         "Синхронизация операций, бюджетов и регулярных платежей между устройствами.",
                         "Формирование персонализированной финансовой аналитики с помощью ИИ.",
                         "Разбор фраз голосового ввода на записи.",
@@ -78,6 +81,9 @@ PRIVACY: dict[str, PageContent] = {
                         "Google Play и Apple App Store — распространение приложения и оплата платных функций. "
                         "Данные банковской карты обрабатывает магазин; мы их не получаем и не храним.",
                         "Хостинг-провайдер — хранение и обработка данных на серверах (см. раздел 6).",
+                        "Cloudflare (хранилище R2) — хранение резервных копий базы данных вне сервера. Копии "
+                        "шифруются на нашем сервере до отправки, ключа шифрования у Cloudflare нет; копии "
+                        "хранятся не более 7 суток (см. раздел 5).",
                     ],
                 ],
             ),
@@ -89,14 +95,18 @@ PRIVACY: dict[str, PageContent] = {
                     "Резервные копии базы данных создаются ежедневно и хранятся не более 7 суток, серверные "
                     "технические журналы — не более 30 дней; по истечении этих сроков удалённые данные "
                     "исчезают и оттуда.",
+                    "Исключение — запись о принятии условий (версии документов, дата и время, язык, платформа "
+                    "и версия приложения, ключевой хэш email, по которому нельзя восстановить адрес). Имени и "
+                    "email в ней нет. После удаления аккаунта она хранится 3 года — чтобы при споре подтвердить, "
+                    "какие условия вы приняли, — и затем удаляется.",
                 ],
             ),
             (
                 "6. Расположение серверов и международная передача",
                 [
                     "Серверная инфраструктура GetBalance AI расположена в Европейском Союзе (г. Хельсинки, "
-                    "Финляндия). Сервисы Google из раздела 4 могут обрабатывать данные за пределами ЕС, "
-                    "в том числе в США; такая передача выполняется с мерами защиты, предусмотренными "
+                    "Финляндия). Сервисы Google и Cloudflare из раздела 4 могут обрабатывать данные за "
+                    "пределами ЕС, в том числе в США; такая передача выполняется с мерами защиты, предусмотренными "
                     "законодательством ЕС о защите данных (например, стандартными договорными условиями "
                     "Европейской комиссии).",
                 ],
@@ -171,6 +181,8 @@ PRIVACY: dict[str, PageContent] = {
                         "language and request metadata (address, time and outcome of the request, error code). "
                         "Request contents such as amounts, transaction descriptions and sign-in tokens are not "
                         "written to logs.",
+                        "Acceptance of terms: versions of the Terms of Service and Privacy Policy you accepted, "
+                        "date and time of acceptance, interface language, platform and app version.",
                         "Crash reports (Android version only): device model, operating system and app version, "
                         "installation identifier and a technical description of the error. Your name, email and "
                         "financial data are not added to crash reports.",
@@ -186,6 +198,7 @@ PRIVACY: dict[str, PageContent] = {
                 [
                     [
                         "To create and manage your account.",
+                        "To confirm that you accepted the Terms of Service and this Policy.",
                         "To sync transactions, budgets and recurring payments across your devices.",
                         "To generate personalized financial insights using AI.",
                         "To turn voice input phrases into records.",
@@ -216,6 +229,9 @@ PRIVACY: dict[str, PageContent] = {
                         "Google Play and the Apple App Store distribute the app and process payments for paid "
                         "features. Card details are handled by the store; we never receive or store them.",
                         "A hosting provider stores and processes data on servers (see section 6).",
+                        "Cloudflare (R2 storage) stores off-server backups of the database. Backups are encrypted "
+                        "on our server before upload and Cloudflare does not have the encryption key; they are kept "
+                        "for no more than 7 days (see section 5).",
                     ],
                 ],
             ),
@@ -227,15 +243,20 @@ PRIVACY: dict[str, PageContent] = {
                     "erased from the database. Database backups are created daily and kept for no more than "
                     "7 days, and server technical logs for no more than 30 days; after that the deleted data "
                     "disappears from them too.",
+                    "The exception is the record of your acceptance of terms (document versions, date and time, "
+                    "language, platform and app version, and a keyed hash of your email from which the address "
+                    "cannot be recovered). It contains no name or email. After account deletion it is kept for "
+                    "3 years, so that we can confirm which terms you accepted in case of a dispute, and is then "
+                    "deleted.",
                 ],
             ),
             (
                 "6. Server location and international transfers",
                 [
                     "GetBalance AI server infrastructure is located in the European Union (Helsinki, Finland). "
-                    "The Google services listed in section 4 may process data outside the EU, including in the "
-                    "United States; such transfers are made with the safeguards provided by EU data protection "
-                    "law (for example, the European Commission's Standard Contractual Clauses).",
+                    "The Google and Cloudflare services listed in section 4 may process data outside the EU, "
+                    "including in the United States; such transfers are made with the safeguards provided by EU "
+                    "data protection law (for example, the European Commission's Standard Contractual Clauses).",
                 ],
             ),
             (

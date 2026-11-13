@@ -1,9 +1,23 @@
 """Тесты публичных HTML-страниц: политика, соглашение, удаление аккаунта."""
 
+from datetime import date
+
 import pytest
 from httpx import AsyncClient
 
-from app.legal import LANGUAGES, PAGES, SUPPORT_EMAIL, UI_STRINGS
+from app.legal import (
+    ARCHIVE,
+    LANGUAGES,
+    LEGAL_DOCUMENTS,
+    LEGAL_HISTORY,
+    PAGES,
+    SUPPORT_EMAIL,
+    UI_STRINGS,
+    LegalVersion,
+    current_version,
+    format_date,
+)
+from app.models.models import LEGAL_DOCUMENT_VALUES
 from app.services.legal_pages import render_page, resolve_language
 
 PAGE_PATHS = ("/privacy", "/terms", "/delete-account")
@@ -62,6 +76,7 @@ class TestLegalContent:
         assert "7" in text and "30" in text
         assert "Crashlytics" in text and "Sentry" not in text
         assert "open.er-api.com" in text
+        assert "Cloudflare" in text and "R2" in text
         assert "GDPR" in text
         assert "парол" not in text.replace("Пароль от аккаунта Google", "")
         assert "password hash" not in text and "password hashing" not in text
@@ -90,6 +105,74 @@ class TestLegalContent:
         assert "<u>b</u>" not in html
 
 
+class TestLegalVersions:
+    """Версии документов: даты, пункты «Что изменилось», архив прежних текстов."""
+
+    def test_documents_match_model_check_constraint(self):
+        """Документы с версиями — те же, что допускает CHECK user_consents.document."""
+        assert set(LEGAL_DOCUMENTS) == set(LEGAL_DOCUMENT_VALUES)
+        assert all(document in PAGES for document in LEGAL_DOCUMENTS)
+
+    @pytest.mark.parametrize("document", list(LEGAL_HISTORY))
+    def test_history_is_ordered_and_translated(self, document: str):
+        """Версии идут по возрастанию даты; «Что изменилось» — на всех языках, 1–3 пункта."""
+        history = LEGAL_HISTORY[document]
+        assert [v.effective for v in history] == sorted({v.effective for v in history})
+        for version in history:
+            assert set(version.changes) == set(LANGUAGES)
+            assert all(1 <= len(items) <= 3 for items in version.changes.values())
+
+    @pytest.mark.parametrize("document", list(LEGAL_HISTORY))
+    def test_archive_has_every_previous_version(self, document: str):
+        """Каждая прежняя версия лежит в архиве на всех языках — по записи о согласии можно показать её текст."""
+        previous = {v.version for v in LEGAL_HISTORY[document][:-1]}
+        assert set(ARCHIVE[document]) == previous
+        for texts in ARCHIVE[document].values():
+            assert set(texts) == set(LANGUAGES)
+
+    def test_format_date(self):
+        assert format_date(date(2026, 11, 13), "ru") == "13 ноября 2026 г."
+        assert format_date(date(2026, 1, 5), "en") == "January 5, 2026"
+
+    @pytest.mark.asyncio
+    async def test_current_version_by_parameter(self, client: AsyncClient):
+        version = current_version("terms").version
+        response = await client.get("/terms", params={"lang": "en", "version": version})
+        assert response.status_code == 200
+        assert PAGES["terms"]["en"]["title"] in response.text
+
+    @pytest.mark.asyncio
+    async def test_archived_version_shows_old_text_and_date(self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch):
+        """Прежняя версия из архива: её текст и её дата; ссылки на другой язык остаются на этой версии."""
+        old = LegalVersion(effective=date(2026, 1, 1), changes={lang: ["-"] for lang in LANGUAGES})
+        monkeypatch.setitem(LEGAL_HISTORY, "terms", (old, *LEGAL_HISTORY["terms"]))
+        old_text = {lang: {"title": f"Old terms {lang}", "sections": [("1", ["old"])]} for lang in LANGUAGES}
+        monkeypatch.setitem(ARCHIVE, "terms", {old.version: old_text})
+
+        response = await client.get("/terms", params={"lang": "en", "version": "2026-01-01"})
+        assert response.status_code == 200
+        assert "Old terms en" in response.text
+        assert "January 1, 2026" in response.text
+        assert "?lang=ru&amp;version=2026-01-01" in response.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("path", "version", "status"),
+        [
+            ("/terms", "2000-01-01", 404),
+            ("/privacy", "2000-01-01", 404),
+            ("/terms", "latest", 422),
+            ("/delete-account", "2026-11-13", 200),
+        ],
+    )
+    async def test_unknown_or_invalid_version(self, client: AsyncClient, path: str, version: str, status: int):
+        """Неизвестная версия — 404, не дата — 422; у страницы удаления версий нет, параметр не принимается."""
+        response = await client.get(path, params={"version": version})
+        assert response.status_code == status
+        if path == "/delete-account":
+            assert 'class="meta"' not in response.text
+
+
 class TestPublicPages:
     """HTTP-контракт публичных страниц."""
 
@@ -103,7 +186,12 @@ class TestPublicPages:
         assert response.headers["content-type"].startswith("text/html")
         assert f'<html lang="{lang}">' in response.text
         assert f"mailto:{SUPPORT_EMAIL}" in response.text
-        assert UI_STRINGS[lang]["updated"] in response.text
+        page = path.lstrip("/")
+        if page in LEGAL_HISTORY:
+            effective = format_date(current_version(page).effective, lang)
+            assert UI_STRINGS[lang]["updated"].format(date=effective) in response.text
+        else:
+            assert 'class="meta"' not in response.text
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("path", PAGE_PATHS)

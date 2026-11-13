@@ -16,7 +16,7 @@ from app.schemas.schemas import (
     SyncPayload,
     SyncResponse,
 )
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_consented_user
 from app.services.sync_service import SyncService
 
 router = APIRouter(
@@ -26,7 +26,7 @@ router = APIRouter(
             "description": "Ошибка валидации или параметров синхронизации",
         },
         401: {"model": ErrorResponse, "description": "Требуется авторизация"},
-        403: {"model": ErrorResponse, "description": "Доступ запрещен"},
+        403: {"model": ErrorResponse, "description": "TERMS_NOT_ACCEPTED — не принята текущая версия соглашения"},
         422: {"model": ErrorResponse, "description": "Ошибка валидации входных данных"},
         429: {"model": ErrorResponse, "description": "Превышен лимит частоты запросов (60/мин на пользователя)"},
         500: {
@@ -53,7 +53,7 @@ async def sync_data(
     request: Request,
     payload: SyncPayload,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_consented_user),
     tz: tzinfo = Depends(get_client_timezone),
 ):
     """Применить батч оффлайн-изменений клиента; отклонённые записи возвращаются в rejected."""
@@ -79,7 +79,7 @@ async def get_changes(
     cursor: str | None = Query(None, max_length=512, description="next_cursor предыдущей страницы"),
     limit: int = Query(200, ge=1, le=500, description="Размер страницы (макс. 500)"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_consented_user),
 ):
     """Отдать изменения транзакций пользователя для инкрементальной синхронизации устройства."""
     result = await SyncService(db).get_changes(current_user.id, since=since, cursor=cursor, limit=limit)

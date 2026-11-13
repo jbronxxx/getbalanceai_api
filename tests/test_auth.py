@@ -290,7 +290,7 @@ class TestGoogleAuthEndpoint:
             "picture": "https://lh3.googleusercontent.com/avatar.png",
         }
 
-        payload = {"id_token": "valid_mock_token"}
+        payload = {"id_token": "valid_mock_token", "accept_legal": True}
         response = await client.post("/api/v1/auth/google", json=payload)
         assert response.status_code == 200
 
@@ -322,6 +322,7 @@ class TestGoogleAuthEndpoint:
             "id_token": "valid_mock_token",
             "avatar_url": "https://example.com/client_avatar.png",
             "name": "Client Name",
+            "accept_legal": True,
         }
         response = await client.post("/api/v1/auth/google", json=payload)
         assert response.status_code == 200
@@ -337,6 +338,7 @@ class TestGoogleAuthEndpoint:
         payload = {
             "id_token": "valid_mock_token",
             "avatar_url": "https://example.com/" + "a" * 501,
+            "accept_legal": True,
         }
         response = await client.post("/api/v1/auth/google", json=payload)
         assert response.status_code == 422

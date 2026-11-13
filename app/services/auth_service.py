@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.exceptions import (
     ErrorCode,
+    ForbiddenException,
     NotFoundException,
     ServiceUnavailableException,
     UnauthorizedException,
@@ -33,6 +34,7 @@ from app.schemas.schemas import (
     UserUpdateRequest,
 )
 from app.services.budget_service import BudgetService
+from app.services.consent_service import ConsentService, terms_accepted
 from app.services.currency_service import CurrencyService
 from config_reader.config_reader import config
 from logger.logger import get_logger
@@ -174,11 +176,15 @@ class AuthService:
         except Exception as err:
             logger.warning(f"Не удалось инвалидировать кэш инсайтов в Redis при смене валюты: {err}")
 
-    async def _handle_oauth_user(self, provider: str, email: str, name: str, avatar_url: str | None = None) -> TokenResponse:
-        """Найти или создать пользователя по email из ID-токена провайдера и выдать пару токенов.
+    async def _handle_oauth_user(
+        self, provider: str, email: str, name: str, avatar_url: str | None, client: dict[str, str]
+    ) -> TokenResponse:
+        """Найти или создать пользователя по email из ID-токена провайдера, записать принятие документов и выдать токены.
 
         Email хранится в нижнем регистре и ищется по слепому индексу (HMAC нормализованного адреса):
         сама колонка зашифрована, а один адрес в разном регистре не должен давать два аккаунта.
+        Вход возможен только с отметкой о принятии (`accept_legal` в запросе) — она принимает текущие версии
+        соглашения и политики. `client` — данные приложения из заголовков (язык, платформа, версия).
         """
         email = email.strip().lower()
         query = select(User).where(User.email_matches(email))
@@ -196,6 +202,7 @@ class AuthService:
                 user.name = name
         await self.db.flush()
         await self.db.refresh(user)
+        await ConsentService(self.db).accept_current(user, client)
 
         access_token, refresh_token = await self._issue_token_pair(user.id)
         if is_new:
@@ -209,7 +216,7 @@ class AuthService:
             user=UserResponse.model_validate(user),
         )
 
-    async def google_login(self, payload: GoogleSignInRequest) -> TokenResponse:
+    async def google_login(self, payload: GoogleSignInRequest, client: dict[str, str]) -> TokenResponse:
         try:
             # Получаем кэшированный клиент JWKS для Google
             if AuthService._google_jwks_client is None:
@@ -233,12 +240,12 @@ class AuthService:
             name = (payload.name or data.get("name") or email.split("@")[0])[:100]
             picture = payload.avatar_url or data.get("picture")
 
-            return await self._handle_oauth_user("google", email, name, picture)
+            return await self._handle_oauth_user("google", email, name, picture, client)
         except Exception as e:
             logger.warning(f"Отклонён вход через google: {e}")
             raise UnauthorizedException(code=ErrorCode.INVALID_CREDENTIALS, message="Недействительный токен Google")
 
-    async def apple_login(self, payload: AppleSignInRequest) -> TokenResponse:
+    async def apple_login(self, payload: AppleSignInRequest, client: dict[str, str]) -> TokenResponse:
         try:
             # Получаем кэшированный клиент JWKS для Apple
             if AuthService._apple_jwks_client is None:
@@ -257,7 +264,7 @@ class AuthService:
 
             name = email.split("@")[0][:100]
 
-            return await self._handle_oauth_user("apple", email, name, None)
+            return await self._handle_oauth_user("apple", email, name, None, client)
         except Exception as e:
             logger.warning(f"Отклонён вход через apple: {e}")
             raise UnauthorizedException(code=ErrorCode.INVALID_CREDENTIALS, message="Недействительный токен Apple")
@@ -352,6 +359,8 @@ class AuthService:
                 message="Пользователь не найден",
             )
 
+        # Записи о согласии остаются на срок хранения (без user_id — его обнулит БД)
+        await ConsentService(self.db).mark_account_deleted(user_id)
         await self.db.delete(user)
         # Транзакции, бюджеты и токены удаляет БД (ON DELETE CASCADE) одним DELETE пользователя
         await self.db.flush()
@@ -670,3 +679,17 @@ async def get_current_user(
     # ID пользователя для журнала запросов (logger/request_log.py) — только после проверки токена
     request.state.user_id = str(user.id)
     return user
+
+
+async def get_consented_user(current_user: User = Depends(get_current_user)) -> User:
+    """Зависимость FastAPI: текущий пользователь, принявший актуальную версию пользовательского соглашения.
+
+    Без принятия данные недоступны (403 TERMS_NOT_ACCEPTED): приложение показывает экран новой версии.
+    Профиль, принятие, выход и удаление аккаунта открыты и без неё — на `get_current_user`.
+    """
+    if not terms_accepted(current_user):
+        raise ForbiddenException(
+            code=ErrorCode.TERMS_NOT_ACCEPTED,
+            message="Нужно принять актуальную версию пользовательского соглашения",
+        )
+    return current_user

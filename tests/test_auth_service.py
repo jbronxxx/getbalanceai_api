@@ -205,9 +205,9 @@ class TestAuthServiceUnit:
         }
 
         service = AuthService(db_session)
-        payload = GoogleSignInRequest(id_token="mock_id_token")
+        payload = GoogleSignInRequest(accept_legal=True, id_token="mock_id_token")
 
-        tokens = await service.google_login(payload)
+        tokens = await service.google_login(payload, {})
         assert tokens.access_token is not None
         assert tokens.refresh_token is not None
         assert tokens.user is not None
@@ -237,12 +237,13 @@ class TestAuthServiceUnit:
 
         service = AuthService(db_session)
         payload = GoogleSignInRequest(
+            accept_legal=True,
             id_token="mock_id_token",
             avatar_url="https://example.com/fallback.png",
             name="Custom Name",
         )
 
-        tokens = await service.google_login(payload)
+        tokens = await service.google_login(payload, {})
         assert tokens.user is not None
         assert tokens.user.avatar_url == "https://example.com/fallback.png"
         assert tokens.user.name == "Custom Name"
@@ -270,8 +271,8 @@ class TestAuthServiceUnit:
 
         service = AuthService(db_session)
         # 1. Первый вход без аватара
-        first_payload = GoogleSignInRequest(id_token="mock_id_token_1")
-        tokens_1 = await service.google_login(first_payload)
+        first_payload = GoogleSignInRequest(accept_legal=True, id_token="mock_id_token_1")
+        tokens_1 = await service.google_login(first_payload, {})
         assert tokens_1.user.avatar_url is None
         assert tokens_1.user.name == "repeatuser"
 
@@ -283,8 +284,8 @@ class TestAuthServiceUnit:
             "name": "Updated Repeat User",
             "picture": "https://example.com/updated_avatar.png",
         }
-        second_payload = GoogleSignInRequest(id_token="mock_id_token_2")
-        tokens_2 = await service.google_login(second_payload)
+        second_payload = GoogleSignInRequest(accept_legal=True, id_token="mock_id_token_2")
+        tokens_2 = await service.google_login(second_payload, {})
         assert tokens_2.user.avatar_url == "https://example.com/updated_avatar.png"
         assert tokens_2.user.name == "Updated Repeat User"
 
@@ -313,11 +314,12 @@ class TestAuthServiceUnit:
         service = AuthService(db_session)
         # Пользователь логинится со свежим аватаром в payload, хотя в токене старый avatar
         payload = GoogleSignInRequest(
+            accept_legal=True,
             id_token="mock_id_token",
             avatar_url="https://example.com/new_fresh_avatar.png",
             name="New Fresh Name",
         )
-        tokens = await service.google_login(payload)
+        tokens = await service.google_login(payload, {})
         assert tokens.user is not None
         assert tokens.user.avatar_url == "https://example.com/new_fresh_avatar.png"
         assert tokens.user.name == "New Fresh Name"
@@ -341,9 +343,11 @@ class TestAuthServiceUnit:
         ]
 
         for _ in range(2):
-            await AuthService(db_session).google_login(GoogleSignInRequest(id_token="mock_id_token"))
+            await AuthService(db_session).google_login(GoogleSignInRequest(accept_legal=True, id_token="mock_id_token"), {})
         for _ in range(2):
-            await AuthService(db_session).apple_login(AppleSignInRequest(identity_token="mock_id_token"))
+            await AuthService(db_session).apple_login(
+                AppleSignInRequest(accept_legal=True, identity_token="mock_id_token"), {}
+            )
 
         created_urls = [call.args[0] for call in mock_jwk_client.call_args_list]
         assert created_urls == ["https://www.googleapis.com/oauth2/v3/certs", "https://appleid.apple.com/auth/keys"]
@@ -356,9 +360,9 @@ class TestAuthServiceUnit:
         mock_jwt_decode.return_value = {"email": "appleuser@example.com", "iss": "https://appleid.apple.com"}
 
         service = AuthService(db_session)
-        payload = AppleSignInRequest(identity_token="mock_id_token")
+        payload = AppleSignInRequest(accept_legal=True, identity_token="mock_id_token")
 
-        tokens = await service.apple_login(payload)
+        tokens = await service.apple_login(payload, {})
         assert tokens.access_token is not None
         assert tokens.refresh_token is not None
 
@@ -635,8 +639,8 @@ class TestAuthLogsWithoutPii:
         service = AuthService(db_session)
 
         with caplog.at_level(logging.INFO):
-            first = await service.google_login(GoogleSignInRequest(id_token="mock_id_token"))
-            await service.google_login(GoogleSignInRequest(id_token="mock_id_token"))
+            first = await service.google_login(GoogleSignInRequest(accept_legal=True, id_token="mock_id_token"), {})
+            await service.google_login(GoogleSignInRequest(accept_legal=True, id_token="mock_id_token"), {})
 
         user_id = str(first.user.id)
         messages = [record.getMessage() for record in caplog.records]
@@ -661,7 +665,7 @@ class TestAuthLogsWithoutPii:
 
         with caplog.at_level(logging.INFO):
             with pytest.raises(UnauthorizedException):
-                await service.google_login(GoogleSignInRequest(id_token="mock_id_token"))
+                await service.google_login(GoogleSignInRequest(accept_legal=True, id_token="mock_id_token"), {})
 
         records = [record for record in caplog.records if "Отклонён вход через google" in record.getMessage()]
         assert len(records) == 1
@@ -954,7 +958,7 @@ class TestOAuthEmailCaseInsensitive:
     async def test_new_user_email_stored_lowercase(self, mock_jwt_decode, mock_jwk_client, db_session: AsyncSession):
         mock_jwt_decode.return_value = self._google_claims("  Mixed.Case@Example.COM ")
 
-        tokens = await AuthService(db_session).google_login(GoogleSignInRequest(id_token="t"))
+        tokens = await AuthService(db_session).google_login(GoogleSignInRequest(accept_legal=True, id_token="t"), {})
 
         assert tokens.user.email == "mixed.case@example.com"
 
@@ -965,10 +969,10 @@ class TestOAuthEmailCaseInsensitive:
         """Вход через Apple с адресом в другом регистре попадает в аккаунт, созданный через Google."""
         service = AuthService(db_session)
         mock_jwt_decode.return_value = self._google_claims("owner@example.com")
-        first = await service.google_login(GoogleSignInRequest(id_token="t1"))
+        first = await service.google_login(GoogleSignInRequest(accept_legal=True, id_token="t1"), {})
 
         mock_jwt_decode.return_value = {"email": "Owner@Example.com", "iss": "https://appleid.apple.com"}
-        second = await service.apple_login(AppleSignInRequest(identity_token="t2"))
+        second = await service.apple_login(AppleSignInRequest(accept_legal=True, identity_token="t2"), {})
 
         assert second.user.id == first.user.id
         count = (await db_session.execute(select(func.count(User.id)))).scalar_one()

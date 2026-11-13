@@ -15,7 +15,7 @@ from app.database import get_db
 from app.models.models import User
 from app.schemas.schemas import InsightState
 from app.services.ai_service import AIService, MonthFingerprint
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_consented_user
 from main import app
 
 
@@ -109,7 +109,7 @@ class TestInsights:
         mock_db = MagicMock(commit=AsyncMock())
         mock_db.execute = AsyncMock()
 
-        app.dependency_overrides[get_current_user] = lambda: test_user
+        app.dependency_overrides[get_consented_user] = lambda: test_user
         app.dependency_overrides[get_db] = lambda: mock_db
 
         try:
@@ -132,7 +132,7 @@ class TestInsights:
         test_user.id = uuid.uuid4()
         mock_db = MagicMock(commit=AsyncMock())
 
-        app.dependency_overrides[get_current_user] = lambda: test_user
+        app.dependency_overrides[get_consented_user] = lambda: test_user
         app.dependency_overrides[get_db] = lambda: mock_db
 
         with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
@@ -180,7 +180,7 @@ class TestInsights:
         test_user.id = uuid.uuid4()
         mock_db = MagicMock(commit=AsyncMock())
 
-        app.dependency_overrides[get_current_user] = lambda: test_user
+        app.dependency_overrides[get_consented_user] = lambda: test_user
         app.dependency_overrides[get_db] = lambda: mock_db
 
         async def slow_claude_call(*args, **kwargs):

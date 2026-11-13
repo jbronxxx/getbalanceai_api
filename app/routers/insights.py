@@ -11,14 +11,14 @@ from app.models.models import CurrencyCode, User
 from app.routers.dependencies import get_client_timezone
 from app.schemas.schemas import ApiResponse, ErrorResponse, InsightResponse
 from app.services.ai_service import AIService
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_consented_user
 from app.services.period import current_month as client_current_month
 
 router = APIRouter(
     responses={
         401: {"model": ErrorResponse, "description": "Требуется авторизация"},
         422: {"model": ErrorResponse, "description": "Неподдерживаемая валюта или некорректная локаль"},
-        403: {"model": ErrorResponse, "description": "Доступ запрещен"},
+        403: {"model": ErrorResponse, "description": "TERMS_NOT_ACCEPTED — не принята текущая версия соглашения"},
         429: {"model": ErrorResponse, "description": "Превышен лимит частоты запросов"},
         500: {"model": ErrorResponse, "description": "Внутренняя ошибка сервера"},
     }
@@ -47,7 +47,7 @@ async def get_insights(
         description="Разрешить генерацию через LLM; при false — только сохранённый отчёт или state=not_generated",
     ),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_consented_user),
     tz: tzinfo = Depends(get_client_timezone),
 ):
     """Вернуть AI-отчёт за месяц: сохранённый, если данные периода не менялись, иначе сгенерировать.

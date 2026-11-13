@@ -68,6 +68,15 @@ def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else f"{text[:limit]}…"
 
 
+def client_info(request: Request) -> dict[str, str]:
+    """Данные клиента из заголовков приложения (OBS-02): поле -> значение, каждое не длиннее MAX_CLIENT_CHARS."""
+    return {
+        field: _truncate(request.headers[name], MAX_CLIENT_CHARS)
+        for name, field in CLIENT_HEADERS.items()
+        if name in request.headers
+    }
+
+
 def _error_body(body: bytes) -> object:
     """Тело ответа с ошибкой для журнала: разобранный JSON или обрезанный текст."""
     text = body.decode("utf-8", errors="replace")
@@ -112,11 +121,7 @@ def _write(request: Request, status: int, started: float, response: Response | N
     }
     if headers:
         record["headers"] = headers
-    client = {
-        field: _truncate(request.headers[name], MAX_CLIENT_CHARS)
-        for name, field in CLIENT_HEADERS.items()
-        if name in request.headers
-    }
+    client = client_info(request)
     if client:
         record["client"] = client
     if body is not None:

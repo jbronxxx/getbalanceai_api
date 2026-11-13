@@ -1,4 +1,4 @@
-"""Фоновые задачи и периодическая регламентная очистка устаревших токенов."""
+"""Фоновые задачи и периодическая регламентная очистка: устаревшие токены и записи о согласии после срока хранения."""
 
 import asyncio
 import os
@@ -9,6 +9,7 @@ from redis.exceptions import RedisError
 from app.database import UnitOfWork, async_session_maker
 from app.redis import REDIS_KEY_TOKEN_CLEANUP_LOCK, get_redis
 from app.services.auth_service import AuthService
+from app.services.consent_service import ConsentService
 from logger.logger import get_logger
 
 logger = get_logger(__name__)
@@ -20,6 +21,13 @@ async def run_token_cleanup(retention_days: int = 30, session_factory: Any = asy
     async with UnitOfWork(session_factory=session_factory) as session:
         service = AuthService(session)
         return await service.cleanup_expired_tokens(retention_days=retention_days)
+    return 0
+
+
+async def run_consent_cleanup(session_factory: Any = async_session_maker) -> int:
+    """Удалить записи о согласии удалённых аккаунтов, срок хранения которых истёк."""
+    async with UnitOfWork(session_factory=session_factory) as session:
+        return await ConsentService(session).cleanup_expired()
     return 0
 
 
@@ -46,7 +54,7 @@ async def periodic_token_cleanup(
     session_factory: Any = async_session_maker,
     check_interval_seconds: float = 3600,
 ) -> None:
-    """Периодическая очистка токенов, выполняемая одним воркером на весь кластер.
+    """Периодическая очистка токенов и записей о согласии, выполняемая одним воркером на весь кластер.
 
     Задача стартует в lifespan каждого воркера gunicorn и раз в check_interval_seconds пытается
     занять блокировку в Redis (SET NX EX) на interval_seconds. Очистку выполняет только воркер,
@@ -65,6 +73,7 @@ async def periodic_token_cleanup(
                 continue
             try:
                 await run_token_cleanup(retention_days=retention_days, session_factory=session_factory)
+                await run_consent_cleanup(session_factory=session_factory)
             except Exception:
                 await _release_cleanup_lock()
                 raise

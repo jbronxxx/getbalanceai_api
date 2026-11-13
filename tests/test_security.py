@@ -78,7 +78,7 @@ class TestRateLimiting:
     @pytest.mark.asyncio
     async def test_google_login_rate_limiting_exceeded(self, client: AsyncClient):
         """Проверяет блокировку частых попыток входа через Google с одного IP (лимит 5/мин)."""
-        payload = {"id_token": "invalid-google-token"}
+        payload = {"id_token": "invalid-google-token", "accept_legal": True}
 
         for _ in range(5):
             res = await client.post("/api/v1/auth/google", json=payload)
@@ -94,7 +94,7 @@ class TestRateLimiting:
     @pytest.mark.asyncio
     async def test_apple_login_rate_limiting_exceeded(self, client: AsyncClient):
         """Проверяет ограничение частоты входа через Apple (лимит 5/мин)."""
-        payload = {"identity_token": "invalid-apple-token"}
+        payload = {"identity_token": "invalid-apple-token", "accept_legal": True}
 
         for _ in range(5):
             await client.post("/api/v1/auth/apple", json=payload)
@@ -477,7 +477,7 @@ class TestRateLimitKey:
         Как в gunicorn с --forwarded-allow-ips "*": nginx (172.18.0.5) передаёт адрес клиента в X-Forwarded-For.
         """
         proxied_app = ProxyHeadersMiddleware(app, trusted_hosts="*")
-        login_data = {"id_token": "invalid-google-token"}
+        login_data = {"id_token": "invalid-google-token", "accept_legal": True}
         transport = ASGITransport(app=proxied_app, client=("172.18.0.5", 40000))
         async with AsyncClient(transport=transport, base_url="http://test") as proxied:
             for _ in range(5):

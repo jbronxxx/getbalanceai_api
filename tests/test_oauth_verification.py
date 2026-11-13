@@ -72,7 +72,7 @@ class TestGoogleTokenVerification:
     async def test_valid_token_for_second_client_id_succeeds(self, db_session: AsyncSession):
         """Токен для любого из настроенных client ID (здесь iOS) принимается."""
         tokens = await AuthService(db_session).google_login(
-            GoogleSignInRequest(id_token=_google_token(aud="test-google-ios"))
+            GoogleSignInRequest(accept_legal=True, id_token=_google_token(aud="test-google-ios")), {}
         )
         assert tokens.user.email == "google_verified@example.com"
 
@@ -80,15 +80,15 @@ class TestGoogleTokenVerification:
     async def test_short_issuer_form_accepted(self, db_session: AsyncSession):
         """Google выпускает токены и с iss без схемы — accounts.google.com."""
         tokens = await AuthService(db_session).google_login(
-            GoogleSignInRequest(id_token=_google_token(iss="accounts.google.com"))
+            GoogleSignInRequest(accept_legal=True, id_token=_google_token(iss="accounts.google.com")), {}
         )
         assert tokens.access_token
 
     @pytest.mark.asyncio
     async def test_email_verified_string_true_accepted(self, db_session: AsyncSession):
         """email_verified строкой "true" считается подтверждённым."""
-        payload = GoogleSignInRequest(id_token=_google_token(email_verified="true"))
-        tokens = await AuthService(db_session).google_login(payload)
+        payload = GoogleSignInRequest(accept_legal=True, id_token=_google_token(email_verified="true"))
+        tokens = await AuthService(db_session).google_login(payload, {})
         assert tokens.access_token
 
     @pytest.mark.asyncio
@@ -112,7 +112,9 @@ class TestGoogleTokenVerification:
     async def test_invalid_token_rejected(self, db_session: AsyncSession, token_kwargs: dict):
         """Токен с чужим aud, неверным iss, неподтверждённым email, без обязательных claim или чужой подписью — 401."""
         with pytest.raises(UnauthorizedException) as exc_info:
-            await AuthService(db_session).google_login(GoogleSignInRequest(id_token=_google_token(**token_kwargs)))
+            await AuthService(db_session).google_login(
+                GoogleSignInRequest(accept_legal=True, id_token=_google_token(**token_kwargs)), {}
+            )
         assert exc_info.value.code == ErrorCode.INVALID_CREDENTIALS
 
         result = await db_session.execute(select(User).where(User.email_matches("google_verified@example.com")))
@@ -123,13 +125,14 @@ class TestGoogleTokenVerification:
         """Без настроенного GOOGLE_CLIENT_ID вход отклоняется, а не принимает токен любого приложения."""
         monkeypatch.setattr(config, "google_client_ids", [])
         with pytest.raises(UnauthorizedException):
-            await AuthService(db_session).google_login(GoogleSignInRequest(id_token=_google_token()))
+            await AuthService(db_session).google_login(GoogleSignInRequest(accept_legal=True, id_token=_google_token()), {})
 
     @pytest.mark.asyncio
     async def test_endpoint_rejects_foreign_audience(self, client: AsyncClient):
         """POST /api/v1/auth/google с токеном чужого приложения — 401 INVALID_CREDENTIALS."""
         response = await client.post(
-            "/api/v1/auth/google", json={"id_token": _google_token(aud="someone-elses-app.apps.googleusercontent.com")}
+            "/api/v1/auth/google",
+            json={"id_token": _google_token(aud="someone-elses-app.apps.googleusercontent.com"), "accept_legal": True},
         )
         assert response.status_code == 401
         data = response.json()
@@ -139,7 +142,7 @@ class TestGoogleTokenVerification:
     @pytest.mark.asyncio
     async def test_endpoint_accepts_valid_token(self, client: AsyncClient):
         """POST /api/v1/auth/google с корректным токеном — 200 и пара токенов."""
-        response = await client.post("/api/v1/auth/google", json={"id_token": _google_token()})
+        response = await client.post("/api/v1/auth/google", json={"id_token": _google_token(), "accept_legal": True})
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "success"
@@ -151,7 +154,9 @@ class TestAppleTokenVerification:
 
     @pytest.mark.asyncio
     async def test_valid_token_succeeds(self, db_session: AsyncSession):
-        tokens = await AuthService(db_session).apple_login(AppleSignInRequest(identity_token=_apple_token()))
+        tokens = await AuthService(db_session).apple_login(
+            AppleSignInRequest(accept_legal=True, identity_token=_apple_token()), {}
+        )
         assert tokens.user.email == "apple_verified@example.com"
 
     @pytest.mark.asyncio
@@ -169,7 +174,9 @@ class TestAppleTokenVerification:
     async def test_invalid_token_rejected(self, db_session: AsyncSession, token_kwargs: dict):
         """Токен с чужим aud, неверным iss, без обязательных claim или чужой подписью — 401."""
         with pytest.raises(UnauthorizedException) as exc_info:
-            await AuthService(db_session).apple_login(AppleSignInRequest(identity_token=_apple_token(**token_kwargs)))
+            await AuthService(db_session).apple_login(
+                AppleSignInRequest(accept_legal=True, identity_token=_apple_token(**token_kwargs)), {}
+            )
         assert exc_info.value.code == ErrorCode.INVALID_CREDENTIALS
 
     @pytest.mark.asyncio
@@ -177,4 +184,6 @@ class TestAppleTokenVerification:
         """Без настроенного APPLE_CLIENT_ID вход отклоняется."""
         monkeypatch.setattr(config, "apple_client_ids", [])
         with pytest.raises(UnauthorizedException):
-            await AuthService(db_session).apple_login(AppleSignInRequest(identity_token=_apple_token()))
+            await AuthService(db_session).apple_login(
+                AppleSignInRequest(accept_legal=True, identity_token=_apple_token()), {}
+            )

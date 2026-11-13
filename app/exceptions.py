@@ -31,6 +31,10 @@ class ErrorCode(StrEnum):
     INVALID_TOKEN = "INVALID_TOKEN"
     TOKEN_REVOKED = "TOKEN_REVOKED"
     TOKEN_NOT_FOUND = "TOKEN_NOT_FOUND"
+    # Актуальная версия пользовательского соглашения не принята: доступны только профиль, принятие, выход и удаление
+    TERMS_NOT_ACCEPTED = "TERMS_NOT_ACCEPTED"
+    # Клиент принимает не текущую версию документа (вышла новая): запросить версии заново
+    LEGAL_VERSION_OUTDATED = "LEGAL_VERSION_OUTDATED"
 
     # Транзакции
     TRANSACTION_NOT_FOUND = "TRANSACTION_NOT_FOUND"
@@ -151,6 +155,23 @@ class NotFoundException(AppException):
             code=code,
             message=message,
             status_code=status.HTTP_404_NOT_FOUND,
+            details=details,
+        )
+
+
+class ConflictException(AppException):
+    """Исключение при конфликте с текущим состоянием на сервере (HTTP 409)."""
+
+    def __init__(
+        self,
+        code: ErrorCode | str,
+        message: str,
+        details: Optional[dict[str, Any]] = None,
+    ):
+        super().__init__(
+            code=code,
+            message=message,
+            status_code=status.HTTP_409_CONFLICT,
             details=details,
         )
 

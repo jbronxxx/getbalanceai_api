@@ -107,7 +107,9 @@ class TestRequestLog:
     async def test_login_token_not_logged(self, _decode, _jwk, client: AsyncClient, caplog: pytest.LogCaptureFixture):
         """Неудачный вход: ID-токен Google из тела запроса в журнал не попадает, пользователя нет."""
         with caplog.at_level(logging.INFO, logger="request"):
-            response = await client.post("/api/v1/auth/google", json={"id_token": "google-secret-id-token"})
+            response = await client.post(
+                "/api/v1/auth/google", json={"id_token": "google-secret-id-token", "accept_legal": True}
+            )
         assert response.status_code == 401
 
         [record] = _records(caplog)

@@ -38,7 +38,7 @@ class TestErrorContract:
     @pytest.mark.asyncio
     async def test_oauth_invalid_credentials_error_code(self, client: AsyncClient):
         """Проверка кода ошибки INVALID_CREDENTIALS при недействительном ID-токене провайдера."""
-        response = await client.post("/api/v1/auth/google", json={"id_token": "invalid-google-token"})
+        response = await client.post("/api/v1/auth/google", json={"id_token": "invalid-google-token", "accept_legal": True})
         assert response.status_code == 401
         data = response.json()
         assert data["status"] == "error"

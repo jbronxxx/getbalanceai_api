@@ -18,14 +18,14 @@ from app.schemas.schemas import (
     TransactionCreate,
     TransactionResponse,
 )
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_consented_user
 from app.services.transaction_service import TransactionService
 
 router = APIRouter(
     responses={
         400: {"model": ErrorResponse, "description": "Ошибка бизнес-логики"},
         401: {"model": ErrorResponse, "description": "Требуется авторизация"},
-        403: {"model": ErrorResponse, "description": "Доступ запрещен"},
+        403: {"model": ErrorResponse, "description": "TERMS_NOT_ACCEPTED — не принята текущая версия соглашения"},
         404: {"model": ErrorResponse, "description": "Ресурс не найден"},
         422: {"model": ErrorResponse, "description": "Ошибка валидации входных данных"},
         429: {"model": ErrorResponse, "description": "Превышен лимит частоты запросов"},
@@ -45,7 +45,7 @@ async def create_transaction(
     request: Request,
     payload: TransactionCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_consented_user),
 ):
     """Создать новую транзакцию (доход или расход) для авторизованного пользователя."""
     service = TransactionService(db)
@@ -69,7 +69,7 @@ async def list_transactions(
     since: datetime | None = None,
     if_none_match: str | None = Header(None, alias="If-None-Match"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_consented_user),
 ):
     """Получить пагинированный список транзакций пользователя с поддержкой ETag-кэширования.
 
@@ -109,7 +109,7 @@ async def list_transactions(
 async def delete_transaction(
     transaction_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_consented_user),
 ):
     """Удалить запись транзакции по её идентификатору."""
     service = TransactionService(db)
