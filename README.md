@@ -1,6 +1,6 @@
 # GetBalance AI API
 
-FastAPI бэкенд для персонального финансового трекера с аналитикой расходов и AI-рекомендациями на базе Google Gemini.
+FastAPI бэкенд для персонального финансового трекера с аналитикой расходов и AI-рекомендациями на базе Claude Haiku (Anthropic), запасная модель — Google Gemini.
 
 ---
 
@@ -10,7 +10,7 @@ FastAPI бэкенд для персонального финансового т
 * **База данных:** PostgreSQL 16
 * **ORM & Миграции:** SQLAlchemy 2.0 + Alembic
 * **Безопасность & Авторизация:** JWT Access & Refresh токенов с ротацией (`PyJWT`), вход только через Google и Apple
-* **AI Интеграция:** Google Gemini API (модель `gemini-3.5-flash-lite`)
+* **AI Интеграция:** Anthropic API (модель `claude-haiku-5-5`, effort low), запасная — Google Gemini API (`gemini-3.5-flash-lite`)
 * **Контейнеризация:** Docker & Docker Compose
 * **Тестирование:** Pytest + HTTPX / TestClient
 
@@ -54,12 +54,13 @@ PII_ENCRYPTION_KEYS=k1:<openssl rand -base64 32>
 PII_HMAC_KEY=<openssl rand -base64 32>
 ACCESS_TOKEN_EXPIRE_MINUTES=60
 REFRESH_TOKEN_EXPIRE_DAYS=7
-GEMINI_API_KEY=sk-ant-api03-...
+ANTHROPIC_API_KEY=sk-ant-api03-...
+GEMINI_API_KEY=AIza...
 GRAFANA_ADMIN_USER=admin
 GRAFANA_ADMIN_PASSWORD=admin
 ```
 > [!NOTE]
-> Если ключ `GEMINI_API_KEY` не указан или оставлен пустым, сервис AI-инсайтов автоматически переключится на безопасный режим заглушек и приложение продолжит работать без ошибок; голосовой ввод (`/voice/parse`) в этом режиме отвечает 503.
+> ИИ-отчёт и голосовой разбор идут в Claude (`ANTHROPIC_API_KEY`); при сбое, отказе модели или проблеме с ключом и оплатой Anthropic последняя попытка — на Gemini (`GEMINI_API_KEY`). Задан только один ключ — все попытки на его модели. Если не задан ни один, сервис AI-инсайтов переключится на безопасный режим заглушек и приложение продолжит работать без ошибок; голосовой ввод (`/voice/parse`) в этом режиме отвечает 503.
 
 ### 2. Запуск контейнеров (Локальная разработка)
 ```bash
@@ -284,7 +285,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000 --timeout-keep-alive 75
   - `GET /api/v1/recurring-payments/` — регулярные платежи и доходы (весь список, ETag); создание, правка и удаление — через `/sync`
   - `POST /api/v1/sync/` — пакетная офлайн-синхронизация данных
   - `GET /api/v1/insights/` — финансовая AI-аналитика расходов
-  - `POST /api/v1/voice/parse` — разбор фразы голосового ввода на черновики записей (Gemini, без сохранения)
+  - `POST /api/v1/voice/parse` — разбор фразы голосового ввода на черновики записей (LLM, без сохранения)
 
 ---
 
@@ -303,7 +304,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000 --timeout-keep-alive 75
     ```
 * **Loki + Grafana Alloy** — автоматический сбор всех логов контейнеров (конфиг `alloy/config.alloy`).
 * **Prometheus + cAdvisor** — сбор системных метрик контейнеров (CPU, RAM) и метрик самого приложения FastAPI (`/metrics`).
-* **Расход ИИ** — дашборд **ИИ: токены и стоимость**: токены и стоимость вызовов Gemini в сутки по модели и виду запроса (отчёт, голосовой разбор). Себестоимость Claude Haiku на тестовых данных замеряет ручной скрипт `python scripts/measure_ai_cost.py` (платные вызовы, < $1; `--dry-run` — без вызовов; нужен `ANTHROPIC_API_KEY` в `.env`, SDK `anthropic` из `requirements-dev.txt`); он же проверяет качество ответов, а `--evaluate <файл --out>` оценивает сохранённый прогон без вызовов, `--blind <папка>` готовит отчёты для слепой оценки.
+* **Расход и сбои ИИ** — дашборд **ИИ: токены, стоимость и сбои**: токены и стоимость вызовов в сутки по модели и виду запроса (отчёт, голосовой разбор), запросы без ответа и неудачные попытки по причинам (отказ модели, ключ, оплата, перегрузка, таймаут). Себестоимость Claude Haiku на тестовых данных замеряет ручной скрипт `python scripts/measure_ai_cost.py` (платные вызовы, < $1; `--dry-run` — без вызовов; нужен `ANTHROPIC_API_KEY` в `.env`); он же проверяет качество ответов, а `--evaluate <файл --out>` оценивает сохранённый прогон без вызовов, `--blind <папка>` готовит отчёты для слепой оценки.
 * **node-exporter, postgres-exporter, redis-exporter** — метрики хоста, Postgres и Redis; вместе с остальными собраны на дашборде **Load Testing** для нагрузочных тестов.
 
 Базовые дашборды для метрик и логов уже преднастроены и доступны в Grafana сразу после запуска контейнеров!

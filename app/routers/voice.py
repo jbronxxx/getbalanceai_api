@@ -27,7 +27,7 @@ router = APIRouter(
             "model": ErrorResponse,
             "description": "AI_QUOTA_EXCEEDED — суточная квота разборов исчерпана; RATE_LIMIT_EXCEEDED — частота",
         },
-        503: {"model": ErrorResponse, "description": "Модель или Redis недоступны, ключ Gemini не задан"},
+        503: {"model": ErrorResponse, "description": "Модель или Redis недоступны, ключи LLM не заданы"},
     }
 )
 

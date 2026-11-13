@@ -65,13 +65,15 @@ PRIVACY: dict[str, PageContent] = {
                 "4. Сторонние сервисы",
                 [
                     [
-                        "Google (Gemini API) — генерация ИИ-аналитики и разбор голосового ввода. Для аналитики "
-                        "передаются обезличенные данные месяца: даты, типы, категории, суммы и валюта операций, "
-                        "а также лимиты по категориям; описания операций и регулярных платежей не передаются. "
-                        "Для голосового ввода передаётся только текст фразы. Имя, email и идентификатор "
-                        "пользователя не передаются. Мы используем коммерческий (платный) тариф Gemini API: "
-                        "переданные данные применяются только для формирования ответа и не используются Google "
-                        "для обучения моделей ИИ.",
+                        "Anthropic (Claude API) — генерация ИИ-аналитики и разбор голосового ввода. Google "
+                        "(Gemini API) — запасной поставщик: получает тот же запрос, только если Claude недоступен "
+                        "или не смог ответить. Для аналитики передаются обезличенные данные месяца: даты, типы, "
+                        "категории, суммы и валюта операций, а также лимиты по категориям; описания операций и "
+                        "регулярных платежей не передаются. Для голосового ввода передаётся только текст фразы. "
+                        "Имя, email и идентификатор пользователя не передаются. Мы используем коммерческие "
+                        "(платные) тарифы обоих сервисов: переданные данные применяются только для формирования "
+                        "ответа и не используются Anthropic и Google для обучения моделей ИИ; поставщик может "
+                        "хранить их ограниченное время для защиты от злоупотреблений, после чего удаляет.",
                         "Google (Firebase Crashlytics) — сбор отчётов о сбоях в Android-версии (см. раздел 2). "
                         "Google обрабатывает эти данные по нашему поручению.",
                         "Google Sign-In и Sign in with Apple — вход в аккаунт.",
@@ -105,7 +107,7 @@ PRIVACY: dict[str, PageContent] = {
                 "6. Расположение серверов и международная передача",
                 [
                     "Серверная инфраструктура GetBalance AI расположена в Европейском Союзе (г. Хельсинки, "
-                    "Финляндия). Сервисы Google и Cloudflare из раздела 4 могут обрабатывать данные за "
+                    "Финляндия). Сервисы Anthropic, Google и Cloudflare из раздела 4 могут обрабатывать данные за "
                     "пределами ЕС, в том числе в США; такая передача выполняется с мерами защиты, предусмотренными "
                     "законодательством ЕС о защите данных (например, стандартными договорными условиями "
                     "Европейской комиссии).",
@@ -213,13 +215,15 @@ PRIVACY: dict[str, PageContent] = {
                 "4. Third-party services",
                 [
                     [
-                        "Google (Gemini API) generates AI insights and parses voice input. For insights it "
-                        "receives de-identified data for the month: dates, types, categories, amounts and "
-                        "currency of transactions, and category limits; descriptions of transactions and "
-                        "recurring payments are not sent. For voice input, only the text of the phrase is sent. "
-                        "Your name, email and user identifier are not sent. We use the commercial (paid) tier of "
-                        "the Gemini API: the data is used only to produce the response and is not used by Google "
-                        "to train AI models.",
+                        "Anthropic (Claude API) generates AI insights and parses voice input. Google (Gemini "
+                        "API) is the backup provider: it receives the same request only when Claude is unavailable "
+                        "or fails to respond. For insights the provider receives de-identified data for the month: "
+                        "dates, types, categories, amounts and currency of transactions, and category limits; "
+                        "descriptions of transactions and recurring payments are not sent. For voice input, only "
+                        "the text of the phrase is sent. Your name, email and user identifier are not sent. We use "
+                        "the commercial (paid) tiers of both services: the data is used only to produce the "
+                        "response and is not used by Anthropic or Google to train AI models; the provider may keep "
+                        "it for a limited time to prevent abuse and then deletes it.",
                         "Google (Firebase Crashlytics) collects crash reports in the Android version (see "
                         "section 2). Google processes this data on our behalf.",
                         "Google Sign-In and Sign in with Apple handle account sign-in.",
@@ -254,7 +258,7 @@ PRIVACY: dict[str, PageContent] = {
                 "6. Server location and international transfers",
                 [
                     "GetBalance AI server infrastructure is located in the European Union (Helsinki, Finland). "
-                    "The Google and Cloudflare services listed in section 4 may process data outside the EU, "
+                    "The Anthropic, Google and Cloudflare services listed in section 4 may process data outside the EU, "
                     "including in the United States; such transfers are made with the safeguards provided by EU "
                     "data protection law (for example, the European Commission's Standard Contractual Clauses).",
                 ],

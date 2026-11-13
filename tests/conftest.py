@@ -72,6 +72,12 @@ def reset_rate_limiter():
 
 
 @pytest.fixture(autouse=True)
+def no_anthropic_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ключ Anthropic из локального .env в тестах не используется: доступность ИИ задают сами тесты (ключом Gemini)."""
+    monkeypatch.setattr(config, "anthropic_api_key", "")
+
+
+@pytest.fixture(autouse=True)
 def oauth_client_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     """Client ID Google/Apple, под которые выпускаются тестовые ID-токены провайдеров."""
     monkeypatch.setattr(config, "google_client_ids", ["test-google-android", "test-google-ios"])

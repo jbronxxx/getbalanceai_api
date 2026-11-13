@@ -58,6 +58,21 @@ LEGAL_HISTORY: dict[str, tuple[LegalVersion, ...]] = {
                 ],
             },
         ),
+        LegalVersion(
+            effective=date(2026, 11, 14),
+            changes={
+                "ru": [
+                    "ИИ-аналитику и разбор голосового ввода теперь выполняет Claude (Anthropic); Google Gemini — "
+                    "запасной вариант, если Claude недоступен.",
+                    "Состав передаваемых данных не изменился: без имени, email и описаний операций.",
+                ],
+                "en": [
+                    "AI insights and voice input are now handled by Claude (Anthropic); Google Gemini is the backup "
+                    "when Claude is unavailable.",
+                    "The data we send has not changed: no name, email or transaction descriptions.",
+                ],
+            },
+        ),
     ),
 }
 

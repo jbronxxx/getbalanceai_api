@@ -27,7 +27,8 @@ from app.services.ai_service import (
     AIService,
     MonthFingerprint,
 )
-from app.services.gemini import extract_json
+from app.services.ai_usage import AIRequestKind
+from app.services.llm import LLMClient, extract_json
 
 
 def _patch_fingerprint(tx_count: int = MIN_TRANSACTIONS_FOR_INSIGHTS, signature: str = "sig"):
@@ -43,19 +44,19 @@ class TestAIService:
     """Набор тестов для AIService."""
 
     def test_init_creates_generative_model(self):
-        """Проверка, что AIService инициализирует клиент Gemini."""
+        """Проверка, что AIService по умолчанию берёт общий клиент LLM."""
         mock_db = MagicMock()
         mock_db.commit = AsyncMock()
         service = AIService(db=mock_db)
 
-        assert isinstance(service.client, genai.Client)
+        assert isinstance(service.client, LLMClient)
         assert service.db is mock_db
 
     def test_init_accepts_custom_client(self):
         """Проверка возможности передать собственный клиент (Dependency Injection)."""
         mock_db = MagicMock()
         mock_db.commit = AsyncMock()
-        custom_client = MagicMock(spec=genai.Client)
+        custom_client = MagicMock(spec=LLMClient)
         service = AIService(db=mock_db, client=custom_client)
 
         assert service.client is custom_client
@@ -101,49 +102,46 @@ class TestAIService:
             extract_json(raw)
 
     # =========================================================================
-    # TASK-1.1 & TASK-1.3: Вызов Gemini, асинхронность и UTC время
+    # TASK-1.1 & TASK-1.3: Вызов LLM, асинхронность и UTC время
     # =========================================================================
 
     @pytest.mark.asyncio
-    async def test_call_gemini_uses_awaited_async_client(self):
-        """Проверка, что _call_gemini асинхронно вызывает generate_content."""
+    async def test_call_model_uses_awaited_async_client(self):
+        """Проверка, что _call_model асинхронно вызывает LLM с запросом отчёта."""
         mock_db = MagicMock()
         mock_db.commit = AsyncMock()
-        mock_client = MagicMock(spec=genai.Client)
-        mock_response = MagicMock()
-        mock_response.text = '{"insights": ["Снизь расходы на кафе", "Откладывай 10%", "Инвестируй остаток"]}'
+        mock_client = MagicMock(spec=LLMClient)
+        mock_response = '{"insights": ["Снизь расходы на кафе", "Откладывай 10%", "Инвестируй остаток"]}'
 
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+        mock_client.generate = AsyncMock(return_value=mock_response)
 
         service = AIService(db=mock_db, client=mock_client)
         summary = "2026-10-01 | expense | food | 500.0 руб. | Обед"
 
-        insights = await service._call_gemini(summary, locale="ru", currency="EUR")
+        insights = await service._call_model(summary, locale="ru", currency="EUR")
 
         assert insights == [
             "Снизь расходы на кафе",
             "Откладывай 10%",
             "Инвестируй остаток",
         ]
-        mock_client.aio.models.generate_content.assert_awaited_once()
-        create_kwargs = mock_client.aio.models.generate_content.call_args.kwargs
-        assert "2026-10-01" in create_kwargs["contents"]
-        assert create_kwargs["config"].response_mime_type == "application/json"
-        assert "лимитов бюджетов" in create_kwargs["config"].system_instruction
+        mock_client.generate.assert_awaited_once()
+        request = mock_client.generate.call_args.args[0]
+        assert request.kind is AIRequestKind.insights
+        assert "2026-10-01" in request.prompt
+        assert "лимитов бюджетов" in request.system
 
     @pytest.mark.asyncio
-    async def test_call_gemini_invalid_json_does_not_log_raw_response(self, caplog: pytest.LogCaptureFixture):
+    async def test_call_model_invalid_json_does_not_log_raw_response(self, caplog: pytest.LogCaptureFixture):
         """При невалидном JSON от LLM ошибка содержит только длину ответа, сырой текст не логируется."""
-        mock_client = MagicMock(spec=genai.Client)
-        mock_response = MagicMock()
+        mock_client = MagicMock(spec=LLMClient)
         raw_text = "not a json: Обед в кафе 500 руб."
-        mock_response.text = raw_text
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+        mock_client.generate = AsyncMock(return_value=raw_text)
         service = AIService(db=MagicMock(commit=AsyncMock()), client=mock_client)
 
         with caplog.at_level(logging.DEBUG):
             with pytest.raises(ValueError) as exc_info:
-                await service._call_gemini("summary", locale="ru", currency="EUR")
+                await service._call_model("summary", locale="ru", currency="EUR")
 
         assert f"Длина ответа: {len(raw_text)}" in str(exc_info.value)
         assert "Обед в кафе" not in str(exc_info.value)
@@ -180,8 +178,8 @@ class TestAIService:
     @pytest.mark.asyncio
     async def test_get_insights_no_transactions(self):
         """Если за месяц нет операций, LLM не вызывается и возвращается state=no_data."""
-        mock_client = MagicMock(spec=genai.Client)
-        mock_client.aio.models.generate_content = AsyncMock()
+        mock_client = MagicMock(spec=LLMClient)
+        mock_client.generate = AsyncMock()
         service = AIService(db=MagicMock(commit=AsyncMock()), client=mock_client)
 
         with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint(tx_count=0):
@@ -191,7 +189,7 @@ class TestAIService:
         assert result.state == InsightState.no_data
         assert result.insights == []
         assert result.generated_at.tzinfo == timezone.utc
-        mock_client.aio.models.generate_content.assert_not_called()
+        mock_client.generate.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_insights_success_with_transactions(self, caplog: pytest.LogCaptureFixture):
@@ -213,10 +211,9 @@ class TestAIService:
 
         mock_db.execute = AsyncMock(side_effect=[mock_tx_result, mock_budget_result])
 
-        mock_client = MagicMock(spec=genai.Client)
-        mock_response = MagicMock()
-        mock_response.text = '{"insights": ["Траты на еду в норме", "Планируйте бюджет на неделю"]}'
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+        mock_client = MagicMock(spec=LLMClient)
+        mock_response = '{"insights": ["Траты на еду в норме", "Планируйте бюджет на неделю"]}'
+        mock_client.generate = AsyncMock(return_value=mock_response)
 
         service = AIService(db=mock_db, client=mock_client)
 
@@ -237,11 +234,11 @@ class TestAIService:
             "Планируйте бюджет на неделю",
         ]
         assert result.generated_at.tzinfo == timezone.utc
-        mock_client.aio.models.generate_content.assert_awaited_once()
+        mock_client.generate.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_get_insights_api_error_fallback(self):
-        """Если вызов Gemini API завершился ошибкой, возвращается сообщение об ошибке."""
+        """Если вызов LLM завершился ошибкой, возвращается сообщение об ошибке."""
         tx1 = MagicMock(spec=Transaction)
         tx1.date = datetime(2026, 10, 1, 12, 0)
         tx1.type = TransactionType.expense
@@ -258,8 +255,8 @@ class TestAIService:
         mock_budget_result.scalars.return_value.all.return_value = []
         mock_db.execute = AsyncMock(side_effect=[mock_tx_result, mock_budget_result])
 
-        mock_client = MagicMock(spec=genai.Client)
-        mock_client.aio.models.generate_content = AsyncMock(side_effect=Exception("API Error"))
+        mock_client = MagicMock(spec=LLMClient)
+        mock_client.generate = AsyncMock(side_effect=Exception("API Error"))
 
         service = AIService(db=mock_db, client=mock_client)
 
@@ -281,23 +278,22 @@ class TestAIService:
         """Проверка, что параллельные вызовы не блокируют Event Loop."""
         mock_db = MagicMock()
         mock_db.commit = AsyncMock()
-        mock_client = MagicMock(spec=genai.Client)
+        mock_client = MagicMock(spec=LLMClient)
 
-        async def simulated_async_network_call(*args, **kwargs):
+        async def simulated_async_network_call(_request):
             await asyncio.sleep(0.1)
-            mock_resp = MagicMock()
-            mock_resp.text = '{"insights": ["Тест параллельности"]}'
+            mock_resp = '{"insights": ["Тест параллельности"]}'
             return mock_resp
 
-        mock_client.aio.models.generate_content = AsyncMock(side_effect=simulated_async_network_call)
+        mock_client.generate = AsyncMock(side_effect=simulated_async_network_call)
 
         service = AIService(db=mock_db, client=mock_client)
 
         start_time = time.monotonic()
         results = await asyncio.gather(
-            service._call_gemini("summary 1", locale="ru", currency="EUR"),
-            service._call_gemini("summary 2", locale="ru", currency="EUR"),
-            service._call_gemini("summary 3", locale="ru", currency="EUR"),
+            service._call_model("summary 1", locale="ru", currency="EUR"),
+            service._call_model("summary 2", locale="ru", currency="EUR"),
+            service._call_model("summary 3", locale="ru", currency="EUR"),
         )
         duration = time.monotonic() - start_time
 
@@ -318,8 +314,8 @@ class TestAIService:
         mock_db = MagicMock()
         mock_db.commit = AsyncMock()
         mock_db.execute = AsyncMock()
-        mock_client = MagicMock(spec=genai.Client)
-        mock_client.aio.models.generate_content = AsyncMock()
+        mock_client = MagicMock(spec=LLMClient)
+        mock_client.generate = AsyncMock()
         service = AIService(db=mock_db, client=mock_client)
 
         cached_json = json.dumps(
@@ -343,7 +339,7 @@ class TestAIService:
         assert resp.state == InsightState.ready
         assert resp.is_outdated is False
         mock_db.execute.assert_not_called()
-        mock_client.aio.models.generate_content.assert_not_called()
+        mock_client.generate.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_invalidate_and_clear_cache(self):
@@ -382,10 +378,9 @@ class TestAIService:
         mock_budget_result.scalars.return_value.all.return_value = []
         mock_db.execute = AsyncMock(side_effect=[mock_tx_result, mock_budget_result])
 
-        mock_client = MagicMock(spec=genai.Client)
-        mock_response = MagicMock()
-        mock_response.text = '{"insights": ["Совет без кэша"]}'
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+        mock_client = MagicMock(spec=LLMClient)
+        mock_response = '{"insights": ["Совет без кэша"]}'
+        mock_client.generate = AsyncMock(return_value=mock_response)
 
         service = AIService(db=mock_db, client=mock_client)
 
@@ -397,7 +392,7 @@ class TestAIService:
 
         assert isinstance(result, InsightResponse)
         assert result.insights == ["Совет без кэша"]
-        mock_client.aio.models.generate_content.assert_awaited_once()
+        mock_client.generate.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_get_insights_resilient_to_redis_write_failure(self):
@@ -418,10 +413,9 @@ class TestAIService:
         mock_budget_result.scalars.return_value.all.return_value = []
         mock_db.execute = AsyncMock(side_effect=[mock_tx_result, mock_budget_result])
 
-        mock_client = MagicMock(spec=genai.Client)
-        mock_response = MagicMock()
-        mock_response.text = '{"insights": ["Совет при сбое записи кэша"]}'
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+        mock_client = MagicMock(spec=LLMClient)
+        mock_response = '{"insights": ["Совет при сбое записи кэша"]}'
+        mock_client.generate = AsyncMock(return_value=mock_response)
 
         service = AIService(db=mock_db, client=mock_client)
 
@@ -538,7 +532,7 @@ class TestAIService:
             res_empty = await service.get_insights(uuid.uuid4(), locale="en")
             assert res_empty.state == InsightState.no_data
 
-        # 3. Фолбэк при ошибке Gemini API
+        # 3. Фолбэк при ошибке LLM
         mock_tx = MagicMock(spec=Transaction)
         mock_tx.date = datetime(2026, 10, 1)
         mock_tx.type = TransactionType.expense
@@ -551,8 +545,8 @@ class TestAIService:
         mock_budgets.scalars.return_value.all.return_value = []
         mock_db.execute = AsyncMock(side_effect=[mock_txs, mock_budgets])
 
-        mock_client = MagicMock(spec=genai.Client)
-        mock_client.aio.models.generate_content = AsyncMock(side_effect=Exception("API failure"))
+        mock_client = MagicMock(spec=LLMClient)
+        mock_client.generate = AsyncMock(side_effect=Exception("API failure"))
         service_error = AIService(db=mock_db, client=mock_client)
 
         with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
@@ -596,10 +590,9 @@ class TestAIService:
             remaining=Decimal("1200.00"),
         )
 
-        mock_client = MagicMock(spec=genai.Client)
-        mock_resp = MagicMock()
-        mock_resp.text = '{"insights": ["Ноябрьский совет"]}'
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_resp)
+        mock_client = MagicMock(spec=LLMClient)
+        mock_resp = '{"insights": ["Ноябрьский совет"]}'
+        mock_client.generate = AsyncMock(return_value=mock_resp)
 
         service = AIService(db=mock_db, client=mock_client)
 
@@ -630,13 +623,13 @@ class TestAIService:
 
     @pytest.mark.asyncio
     async def test_get_insights_daily_quota_protection_with_fallback_cache(self):
-        """Квота исчерпана, данные изменились: Gemini не вызывается, отдаётся кэш периода с пометкой устаревания."""
+        """Квота исчерпана, данные изменились: LLM не вызывается, отдаётся кэш периода с пометкой устаревания."""
         user_id = uuid.uuid4()
         mock_db = MagicMock()
         mock_db.commit = AsyncMock()
 
-        mock_client = MagicMock(spec=genai.Client)
-        mock_client.aio.models.generate_content = AsyncMock()
+        mock_client = MagicMock(spec=LLMClient)
+        mock_client.generate = AsyncMock()
         service = AIService(db=mock_db, client=mock_client)
 
         cached_payload = json.dumps(
@@ -661,7 +654,7 @@ class TestAIService:
         assert result.insights == ["Ранее сохраненный совет"]
         assert result.state == InsightState.quota_exceeded
         assert result.is_outdated is True
-        mock_client.aio.models.generate_content.assert_not_called()
+        mock_client.generate.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_insights_daily_quota_protection_without_cache(self):
@@ -670,8 +663,8 @@ class TestAIService:
         mock_db = MagicMock()
         mock_db.commit = AsyncMock()
 
-        mock_client = MagicMock(spec=genai.Client)
-        mock_client.aio.models.generate_content = AsyncMock()
+        mock_client = MagicMock(spec=LLMClient)
+        mock_client.generate = AsyncMock()
         service = AIService(db=mock_db, client=mock_client)
 
         with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint(tx_count=10):
@@ -683,7 +676,7 @@ class TestAIService:
         assert result_ru.state == InsightState.quota_exceeded
         assert "Вы достигли дневного лимита запросов" in result_ru.insights[0]
         assert "You have reached your daily limit" in result_en.insights[0]
-        mock_client.aio.models.generate_content.assert_not_called()
+        mock_client.generate.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_insights_increments_daily_quota_on_success(self):
@@ -707,10 +700,9 @@ class TestAIService:
         mock_budgets.scalars.return_value.all.return_value = []
         mock_db.execute = AsyncMock(side_effect=[mock_txs, mock_budgets])
 
-        mock_client = MagicMock(spec=genai.Client)
-        mock_resp = MagicMock()
-        mock_resp.text = '{"insights": ["Свежий совет"]}'
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_resp)
+        mock_client = MagicMock(spec=LLMClient)
+        mock_resp = '{"insights": ["Свежий совет"]}'
+        mock_client.generate = AsyncMock(return_value=mock_resp)
 
         service = AIService(db=mock_db, client=mock_client)
 
@@ -730,11 +722,9 @@ class TestAIService:
 
     @staticmethod
     def _llm_client(insights_json: str = '{"insights": ["Новый совет"]}') -> MagicMock:
-        """Фиктивный клиент Gemini с заданным ответом."""
-        client = MagicMock(spec=genai.Client)
-        response = MagicMock()
-        response.text = insights_json
-        client.aio.models.generate_content = AsyncMock(return_value=response)
+        """Фиктивный клиент LLM с заданным ответом."""
+        client = MagicMock(spec=LLMClient)
+        client.generate = AsyncMock(return_value=insights_json)
         return client
 
     @staticmethod
@@ -781,7 +771,7 @@ class TestAIService:
         assert result.state == InsightState.no_data
         assert result.insights == []
         mock_db.execute.assert_not_called()
-        client.aio.models.generate_content.assert_not_called()
+        client.generate.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_generate_false_without_report_returns_not_generated(self):
@@ -794,7 +784,7 @@ class TestAIService:
 
         assert result.state == InsightState.not_generated
         assert result.insights == []
-        client.aio.models.generate_content.assert_not_called()
+        client.generate.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_generate_false_returns_stale_report_instead_of_generating(self):
@@ -813,7 +803,7 @@ class TestAIService:
         assert result.state == InsightState.ready
         assert result.insights == ["Сохранённый совет"]
         assert result.is_outdated is True
-        client.aio.models.generate_content.assert_not_called()
+        client.generate.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_past_month_with_unchanged_data_is_served_from_cache(self):
@@ -831,7 +821,7 @@ class TestAIService:
 
         assert result.insights == ["Сохранённый совет"]
         assert result.is_outdated is False
-        client.aio.models.generate_content.assert_not_called()
+        client.generate.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_past_month_with_changed_data_is_regenerated(self):
@@ -849,7 +839,7 @@ class TestAIService:
                 result = await service.get_insights(user_id, currency="EUR", month=3, year=2025, locale="ru")
 
         assert result.insights == ["Новый совет"]
-        client.aio.models.generate_content.assert_awaited_once()
+        client.generate.assert_awaited_once()
         assert json.loads(await redis_client.get(cache_key))["signature"] == "after"
         assert await redis_client.ttl(cache_key) > 7 * 86400
 
@@ -870,7 +860,7 @@ class TestAIService:
 
         assert result.insights == ["Новый совет"]
         assert result.is_outdated is False
-        client.aio.models.generate_content.assert_awaited_once()
+        client.generate.assert_awaited_once()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("generate", [True, False])
@@ -892,7 +882,7 @@ class TestAIService:
         assert result.state == InsightState.not_enough_data
         assert result.insights == []
         assert result.is_outdated is False
-        client.aio.models.generate_content.assert_not_called()
+        client.generate.assert_not_called()
         db.execute.assert_not_called()
         assert await redis_client.keys("insights_daily_calls:*") == []
 
@@ -925,7 +915,7 @@ class TestAIService:
 
         with (
             patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"),
-            patch.object(AIService, "_call_gemini", new_callable=AsyncMock, return_value=["Совет"]) as llm,
+            patch.object(AIService, "_call_model", new_callable=AsyncMock, return_value=["Совет"]) as llm,
         ):
             short = await client.get("/api/v1/insights/?currency=USD", headers=auth_headers)
             add_expense()
@@ -963,7 +953,7 @@ class TestAIService:
             ]
         )
         await db_session.flush()
-        service = AIService(db=db_session, client=MagicMock(spec=genai.Client))
+        service = AIService(db=db_session, client=MagicMock(spec=LLMClient))
 
         march = await service._month_fingerprint(test_user.id, 3, 2025)
         assert march.tx_count == 2
@@ -1009,7 +999,7 @@ class TestAIService:
         )
         db_session.add_all([tx, budget])
         await db_session.flush()
-        service = AIService(db=db_session, client=MagicMock(spec=genai.Client))
+        service = AIService(db=db_session, client=MagicMock(spec=LLMClient))
         before = await service._month_fingerprint(test_user.id, 3, 2025)
 
         # Число и сумма операций те же, но траты переехали в другую категорию
@@ -1029,15 +1019,14 @@ class TestAIService:
         client = self._llm_client()
         service = AIService(db=MagicMock(commit=AsyncMock()), client=client)
 
-        await service._call_gemini("Питание | €154 771,00", locale="ru", currency="EUR")
+        await service._call_model("Питание | €154 771,00", locale="ru", currency="EUR")
 
-        config = client.aio.models.generate_content.await_args.kwargs["config"]
-        instruction = config.system_instruction
+        instruction = client.generate.await_args.args[0].system
         assert "ТОЛЬКО точные названия категорий" in instruction
         assert "«Питание»" in instruction and "«Еда»" in instruction
         assert "€154 771,00" in instruction
         assert "EUR" in instruction  # упомянут как запрещённый код
-        prompt = client.aio.models.generate_content.await_args.kwargs["contents"]
+        prompt = client.generate.await_args.args[0].prompt
         assert "переведи названия категорий" not in prompt
 
     @staticmethod
@@ -1072,10 +1061,10 @@ class TestAIService:
         transactions, budgets = self._summary_data()
 
         summary = service.build_summary(transactions, budgets, currency="USD", locale=locale)
-        await service._call_gemini(summary, locale=locale, currency="USD")
+        await service._call_model(summary, locale=locale, currency="USD")
 
-        kwargs = client.aio.models.generate_content.await_args.kwargs
-        sent = kwargs["config"].system_instruction + "\n" + kwargs["contents"]
+        request = client.generate.await_args.args[0]
+        sent = request.system + "\n" + request.prompt
         assert not re.search("[А-Яа-яЁё]", sent)
         assert "Respond only in English" in sent
         assert "Food | Limit: $40.00 | Spent: $54.35 | Left: $0.00 | Exceeded" in sent
@@ -1089,12 +1078,12 @@ class TestAIService:
         transactions, budgets = self._summary_data()
 
         summary = service.build_summary(transactions, budgets, currency="USD", locale="ru_RU")
-        await service._call_gemini(summary, locale="ru_RU", currency="USD")
+        await service._call_model(summary, locale="ru_RU", currency="USD")
 
-        kwargs = client.aio.models.generate_content.await_args.kwargs
-        assert "Отвечай только на русском языке" in kwargs["config"].system_instruction
-        assert "Ответ — на русском языке" in kwargs["contents"]
-        assert "2026-10-10 | Расход | Питание | €50,00 (эквивалент: $54,35)\n" in kwargs["contents"]
+        request = client.generate.await_args.args[0]
+        assert "Отвечай только на русском языке" in request.system
+        assert "Ответ — на русском языке" in request.prompt
+        assert "2026-10-10 | Расход | Питание | €50,00 (эквивалент: $54,35)\n" in request.prompt
 
     @pytest.mark.asyncio
     async def test_system_instruction_says_there_are_no_descriptions(self):
@@ -1102,10 +1091,10 @@ class TestAIService:
         client = self._llm_client()
         service = AIService(db=MagicMock(commit=AsyncMock()), client=client)
 
-        await service._call_gemini("Питание | €10,00", locale="ru", currency="EUR")
-        await service._call_gemini("Food | €10.00", locale="en", currency="EUR")
+        await service._call_model("Питание | €10,00", locale="ru", currency="EUR")
+        await service._call_model("Food | €10.00", locale="en", currency="EUR")
 
-        ru, en = (call.kwargs["config"].system_instruction for call in client.aio.models.generate_content.await_args_list)
+        ru, en = (call.args[0].system for call in client.generate.await_args_list)
         assert "нет описаний операций" in ru
         assert "no transaction descriptions" in en
 
@@ -1163,8 +1152,8 @@ class TestAIService:
             result = await service.get_insights(user_id, currency="USD", locale=locale, month=3, year=2025)
 
         assert result.state == InsightState.ready
-        kwargs = client.aio.models.generate_content.await_args.kwargs
-        sent = kwargs["config"].system_instruction + "\n" + kwargs["contents"]
+        request = client.generate.await_args.args[0]
+        sent = request.system + "\n" + request.prompt
         logs = "\n".join(record.getMessage() for record in caplog.records)
         cached = "\n".join([await mock_redis_client.get(key) or "" async for key in mock_redis_client.scan_iter()])
         assert cached  # отчёт сохранён — проверяем его содержимое, а не пустоту
@@ -1188,8 +1177,8 @@ class TestAIService:
             assert fragment not in logs
             assert fragment not in cached
         # Данные для советов — на месте: все 7 операций с датой, категорией и суммой, лимит
-        assert kwargs["contents"].count(" | ") >= 7 * 3
-        assert "2025-03-07" in kwargs["contents"]
+        assert request.prompt.count(" | ") >= 7 * 3
+        assert "2025-03-07" in request.prompt
 
     @pytest.mark.asyncio
     async def test_insights_endpoint_future_month_returns_no_data(self, client, auth_headers: dict[str, str]):
@@ -1248,20 +1237,20 @@ class TestInsightsQuotaAndTimeout:
     async def test_parallel_requests_do_not_exceed_daily_limit(self):
         """Из 10 одновременных запросов LLM вызывается не больше суточного лимита."""
         user_id = uuid.uuid4()
-        client = MagicMock(spec=genai.Client)
+        client = MagicMock(spec=LLMClient)
 
-        async def slow_generate(**kwargs):
+        async def slow_generate(_request):
             await asyncio.sleep(0.05)
-            return MagicMock(text='{"insights": ["Совет"]}')
+            return '{"insights": ["Совет"]}'
 
-        client.aio.models.generate_content = AsyncMock(side_effect=slow_generate)
+        client.generate = AsyncMock(side_effect=slow_generate)
 
         with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
             results = await asyncio.gather(
                 *(AIService(db=self._db(), client=client).get_insights(user_id, locale="ru") for _ in range(10))
             )
 
-        assert client.aio.models.generate_content.await_count == 5
+        assert client.generate.await_count == 5
         assert sum(r.state == InsightState.quota_exceeded for r in results) == 5
 
     @pytest.mark.asyncio
@@ -1270,8 +1259,8 @@ class TestInsightsQuotaAndTimeout:
         from app.services.ai_service import redis_client
 
         user_id = uuid.uuid4()
-        client = MagicMock(spec=genai.Client)
-        client.aio.models.generate_content = AsyncMock(side_effect=RuntimeError("Gemini 503"))
+        client = MagicMock(spec=LLMClient)
+        client.generate = AsyncMock(side_effect=RuntimeError("LLM 503"))
 
         with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
             result = await AIService(db=self._db(), client=client).get_insights(user_id, locale="ru")
@@ -1281,13 +1270,14 @@ class TestInsightsQuotaAndTimeout:
 
     @pytest.mark.asyncio
     async def test_hanging_llm_is_cut_by_timeout(self):
-        """Зависший вызов Gemini обрывается по AI_REQUEST_TIMEOUT, клиент получает state=busy."""
-        client = MagicMock(spec=genai.Client)
+        """Зависший вызов модели обрывается по AI_REQUEST_TIMEOUT, клиент получает state=busy."""
 
-        async def hang(**kwargs):
+        async def hang(**_kwargs):
             await asyncio.sleep(10)
 
-        client.aio.models.generate_content = AsyncMock(side_effect=hang)
+        gemini = MagicMock(spec=genai.Client)
+        gemini.aio.models.generate_content = AsyncMock(side_effect=hang)
+        client = LLMClient(claude=MagicMock(), gemini=gemini)
 
         with (
             patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"),
@@ -1303,15 +1293,15 @@ class TestInsightsQuotaAndTimeout:
     @pytest.mark.asyncio
     async def test_redis_unavailable_does_not_call_llm(self):
         """Без счётчика квоты LLM не вызывается: лимит платных вызовов не проверить."""
-        client = MagicMock(spec=genai.Client)
-        client.aio.models.generate_content = AsyncMock()
+        client = MagicMock(spec=LLMClient)
+        client.generate = AsyncMock()
 
         with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
             with patch("app.services.ai_service.redis_client.incr", AsyncMock(side_effect=ConnectionError("down"))):
                 result = await AIService(db=self._db(), client=client).get_insights(uuid.uuid4(), locale="ru")
 
         assert result.state == InsightState.busy
-        client.aio.models.generate_content.assert_not_called()
+        client.generate.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_db_transaction_released_before_llm_call(self):
@@ -1319,13 +1309,13 @@ class TestInsightsQuotaAndTimeout:
         db = self._db()
         order: list[str] = []
         db.commit = AsyncMock(side_effect=lambda: order.append("commit"))
-        client = MagicMock(spec=genai.Client)
+        client = MagicMock(spec=LLMClient)
 
-        async def generate(**kwargs):
+        async def generate(_request):
             order.append("llm")
-            return MagicMock(text='{"insights": ["Совет"]}')
+            return '{"insights": ["Совет"]}'
 
-        client.aio.models.generate_content = AsyncMock(side_effect=generate)
+        client.generate = AsyncMock(side_effect=generate)
 
         with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
             await AIService(db=db, client=client).get_insights(uuid.uuid4(), locale="ru")
