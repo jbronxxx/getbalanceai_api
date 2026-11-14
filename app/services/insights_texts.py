@@ -21,7 +21,6 @@ class InsightTexts:
 
     stub: str
     busy: tuple[str, ...]
-    quota_exceeded: tuple[str, ...]
     limits_header: str
     no_limits: str
     limit_line: str
@@ -42,10 +41,6 @@ INSIGHT_TEXTS: dict[str, InsightTexts] = {
         busy=(
             "К сожалению, наши умные помощники сейчас очень заняты и не могут проанализировать данные.",
             "Пожалуйста, загляните за советами немного позже.",
-        ),
-        quota_exceeded=(
-            "Вы достигли дневного лимита запросов к финансовому помощнику (максимум 5 обновлений в день).",
-            "Пожалуйста, возвращайтесь завтра или продолжайте пользоваться текущей аналитикой.",
         ),
         limits_header="Блок 1: Сводка по лимитам категорий на месяц:",
         no_limits="Лимиты бюджетов на данный период не установлены.",
@@ -92,10 +87,6 @@ INSIGHT_TEXTS: dict[str, InsightTexts] = {
         busy=(
             "Unfortunately, our smart assistants are currently very busy and cannot analyze the data.",
             "Please check back for tips a little later.",
-        ),
-        quota_exceeded=(
-            "You have reached your daily limit for financial assistant requests (maximum 5 updates per day).",
-            "Please return tomorrow or continue using your current insights.",
         ),
         limits_header="Section 1: Monthly category limits:",
         no_limits="No budget limits are set for this period.",

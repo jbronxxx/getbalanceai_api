@@ -40,10 +40,28 @@ TERMS: dict[str, PageContent] = {
                 ],
             ),
             (
-                "5. Платные функции",
+                "5. Тарифы и подписка",
                 [
-                    "Часть функций может быть платной. Оплата, подписки, возвраты и отмена регулируются "
-                    "правилами Google Play и Apple App Store; стоимость показывается в магазине до покупки.",
+                    "Приложение доступно на бесплатном тарифе (Free) и по подписке Pro. Состав тарифов и лимиты "
+                    "функций (например, число ИИ-отчётов и разборов голосового ввода) указаны в приложении; "
+                    "лимиты считаются по календарным суткам или месяцам по часам вашего устройства.",
+                    "Подписка оформляется и оплачивается через Google Play или Apple App Store, привязывается "
+                    "к вашему аккаунту GetBalance AI и действует на всех устройствах, где вы в него вошли. "
+                    "В гостевом режиме подписка недоступна. Цена и период подписки (месяц или год) показываются "
+                    "до покупки.",
+                    "Пробный период, если он предлагается, предоставляется один раз; его длительность указывается "
+                    "до покупки. Если не отменить подписку до его окончания, магазин спишет цену первого периода.",
+                    "Подписка продлевается автоматически на тот же период по действующей цене, пока вы её не "
+                    "отмените. Отменить её можно в любой момент в настройках подписок магазина; доступ к Pro "
+                    "сохраняется до конца оплаченного периода. Удаление приложения или аккаунта подписку "
+                    "не отменяет.",
+                    "Возвраты выполняются по правилам магазина, в котором оформлена подписка. Если вы потребитель "
+                    "в Европейском Союзе, вы вправе отказаться от подписки в течение 14 дней со дня покупки. "
+                    "Оформляя подписку, вы просите начать предоставление Pro сразу; при отказе в эти 14 дней "
+                    "может быть удержана стоимость уже предоставленной части периода. Чтобы отказаться, "
+                    "запросите возврат в магазине или напишите нам на email из раздела «Контакты».",
+                    "Об изменении цены подписки магазин сообщает заранее; если его правила требуют вашего "
+                    "согласия, без него подписка по новой цене не продлится.",
                 ],
             ),
             (
@@ -122,11 +140,28 @@ TERMS: dict[str, PageContent] = {
                 ],
             ),
             (
-                "5. Paid features",
+                "5. Plans and subscription",
                 [
-                    "Some features may be paid. Payments, subscriptions, refunds and cancellation are governed "
-                    "by the rules of Google Play and the Apple App Store; the price is shown in the store "
+                    "The app is available on a free plan (Free) and with a Pro subscription. What each plan "
+                    "includes and the feature limits (such as the number of AI reports and voice inputs) are shown "
+                    "in the app; limits are counted per calendar day or month by your device's clock.",
+                    "The subscription is purchased and paid for through Google Play or the Apple App Store, is "
+                    "linked to your GetBalance AI account and works on every device where you are signed in to it. "
+                    "Subscriptions are not available in guest mode. The price and period (month or year) are shown "
                     "before purchase.",
+                    "A free trial, if offered, is available once; its length is shown before purchase. If you do "
+                    "not cancel before the trial ends, the store charges the price of the first period.",
+                    "The subscription renews automatically for the same period at the current price until you "
+                    "cancel it. You can cancel at any time in the store's subscription settings; Pro stays "
+                    "available until the end of the paid period. Deleting the app or your account does not "
+                    "cancel the subscription.",
+                    "Refunds follow the rules of the store where you purchased the subscription. If you are a "
+                    "consumer in the European Union, you may withdraw from the subscription within 14 days of "
+                    "purchase. By subscribing, you ask us to start providing Pro immediately; if you withdraw "
+                    "within these 14 days, an amount for the part of the period already provided may be withheld. "
+                    "To withdraw, request a refund in the store or email us at the address in the Contact section.",
+                    "The store notifies you of a subscription price change in advance; if its rules require your "
+                    "consent, the subscription will not renew at the new price without it.",
                 ],
             ),
             (

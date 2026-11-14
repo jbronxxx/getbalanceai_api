@@ -5,10 +5,12 @@
 """
 
 from app.legal.privacy_2026_11_13 import PRIVACY_2026_11_13
+from app.legal.privacy_2026_11_14 import PRIVACY_2026_11_14
+from app.legal.terms_2026_11_13 import TERMS_2026_11_13
 from app.legal.types import PageContent
 
 # slug документа -> версия (дата ISO) -> язык -> содержимое
 ARCHIVE: dict[str, dict[str, dict[str, PageContent]]] = {
-    "terms": {},
-    "privacy": {"2026-11-13": PRIVACY_2026_11_13},
+    "terms": {"2026-11-13": TERMS_2026_11_13},
+    "privacy": {"2026-11-13": PRIVACY_2026_11_13, "2026-11-14": PRIVACY_2026_11_14},
 }

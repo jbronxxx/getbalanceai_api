@@ -17,8 +17,15 @@ from app.services.period import current_month as client_current_month
 router = APIRouter(
     responses={
         401: {"model": ErrorResponse, "description": "Требуется авторизация"},
-        422: {"model": ErrorResponse, "description": "Неподдерживаемая валюта или некорректная локаль"},
-        403: {"model": ErrorResponse, "description": "TERMS_NOT_ACCEPTED — не принята текущая версия соглашения"},
+        422: {
+            "model": ErrorResponse,
+            "description": "Неподдерживаемая валюта или некорректная локаль",
+        },
+        403: {
+            "model": ErrorResponse,
+            "description": "TERMS_NOT_ACCEPTED — не принята текущая версия соглашения; PLAN_LIMIT_REACHED — "
+            "исчерпан лимит ИИ-отчётов тарифа (details: feature=ai_report, plan, limit, period, resets_at)",
+        },
         429: {"model": ErrorResponse, "description": "Превышен лимит частоты запросов"},
         500: {"model": ErrorResponse, "description": "Внутренняя ошибка сервера"},
     }

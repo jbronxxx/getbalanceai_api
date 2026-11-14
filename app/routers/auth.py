@@ -1,5 +1,7 @@
 """Эндпоинты авторизации и аутентификации пользователей."""
 
+from datetime import tzinfo
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.security import HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.limiter import limiter
 from app.models.models import User
+from app.routers.dependencies import get_client_timezone
 from app.schemas.schemas import (
     ApiResponse,
     AppleSignInRequest,
@@ -15,10 +18,12 @@ from app.schemas.schemas import (
     GoogleSignInRequest,
     RefreshTokenRequest,
     TokenResponse,
+    UserProfileResponse,
     UserResponse,
     UserUpdateRequest,
 )
 from app.services.auth_service import AuthService, get_consented_user, get_current_user
+from app.services.subscription_service import SubscriptionService
 from logger.request_log import client_info
 
 router = APIRouter(
@@ -36,7 +41,10 @@ router = APIRouter(
         422: {"model": ErrorResponse, "description": "Ошибка валидации данных"},
         429: {"model": ErrorResponse, "description": "Превышен лимит частоты запросов"},
         500: {"model": ErrorResponse, "description": "Внутренняя ошибка сервера"},
-        503: {"model": ErrorResponse, "description": "Хранилище отзыва токенов недоступно (SERVICE_UNAVAILABLE)"},
+        503: {
+            "model": ErrorResponse,
+            "description": "Хранилище отзыва токенов или RevenueCat (удаление аккаунта) недоступны (SERVICE_UNAVAILABLE)",
+        },
     }
 )
 
@@ -108,14 +116,23 @@ async def logout(
 
 @router.get(
     "/me",
-    response_model=ApiResponse[UserResponse],
+    response_model=ApiResponse[UserProfileResponse],
     summary="Получение информации о текущем пользователе",
 )
 async def auth_me(
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> dict[str, str | User]:
-    """Получить информацию о текущем пользователе."""
-    return {"status": "success", "data": current_user}
+    tz: tzinfo = Depends(get_client_timezone),
+) -> dict[str, str | UserProfileResponse]:
+    """Профиль пользователя с тарифом, сроком подписки и остатками лимитов.
+
+    Окна лимитов (сутки, месяц) и время их сброса — по часам клиента (заголовок X-Timezone-Offset).
+    """
+    subscription, limits = await SubscriptionService(db).profile(current_user.id, tz)
+    profile = UserProfileResponse(
+        **dict(UserResponse.model_validate(current_user)), subscription=subscription, limits=limits
+    )
+    return {"status": "success", "data": profile}
 
 
 @router.patch(
@@ -150,7 +167,10 @@ async def delete_me(
     current_user: User = Depends(get_current_user),
     credentials: HTTPBearer = Depends(AuthService.bearer_scheme),
 ) -> dict[str, str]:
-    """Удалить аккаунт и все связанные данные (токены, бюджеты, транзакции)."""
+    """Удалить аккаунт и все связанные данные (токены, бюджеты, транзакции) и покупателя в RevenueCat.
+
+    Подписку в магазине удаление не отменяет: приложение предупреждает об этом при активной подписке.
+    """
     service = AuthService(db)
     # Сначала отзываем текущий токен: при недоступном Redis аккаунт не удаляется, клиент повторит запрос
     await service.logout(current_user.id, credentials.credentials)

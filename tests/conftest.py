@@ -78,6 +78,14 @@ def no_anthropic_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def no_revenuecat_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ключи RevenueCat из локального .env в тестах не используются: иначе удаление аккаунта ходит в настоящий
+    RevenueCat. Тесты подписок задают ключи сами."""
+    monkeypatch.setattr(config, "revenuecat_api_key", "")
+    monkeypatch.setattr(config, "revenuecat_webhook_auth", "")
+
+
+@pytest.fixture(autouse=True)
 def oauth_client_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     """Client ID Google/Apple, под которые выпускаются тестовые ID-токены провайдеров."""
     monkeypatch.setattr(config, "google_client_ids", ["test-google-android", "test-google-ios"])
@@ -154,7 +162,6 @@ def mock_redis_client():
         patch("app.redis.redis_client", fake_redis),
         patch("app.redis._redis_client", fake_redis),
         patch("app.services.ai_service.redis_client", fake_redis),
-        patch("app.services.voice_service.redis_client", fake_redis),
         patch("app.services.currency_service.redis_client", fake_redis),
     ):
         yield fake_redis

@@ -46,16 +46,6 @@ def get_insights_cache_key(
     return f"insights_cache:{user_id}:{locale}:{currency}"
 
 
-def get_insights_daily_quota_key(user_id: uuid.UUID | str, date_str: str) -> str:
-    """Сформировать ключ суточного счетчика вызовов LLM для пользователя."""
-    return f"insights_daily_calls:{user_id}:{date_str}"
-
-
-def get_voice_daily_quota_key(user_id: uuid.UUID | str, date_str: str) -> str:
-    """Сформировать ключ суточного счётчика разборов голосового ввода пользователя."""
-    return f"voice_daily_calls:{user_id}:{date_str}"
-
-
 def get_insights_user_patterns(user_id: uuid.UUID | str) -> tuple[str, ...]:
     """Сформировать кортеж масок для неблокирующей инвалидации всех ключей инсайтов пользователя."""
     return (

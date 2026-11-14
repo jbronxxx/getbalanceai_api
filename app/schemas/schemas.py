@@ -215,6 +215,92 @@ class UserResponse(BaseModel):
         )
 
 
+# ============================================================================
+# Схемы тарифов и подписки
+# ============================================================================
+
+
+class PlanCode(str, enum.Enum):
+    """Тариф пользователя."""
+
+    free = "free"
+    pro = "pro"
+
+
+class PlanFeature(str, enum.Enum):
+    """Функция с лимитом по тарифу."""
+
+    ai_report = "ai_report"  # Генерация ИИ-отчёта за месяц (GET /insights с generate=true)
+    voice = "voice"  # Разбор голосового ввода (POST /voice/parse)
+
+
+class LimitPeriod(str, enum.Enum):
+    """Окно лимита: календарные сутки или месяц в часовом поясе пользователя."""
+
+    day = "day"
+    month = "month"
+
+
+class SubscriptionStatus(BaseModel):
+    """Тариф пользователя и срок подписки Pro."""
+
+    plan: PlanCode = Field(..., description="Действующий тариф")
+    expires_at: Optional[datetime] = Field(
+        default=None,
+        description=(
+            "Pro: дата продления (will_renew=true) или окончания доступа; null — Free или бессрочный Pro. "
+            "Для Free после окончания подписки — дата окончания прошлой подписки"
+        ),
+    )
+    will_renew: bool = Field(False, description="Подписка продлится автоматически: отмены в магазине нет")
+    is_trial: bool = Field(False, description="Идёт бесплатный пробный период")
+
+
+class FeatureLimit(BaseModel):
+    """Лимит функции на тарифе и его расход в текущем окне."""
+
+    feature: PlanFeature = Field(..., description="Функция")
+    period: LimitPeriod = Field(..., description="Окно лимита в часовом поясе пользователя")
+    limit: int = Field(..., ge=0, description="Сколько раз можно за окно")
+    used: Optional[int] = Field(default=None, ge=0, description="Использовано в текущем окне; null — счётчик недоступен")
+    remaining: Optional[int] = Field(default=None, ge=0, description="Осталось в текущем окне; null — счётчик недоступен")
+    resets_at: datetime = Field(..., description="Начало следующего окна (UTC): полночь или 1-е число по часам клиента")
+
+
+class UserProfileResponse(UserResponse):
+    """Профиль пользователя с тарифом и остатками лимитов (GET /auth/me)."""
+
+    subscription: SubscriptionStatus = Field(..., description="Тариф и срок подписки")
+    limits: list[FeatureLimit] = Field(..., description="Лимиты функций на текущем тарифе")
+
+
+class RevenueCatEvent(BaseModel):
+    """Событие вебхука RevenueCat: из него нужны только покупатели — статус берётся из REST API."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: Optional[str] = Field(default=None, max_length=100, description="ID события")
+    type: str = Field(..., max_length=50, description="Тип события (INITIAL_PURCHASE, RENEWAL, EXPIRATION, ...)")
+    app_user_id: Optional[str] = Field(default=None, max_length=200)
+    original_app_user_id: Optional[str] = Field(default=None, max_length=200)
+    aliases: list[str] = Field(default_factory=list, max_length=100)
+    transferred_from: list[str] = Field(default_factory=list, max_length=100)
+    transferred_to: list[str] = Field(default_factory=list, max_length=100)
+
+    def app_user_ids(self) -> set[str]:
+        """Все покупатели события: при переносе покупки (TRANSFER) меняется доступ у обеих сторон."""
+        ids = {self.app_user_id, self.original_app_user_id, *self.aliases, *self.transferred_from, *self.transferred_to}
+        return {value for value in ids if value}
+
+
+class RevenueCatWebhook(BaseModel):
+    """Тело вебхука RevenueCat."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    event: RevenueCatEvent
+
+
 class LegalAcceptRequest(BaseModel):
     """Принятие версий документов, показанных пользователю (экран новой версии соглашения, уведомление о политике)."""
 
@@ -899,9 +985,6 @@ class InsightState(str, enum.Enum):
     no_data = "no_data"  # Анализировать нечего: будущий месяц или нет операций за период
     # Операций за период меньше MIN_TRANSACTIONS_FOR_INSIGHTS: отчёт не формируется и не отдаётся
     not_enough_data = "not_enough_data"
-    # Суточная квота генераций исчерпана: отчёта за период нет (insights — сообщение о лимите)
-    # или он устарел (insights — сохранённый отчёт, is_outdated=true)
-    quota_exceeded = "quota_exceeded"
     busy = "busy"  # LLM временно недоступен; insights — вежливое сообщение, кэшировать нельзя
 
 
@@ -909,8 +992,7 @@ class InsightResponse(BaseModel):
     """Схема ответа с персональными рекомендациями AI.
 
     Атрибуты:
-        insights (list[str]): Список текстовых рекомендаций (при quota_exceeded — сообщение о лимите
-            или устаревший сохранённый отчёт).
+        insights (list[str]): Список текстовых рекомендаций.
         generated_at (datetime): Временная метка генерации ответа.
         state (InsightState): Состояние отчёта за период.
         is_outdated (bool): Отчёт сохранённый, а данные месяца изменились после его генерации.
@@ -923,7 +1005,7 @@ class InsightResponse(BaseModel):
         False,
         description=(
             "Сохранённый отчёт, а операции или лимиты месяца изменились после генерации: суммы в тексте "
-            "могут не совпадать с текущими (generate=false или исчерпана суточная квота)"
+            "могут не совпадать с текущими (generate=false)"
         ),
     )
 

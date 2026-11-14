@@ -410,14 +410,15 @@ def report(results: list[Result], reports_per_month: int, voice_per_month: int) 
                 + f" | {cost[0]:.6f} / {cost[1]:.6f} | {seconds[0]:.1f} / {seconds[1]:.1f} |"
             )
 
-    full_reports = config.ai_daily_limit_per_user * DAYS_IN_MONTH
-    full_voice = config.voice_daily_limit_per_user * DAYS_IN_MONTH
+    # Худший случай — тариф Pro с полностью выбранными суточными лимитами
+    full_reports = config.pro_ai_reports_per_day * DAYS_IN_MONTH
+    full_voice = config.pro_voice_per_day * DAYS_IN_MONTH
     lines += [
         "",
         "## Себестоимость пользователя в месяц, $",
         "",
         f"Обычное использование: {reports_per_month} отчётов и {voice_per_month} голосовых разборов в месяц. "
-        f"Лимиты выбраны полностью: {config.ai_daily_limit_per_user} отчётов и {config.voice_daily_limit_per_user} "
+        f"Лимиты Pro выбраны полностью: {config.pro_ai_reports_per_day} отчётов и {config.pro_voice_per_day} "
         f"разборов в сутки × {DAYS_IN_MONTH} дней = {full_reports} и {full_voice}. Ср — по средней цене вызова, "
         "макс — по максимальной.",
         "",

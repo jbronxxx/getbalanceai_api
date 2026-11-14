@@ -106,14 +106,15 @@ class TestInsights:
         """Авторизованный запрос возвращает 200 OK и структуру ApiResponse[InsightResponse]."""
         test_user = MagicMock(spec=User)
         test_user.id = uuid.uuid4()
-        mock_db = MagicMock(commit=AsyncMock())
+        # scalar — снимок подписки: строки нет, тариф Free
+        mock_db = MagicMock(commit=AsyncMock(), scalar=AsyncMock(return_value=None))
         mock_db.execute = AsyncMock()
 
         app.dependency_overrides[get_consented_user] = lambda: test_user
         app.dependency_overrides[get_db] = lambda: mock_db
 
         try:
-            with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint(0):
+            with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"), _patch_fingerprint(0):
                 response = await client.get("/api/v1/insights/", headers=get_auth_headers())
             assert response.status_code == 200
             data = response.json()
@@ -130,12 +131,13 @@ class TestInsights:
         """Два последовательных HTTP-запроса проверяют работу кэширования через API."""
         test_user = MagicMock(spec=User)
         test_user.id = uuid.uuid4()
-        mock_db = MagicMock(commit=AsyncMock())
+        # scalar — снимок подписки: строки нет, тариф Free
+        mock_db = MagicMock(commit=AsyncMock(), scalar=AsyncMock(return_value=None))
 
         app.dependency_overrides[get_consented_user] = lambda: test_user
         app.dependency_overrides[get_db] = lambda: mock_db
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"):
             with patch.object(
                 AIService,
                 "_call_model",
@@ -178,7 +180,8 @@ class TestInsights:
         """Параллельный вызов /api/v1/insights/ и /health подтверждает неблокируемость Event Loop."""
         test_user = MagicMock(spec=User)
         test_user.id = uuid.uuid4()
-        mock_db = MagicMock(commit=AsyncMock())
+        # scalar — снимок подписки: строки нет, тариф Free
+        mock_db = MagicMock(commit=AsyncMock(), scalar=AsyncMock(return_value=None))
 
         app.dependency_overrides[get_consented_user] = lambda: test_user
         app.dependency_overrides[get_db] = lambda: mock_db
@@ -187,7 +190,7 @@ class TestInsights:
             await asyncio.sleep(0.1)
             return ["Медленный совет"]
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"):
             with patch.object(AIService, "_call_model", side_effect=slow_claude_call), _patch_fingerprint(10):
                 tx = MagicMock()
                 tx.date = MagicMock()

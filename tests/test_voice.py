@@ -11,7 +11,6 @@ from google import genai
 from httpx import AsyncClient
 
 from app.models.models import Category, CurrencyCode, TransactionType
-from app.redis import get_voice_daily_quota_key
 from app.schemas.schemas import VOICE_RECORDS_MAX, VOICE_TEXT_MAX_LENGTH
 from app.services.llm import LLMClient
 from app.services.voice_service import VoiceParseService
@@ -187,21 +186,72 @@ def test_normalize_limits_record_count() -> None:
     assert len(VoiceParseService._normalize(raw, CurrencyCode.USD, date(2026, 11, 11))) == VOICE_RECORDS_MAX
 
 
+def _voice_counter_key(user_id, day: date | None = None) -> str:
+    """Ключ суточного счётчика голосового ввода (по умолчанию — сегодня по UTC)."""
+    return f"plan_usage:voice:{user_id}:{(day or _today_utc()).isoformat()}"
+
+
 @pytest.mark.asyncio
-async def test_daily_quota_exceeded(
-    client: AsyncClient, auth_headers: dict, gemini_key, monkeypatch: pytest.MonkeyPatch
+async def test_free_daily_limit_reached(
+    client: AsyncClient, auth_headers: dict, test_user, gemini_key, mock_redis_client, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Сверх суточной квоты — 429 AI_QUOTA_EXCEEDED, модель не вызывается."""
-    monkeypatch.setattr(config, "voice_daily_limit_per_user", 2)
+    """Free сверх суточного лимита — 403 PLAN_LIMIT_REACHED (функция, время сброса), модель не вызывается."""
+    monkeypatch.setattr(config, "free_voice_per_day", 2)
+    user_id = test_user.id
     model = _model_client({"records": []})
     with _use_client(model):
         statuses = [
             (await client.post(URL, json={"text": PHRASE, "currency": "EUR"}, headers=auth_headers)) for _ in range(3)
         ]
 
-    assert [r.status_code for r in statuses] == [200, 200, 429]
-    assert statuses[2].json()["code"] == "AI_QUOTA_EXCEEDED"
+    assert [r.status_code for r in statuses] == [200, 200, 403]
+    body = statuses[2].json()
+    assert body["code"] == "PLAN_LIMIT_REACHED"
+    assert body["details"]["feature"] == "voice" and body["details"]["plan"] == "free"
+    assert body["details"]["limit"] == 2 and body["details"]["period"] == "day"
+    tomorrow = datetime.combine(_today_utc() + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+    assert datetime.fromisoformat(body["details"]["resets_at"]) == tomorrow
     assert model.generate.await_count == 2
+    assert await mock_redis_client.get(_voice_counter_key(user_id)) == "2"
+
+
+@pytest.mark.asyncio
+async def test_pro_daily_limit_and_client_day(
+    client: AsyncClient,
+    auth_headers: dict,
+    test_user,
+    db_session,
+    gemini_key,
+    mock_redis_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pro — свой суточный лимит; сутки — по часам клиента (X-Timezone-Offset)."""
+    from app.models.models import Subscription
+
+    user_id = test_user.id
+    db_session.add(
+        Subscription(
+            user_id=user_id,
+            expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+            will_renew=True,
+            is_trial=False,
+            product_id="pro_monthly",
+            store="play_store",
+        )
+    )
+    await db_session.commit()
+    monkeypatch.setattr(config, "free_voice_per_day", 0)
+    monkeypatch.setattr(config, "pro_voice_per_day", 1)
+    headers = {**auth_headers, "X-Timezone-Offset": "840"}
+    local_day = datetime.now(timezone(timedelta(hours=14))).date()
+    with _use_client(_model_client({"records": []})):
+        first = await client.post(URL, json={"text": PHRASE, "currency": "EUR"}, headers=headers)
+        second = await client.post(URL, json={"text": PHRASE, "currency": "EUR"}, headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 403
+    assert second.json()["details"]["plan"] == "pro"
+    assert await mock_redis_client.get(_voice_counter_key(user_id, local_day)) == "1"
 
 
 @pytest.mark.asyncio
@@ -221,7 +271,7 @@ async def test_model_failure_returns_503_and_keeps_quota(
 ) -> None:
     """Сбой модели или неразборчивый ответ — 503, квота не расходуется, ни фраза, ни ответ не логируются."""
     # id читается до запроса: после коммита сессии запроса атрибуты пользователя истекают
-    quota_key = get_voice_daily_quota_key(test_user.id, _today_utc().strftime("%Y-%m-%d"))
+    quota_key = _voice_counter_key(test_user.id)
     with _use_client(_model_client(failure)), caplog.at_level(logging.DEBUG):
         response = await client.post(URL, json={"text": PHRASE, "currency": "EUR"}, headers=auth_headers)
 
