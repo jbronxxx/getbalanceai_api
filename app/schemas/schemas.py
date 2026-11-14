@@ -27,6 +27,7 @@ from app.models.models import (
     SUPPORTED_CURRENCIES,
     Category,
     CurrencyCode,
+    FamilyRole,
     TransactionType,
 )
 
@@ -254,6 +255,24 @@ class SubscriptionStatus(BaseModel):
     )
     will_renew: bool = Field(False, description="Подписка продлится автоматически: отмены в магазине нет")
     is_trial: bool = Field(False, description="Идёт бесплатный пробный период")
+    family_plan: bool = Field(
+        False, description="У пользователя действует свой семейный Pro: можно создать семью и приглашать участников"
+    )
+    via_family: bool = Field(
+        False,
+        description=(
+            "Pro получен от владельца семьи, а не своей подпиской (expires_at, will_renew и is_trial тогда "
+            "не заполняются: подпиской управляет владелец)"
+        ),
+    )
+    store: Optional[str] = Field(
+        default=None,
+        description=(
+            "Магазин своей действующей подписки: `play_store`, `app_store`, `promotional`, `manual` (выдан вручную) "
+            "и другие значения RevenueCat в нижнем регистре; управлять подпиской в магазине можно только при "
+            "`play_store`/`app_store`. null — Free или Pro от семьи"
+        ),
+    )
 
 
 class FeatureLimit(BaseModel):
@@ -394,6 +413,32 @@ class UserUpdateRequest(BaseModel):
 # ============================================================================
 
 
+class SharedRecordFields(BaseModel):
+    """Поля общей записи в ответе: автор и отметка «общая» (транзакция, бюджет, регулярный платёж)."""
+
+    # Колонки модели: в ответ не идут, из них считаются author_id и is_shared
+    user_id: Optional[uuid.UUID] = Field(default=None, exclude=True)
+    family_id: Optional[uuid.UUID] = Field(default=None, exclude=True)
+
+    @computed_field(description="Автор записи; null — общая запись участника, удалившего аккаунт («Бывший участник»)")
+    @property
+    def author_id(self) -> Optional[uuid.UUID]:
+        """Автор — владелец личной записи или тот, кто добавил общую."""
+        return self.user_id
+
+    @computed_field(description="Общая запись семьи (видна и правится всеми участниками); false — личная")
+    @property
+    def is_shared(self) -> bool:
+        """Запись принадлежит семье."""
+        return self.family_id is not None
+
+
+IS_SHARED_DESCRIPTION = (
+    "Общая запись семьи: видят и правят все участники. Требует членства в незамороженной семье; "
+    "менять отметку у готовой записи может только автор"
+)
+
+
 class TransactionCreate(BaseModel):
     """Схема запроса на создание транзакции (дохода или расхода).
 
@@ -432,6 +477,7 @@ class TransactionCreate(BaseModel):
     category: Category = Field(..., description="Категория операции")
     type: TransactionType = Field(..., description="Тип операции: income (доход) или expense (расход)")
     date: datetime | None = Field(default=None, description="Дата транзакции (по умолчанию текущая)")
+    is_shared: bool = Field(default=False, description=IS_SHARED_DESCRIPTION)
 
     @field_validator("currency", mode="before")
     @classmethod
@@ -466,7 +512,7 @@ class TransactionCreate(BaseModel):
         return self
 
 
-class TransactionResponse(BaseModel):
+class TransactionResponse(SharedRecordFields):
     """Схема ответа с данными сохраненной транзакции.
 
     Атрибуты:
@@ -480,6 +526,8 @@ class TransactionResponse(BaseModel):
         type (TransactionType): Тип (income / expense).
         date (datetime): Дата и время транзакции.
         created_at (datetime): Дата создания записи в БД.
+        author_id (uuid.UUID | None): Автор; null — бывший участник семьи.
+        is_shared (bool): Общая запись семьи.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -487,8 +535,14 @@ class TransactionResponse(BaseModel):
     id: uuid.UUID = Field(..., description="ID транзакции")
     amount: Decimal = Field(..., description="Сумма транзакции")
     currency: str = Field(default="USD", description="Код валюты операции")
-    exchange_rate: Decimal = Field(default=Decimal("1.0"), description="Курс валюты к базовой валюте")
-    base_amount: Decimal = Field(..., description="Сумма в базовой валюте")
+    exchange_rate: Decimal = Field(default=Decimal("1.0"), description="Курс валюты к базовой валюте автора")
+    base_amount: Decimal = Field(
+        ...,
+        description=(
+            "Сумма в базовой валюте автора; у общей записи другого участника базовая валюта может отличаться "
+            "от вашей — итоги считайте по amount и currency"
+        ),
+    )
     description: str = Field(..., description="Описание транзакции")
     category: Category = Field(..., description="Категория транзакции")
     type: TransactionType = Field(..., description="Тип операции")
@@ -538,6 +592,10 @@ class BudgetCreate(BaseModel):
     )
     month: int = Field(..., ge=1, le=12, description="Номер месяца (от 1 до 12)")
     year: int = Field(..., ge=2000, le=2100, description="Год")
+    is_shared: bool = Field(
+        default=False,
+        description="Общий лимит семьи: считает общие траты всех участников; личный — только ваши личные траты",
+    )
 
     @field_validator("currency", mode="before")
     @classmethod
@@ -557,7 +615,7 @@ class BudgetCreate(BaseModel):
         return self
 
 
-class BudgetResponse(BaseModel):
+class BudgetResponse(SharedRecordFields):
     """Схема ответа с информацией о бюджете и расчетом расходов.
 
     Атрибуты:
@@ -582,8 +640,9 @@ class BudgetResponse(BaseModel):
     spent: Decimal = Field(
         default=Decimal("0.00"),
         description=(
-            "Фактически израсходованная сумма в валюте лимита: операции в этой же валюте — по сумме чека, "
-            "в базовой — по base_amount, в остальных — по текущему кросс-курсу"
+            "Фактически израсходованная сумма в валюте лимита: личный лимит — ваши личные траты, общий — общие "
+            "траты всех участников. Операции в валюте лимита — по сумме чека, личные в базовой — по base_amount, "
+            "остальные — по текущему кросс-курсу"
         ),
     )
     remaining: Decimal = Field(
@@ -652,6 +711,7 @@ class TransactionSyncItem(BaseModel):
     )
     date: datetime = Field(..., description="Дата и время")
     description: str = Field(..., description="Описание (длиннее 255 символов обрезается)")
+    is_shared: bool = Field(default=False, description=IS_SHARED_DESCRIPTION)
 
     @field_validator("description", mode="before")
     @classmethod
@@ -706,6 +766,10 @@ class BudgetSyncItem(BaseModel):
     )
     month: int = Field(..., ge=1, le=12, description="Месяц действия бюджета (1-12)")
     year: int = Field(..., ge=2000, le=2100, description="Год действия бюджета")
+    is_shared: bool = Field(
+        default=False,
+        description="Общий лимит семьи; ключ (category, month, year) — свой у личных и у общих лимитов",
+    )
     is_deleted: bool = Field(default=False, description="Флаг удаления бюджета на клиенте")
     deleted: Optional[bool] = Field(default=None, description="Альтернативный флаг удаления бюджета")
 
@@ -760,6 +824,7 @@ class RecurringPaymentSyncItem(BaseModel):
         max_length=RECURRING_SKIPPED_MAX,
         description="Пропущенные месяцы в формате YYYY-MM",
     )
+    is_shared: bool = Field(default=False, description=IS_SHARED_DESCRIPTION)
 
     @field_validator("description", mode="before")
     @classmethod
@@ -792,7 +857,7 @@ class RecurringPaymentSyncItem(BaseModel):
         return self
 
 
-class RecurringPaymentResponse(BaseModel):
+class RecurringPaymentResponse(SharedRecordFields):
     """Регулярный платёж или доход в ответе сервера."""
 
     model_config = ConfigDict(from_attributes=True)
@@ -818,7 +883,7 @@ class SyncRejectedItem(BaseModel):
         ...,
         description=(
             "Машиночитаемый код причины: ID_CONFLICT, INVALID_CURRENCY, INVALID_TRANSACTION_AMOUNT, "
-            "INVALID_CATEGORY, INVALID_AMOUNT, INVALID_SYNC_ITEM"
+            "INVALID_CATEGORY, INVALID_AMOUNT, INVALID_SYNC_ITEM, FAMILY_NOT_FOUND, FAMILY_FROZEN, FAMILY_AUTHOR_ONLY"
         ),
     )
     reason: str = Field(..., description="Причина отклонения элемента")
@@ -970,6 +1035,14 @@ class SyncChangesResponse(BaseModel):
     server_time: datetime = Field(
         ..., description="Время сервера на момент запроса; since следующей синхронизации — значение с первой страницы"
     )
+    family_id: Optional[uuid.UUID] = Field(
+        default=None,
+        description=(
+            "Семья, в которой сейчас состоит пользователь; null — не в семье. Изменилась с прошлой синхронизации "
+            "(вступил, вышел, исключён, семья распущена) — удалить локальные общие записи и синхронизироваться "
+            "заново без since"
+        ),
+    )
 
 
 # ============================================================================
@@ -986,6 +1059,13 @@ class InsightState(str, enum.Enum):
     # Операций за период меньше MIN_TRANSACTIONS_FOR_INSIGHTS: отчёт не формируется и не отдаётся
     not_enough_data = "not_enough_data"
     busy = "busy"  # LLM временно недоступен; insights — вежливое сообщение, кэшировать нельзя
+
+
+class InsightScope(str, enum.Enum):
+    """Чьи записи анализирует ИИ-отчёт."""
+
+    personal = "personal"  # «Мой»: мои личные записи и общие, добавленные мной
+    family = "family"  # «Семья»: все общие записи семьи; готовый отчёт видят все участники
 
 
 class InsightResponse(BaseModel):
@@ -1079,3 +1159,82 @@ class CurrencyRatesResponse(BaseModel):
         default=False,
         description="Признак резервных котировок при недоступности внешнего шлюза",
     )
+
+
+# ============================================================================
+# Схемы семейного Pro
+# ============================================================================
+
+# Код приглашения: 8 символов без похожих (0/O, 1/I/L); пробелы и дефисы при вводе отбрасываются
+FAMILY_INVITE_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+FAMILY_INVITE_CODE_LENGTH = 8
+
+
+class FamilyMemberResponse(BaseModel):
+    """Участник семьи."""
+
+    user_id: uuid.UUID = Field(..., description="ID участника")
+    name: str = Field(..., description="Имя из аккаунта")
+    email: Optional[str] = Field(default=None, description="Email — только в ответе владельцу (управление участниками)")
+    role: FamilyRole = Field(..., description="owner — владелец, member — участник")
+    joined_at: datetime = Field(..., description="Момент вступления")
+
+
+class FamilyInviteResponse(BaseModel):
+    """Действующее приглашение (код не показывается повторно: в БД хранится только его хеш)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID = Field(..., description="ID приглашения (для отзыва)")
+    created_at: datetime = Field(..., description="Момент создания")
+    expires_at: datetime = Field(..., description="Окончание действия")
+
+
+class FamilyInviteCreatedResponse(FamilyInviteResponse):
+    """Новое приглашение с кодом: владелец отправляет его через «Поделиться»."""
+
+    code: str = Field(..., description="Одноразовый код из 8 символов; показывается только сейчас")
+
+
+class FamilyResponse(BaseModel):
+    """Семья текущего пользователя."""
+
+    id: uuid.UUID = Field(..., description="ID семьи")
+    role: FamilyRole = Field(..., description="Роль текущего пользователя")
+    owner_id: uuid.UUID = Field(..., description="ID владельца")
+    is_frozen: bool = Field(
+        ...,
+        description=(
+            "Семья заморожена (у владельца нет семейного Pro): общие записи только для чтения, новых общих и "
+            "приглашений нет, участники без своего Pro — на Free. Продлит — всё вернётся"
+        ),
+    )
+    max_members: int = Field(..., description="Мест в семье вместе с владельцем")
+    members: list[FamilyMemberResponse] = Field(..., description="Участники: владелец первым, затем по вступлению")
+    invites: list[FamilyInviteResponse] = Field(
+        default_factory=list, description="Действующие приглашения — только в ответе владельцу"
+    )
+
+
+class FamilyInviteCodeRequest(BaseModel):
+    """Код приглашения, введённый участником в «Профиле»."""
+
+    code: str = Field(..., min_length=1, max_length=32, description="Код из 8 символов; регистр, пробелы и дефисы не важны")
+
+    @field_validator("code")
+    @classmethod
+    def normalize_code(cls, v: str) -> str:
+        """Верхний регистр без пробелов и дефисов; код из чужих символов не может быть верным."""
+        code = re.sub(r"[\s-]", "", v).upper()
+        if len(code) != FAMILY_INVITE_CODE_LENGTH or any(ch not in FAMILY_INVITE_CODE_ALPHABET for ch in code):
+            raise ValueError(f"Код приглашения — {FAMILY_INVITE_CODE_LENGTH} букв и цифр")
+        return code
+
+
+class FamilyInvitePreviewResponse(BaseModel):
+    """Семья по коду приглашения — для экрана «Вступить в семью {владелец}»."""
+
+    owner_name: str = Field(..., description="Имя владельца")
+    members_count: int = Field(..., description="Участников сейчас, вместе с владельцем")
+    max_members: int = Field(..., description="Мест в семье вместе с владельцем")
+    expires_at: datetime = Field(..., description="Окончание действия кода")

@@ -133,6 +133,8 @@ class TestInsights:
         test_user.id = uuid.uuid4()
         # scalar — снимок подписки: строки нет, тариф Free
         mock_db = MagicMock(commit=AsyncMock(), scalar=AsyncMock(return_value=None))
+        # Пользователь не в семье: Pro владельца семьи нет
+        no_family = patch("app.services.subscription_service.load_family_context", AsyncMock(return_value=None))
 
         app.dependency_overrides[get_consented_user] = lambda: test_user
         app.dependency_overrides[get_db] = lambda: mock_db
@@ -143,7 +145,7 @@ class TestInsights:
                 "_call_model",
                 new_callable=AsyncMock,
                 return_value=["Совет 1", "Совет 2"],
-            ) as mock_claude, _patch_fingerprint(10):
+            ) as mock_claude, _patch_fingerprint(10), no_family:
                 tx = MagicMock()
                 tx.date = MagicMock()
                 tx.date.strftime.return_value = "2026-10-01"
@@ -182,6 +184,8 @@ class TestInsights:
         test_user.id = uuid.uuid4()
         # scalar — снимок подписки: строки нет, тариф Free
         mock_db = MagicMock(commit=AsyncMock(), scalar=AsyncMock(return_value=None))
+        # Пользователь не в семье: Pro владельца семьи нет
+        no_family = patch("app.services.subscription_service.load_family_context", AsyncMock(return_value=None))
 
         app.dependency_overrides[get_consented_user] = lambda: test_user
         app.dependency_overrides[get_db] = lambda: mock_db
@@ -191,7 +195,7 @@ class TestInsights:
             return ["Медленный совет"]
 
         with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"):
-            with patch.object(AIService, "_call_model", side_effect=slow_claude_call), _patch_fingerprint(10):
+            with patch.object(AIService, "_call_model", side_effect=slow_claude_call), _patch_fingerprint(10), no_family:
                 tx = MagicMock()
                 tx.date = MagicMock()
                 tx.date.strftime.return_value = "2026-10-01"

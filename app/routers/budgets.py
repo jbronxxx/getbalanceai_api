@@ -24,8 +24,12 @@ router = APIRouter(
     responses={
         400: {"model": ErrorResponse, "description": "Ошибка бизнес-логики"},
         401: {"model": ErrorResponse, "description": "Требуется авторизация"},
-        403: {"model": ErrorResponse, "description": "TERMS_NOT_ACCEPTED — не принята текущая версия соглашения"},
-        404: {"model": ErrorResponse, "description": "Ресурс не найден"},
+        403: {
+            "model": ErrorResponse,
+            "description": "TERMS_NOT_ACCEPTED — не принята текущая версия соглашения; FAMILY_FROZEN — общие записи "
+            "замороженной семьи только для чтения",
+        },
+        404: {"model": ErrorResponse, "description": "Ресурс не найден; FAMILY_NOT_FOUND — общий лимит без семьи"},
         422: {"model": ErrorResponse, "description": "Ошибка валидации входных данных"},
         500: {"model": ErrorResponse, "description": "Внутренняя ошибка сервера"},
     }
@@ -159,12 +163,16 @@ async def delete_budget_by_category_period(
     category: Category,
     month: int,
     year: int,
+    shared: bool = Query(False, description="Удалить общий лимит семьи, а не личный"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_consented_user),
 ):
-    """Удалить бюджет по названию категории, месяцу и году."""
+    """Удалить личный (или общий семьи при shared=true) бюджет по категории, месяцу и году.
+
+    Общий лимит замороженной семьи не удаляется — 403 FAMILY_FROZEN.
+    """
     service = BudgetService(db)
-    deleted = await service.delete_by_category_period(current_user.id, category, month, year)
+    deleted = await service.delete_by_category_period(current_user.id, category, month, year, shared=shared)
     if not deleted:
         raise NotFoundException(
             code=ErrorCode.BUDGET_NOT_FOUND,

@@ -27,6 +27,7 @@ from app.services.ai_service import (
     MIN_TRANSACTIONS_FOR_INSIGHTS,
     AIService,
     MonthFingerprint,
+    ReportScope,
 )
 from app.services.ai_usage import AIRequestKind
 from app.services.llm import LLMClient, extract_json
@@ -969,25 +970,25 @@ class TestAIService:
         await db_session.flush()
         service = AIService(db=db_session, client=MagicMock(spec=LLMClient))
 
-        march = await service._month_fingerprint(test_user.id, 3, 2025)
+        march = await service._month_fingerprint(ReportScope.personal(test_user.id), 3, 2025)
         assert march.tx_count == 2
-        assert march == await service._month_fingerprint(test_user.id, 3, 2025)
+        assert march == await service._month_fingerprint(ReportScope.personal(test_user.id), 3, 2025)
 
         db_session.add(
             Budget(user_id=test_user.id, category=Category.food, limit_amount=Decimal("100.00"), month=3, year=2025)
         )
         await db_session.flush()
-        with_budget = await service._month_fingerprint(test_user.id, 3, 2025)
+        with_budget = await service._month_fingerprint(ReportScope.personal(test_user.id), 3, 2025)
         assert with_budget.tx_count == 2
         assert with_budget.signature != march.signature
 
         db_session.add(tx(datetime(2025, 3, 15, tzinfo=timezone.utc), "5.00"))
         await db_session.flush()
-        with_new_tx = await service._month_fingerprint(test_user.id, 3, 2025)
+        with_new_tx = await service._month_fingerprint(ReportScope.personal(test_user.id), 3, 2025)
         assert with_new_tx.tx_count == 3
         assert with_new_tx.signature != with_budget.signature
 
-        empty = await service._month_fingerprint(test_user.id, 2, 2025)
+        empty = await service._month_fingerprint(ReportScope.personal(test_user.id), 2, 2025)
         assert empty.tx_count == 0
 
     @pytest.mark.asyncio
@@ -1014,18 +1015,18 @@ class TestAIService:
         db_session.add_all([tx, budget])
         await db_session.flush()
         service = AIService(db=db_session, client=MagicMock(spec=LLMClient))
-        before = await service._month_fingerprint(test_user.id, 3, 2025)
+        before = await service._month_fingerprint(ReportScope.personal(test_user.id), 3, 2025)
 
         # Число и сумма операций те же, но траты переехали в другую категорию
         tx.category = Category.transport
         await db_session.flush()
-        moved = await service._month_fingerprint(test_user.id, 3, 2025)
+        moved = await service._month_fingerprint(ReportScope.personal(test_user.id), 3, 2025)
         assert moved.tx_count == before.tx_count
         assert moved.signature != before.signature
 
         budget.currency = "EUR"
         await db_session.flush()
-        assert (await service._month_fingerprint(test_user.id, 3, 2025)).signature != moved.signature
+        assert (await service._month_fingerprint(ReportScope.personal(test_user.id), 3, 2025)).signature != moved.signature
 
     @pytest.mark.asyncio
     async def test_system_prompt_requires_exact_categories_and_currency_format(self):

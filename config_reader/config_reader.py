@@ -78,6 +78,8 @@ class Settings(BaseSettings):
     revenuecat_timeout: float = Field(10.0, alias="REVENUECAT_TIMEOUT")
     # Идентификатор доступа (entitlement) в RevenueCat, который даёт тариф Pro
     revenuecat_pro_entitlement: str = Field("pro", alias="REVENUECAT_PRO_ENTITLEMENT")
+    # Entitlement семейного Pro: семейный продукт даёт и pro, и его. Владелец создаёт семью, участники получают Pro
+    revenuecat_family_entitlement: str = Field("family", alias="REVENUECAT_FAMILY_ENTITLEMENT")
 
     redis_url: str = Field("redis://localhost:6379/0", alias="REDIS_URL")
     # Хранилище счётчиков rate limiting; в Docker — Redis, чтобы лимит был общим для всех воркеров gunicorn

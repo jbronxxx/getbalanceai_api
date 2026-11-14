@@ -36,6 +36,7 @@ from app.schemas.schemas import (
 from app.services.budget_service import BudgetService
 from app.services.consent_service import ConsentService, terms_accepted
 from app.services.currency_service import CurrencyService
+from app.services.family_service import FamilyService
 from app.services.subscription_service import SubscriptionService
 from config_reader.config_reader import config
 from logger.logger import get_logger
@@ -363,10 +364,12 @@ class AuthService:
         # Покупатель RevenueCat (GDPR) удаляется первым: при сбое RevenueCat аккаунт остаётся,
         # приложение повторит запрос, и покупатель не переживёт аккаунт
         await SubscriptionService(self.db).delete_customer(user_id)
+        # Семья владельца распускается, общие записи участника остаются в семье без автора
+        await FamilyService(self.db).handle_account_deletion(user_id)
         # Записи о согласии остаются на срок хранения (без user_id — его обнулит БД)
         await ConsentService(self.db).mark_account_deleted(user_id)
         await self.db.delete(user)
-        # Транзакции, бюджеты и токены удаляет БД (ON DELETE CASCADE) одним DELETE пользователя
+        # Личные транзакции, бюджеты и токены удаляет БД (ON DELETE CASCADE) одним DELETE пользователя
         await self.db.flush()
         logger.info(f"Аккаунт пользователя {user_id} успешно удален")
 

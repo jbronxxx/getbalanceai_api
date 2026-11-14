@@ -193,7 +193,15 @@ class TestProfile:
         data = response.json()["data"]
         assert data["id"] == str(user_id)
         assert data["legal"]["terms_accepted"] is True
-        assert data["subscription"] == {"plan": "free", "expires_at": None, "will_renew": False, "is_trial": False}
+        assert data["subscription"] == {
+            "plan": "free",
+            "expires_at": None,
+            "will_renew": False,
+            "is_trial": False,
+            "family_plan": False,
+            "via_family": False,
+            "store": None,
+        }
         limits = {item["feature"]: item for item in data["limits"]}
         assert limits["voice"]["period"] == "day"
         assert (limits["voice"]["limit"], limits["voice"]["used"], limits["voice"]["remaining"]) == (5, 3, 2)
@@ -226,6 +234,7 @@ class TestProfile:
         assert data["subscription"]["plan"] == "pro"
         assert datetime.fromisoformat(data["subscription"]["expires_at"]) == expires_at
         assert data["subscription"]["will_renew"] is True and data["subscription"]["is_trial"] is True
+        assert data["subscription"]["store"] == "play_store"
         limits = {item["feature"]: item for item in data["limits"]}
         assert (limits["ai_report"]["limit"], limits["ai_report"]["period"]) == (5, "day")
         assert (limits["voice"]["limit"], limits["voice"]["remaining"]) == (30, 30)
@@ -252,6 +261,30 @@ class TestProfile:
         assert subscription["plan"] == "free"
         assert subscription["expires_at"] is not None
         assert subscription["will_renew"] is False and subscription["is_trial"] is False
+        assert subscription["store"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("stored", "expected"), [("manual", "manual"), ("PROMOTIONAL", "promotional")])
+    async def test_store_of_active_subscription(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        test_user: User,
+        db_session: AsyncSession,
+        stored: str,
+        expected: str,
+    ):
+        """Ручной и промо-Pro отдают свой магазин в нижнем регистре: кнопки управления в Google Play у них нет."""
+        db_session.add(
+            Subscription(
+                user_id=test_user.id, expires_at=None, will_renew=False, is_trial=False, product_id=stored, store=stored
+            )
+        )
+        await db_session.commit()
+
+        subscription = (await client.get("/api/v1/auth/me", headers=auth_headers)).json()["data"]["subscription"]
+
+        assert subscription["plan"] == "pro" and subscription["store"] == expected
 
     @pytest.mark.asyncio
     async def test_redis_unavailable_returns_limits_without_usage(

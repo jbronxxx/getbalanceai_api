@@ -33,6 +33,21 @@ def get_budgets_version_key(user_id: uuid.UUID | str) -> str:
     return f"budgets_version:{user_id}"
 
 
+def get_budgets_family_version_key(family_id: uuid.UUID | str) -> str:
+    """Ключ версии ETag общих бюджетов семьи: меняется при правке общих записей любым участником."""
+    return f"budgets_version:family:{family_id}"
+
+
+def get_family_insights_cache_key(family_id: uuid.UUID | str, locale: str, currency: str, month: int, year: int) -> str:
+    """Ключ отчёта ИИ по общим записям семьи за месяц: один на всех участников с тем же языком и валютой."""
+    return f"insights_family:{family_id}:{locale}:{currency}:{month}:{year}"
+
+
+def get_family_insights_pattern(family_id: uuid.UUID | str) -> str:
+    """Маска всех отчётов ИИ семьи — для очистки при роспуске."""
+    return f"insights_family:{family_id}:*"
+
+
 def get_insights_cache_key(
     user_id: uuid.UUID | str,
     locale: str = "ru",

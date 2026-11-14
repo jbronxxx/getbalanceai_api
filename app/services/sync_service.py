@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone, tzinfo
 from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import status
-from sqlalchemy import and_, delete, or_, select, tuple_
+from sqlalchemy import and_, delete, exists, or_, select, tuple_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,13 +25,15 @@ from app.schemas.schemas import (
 )
 from app.services.budget_service import BudgetService
 from app.services.currency_service import CurrencyService
+from app.services.family_access import SharedAccess, rejected_item
 from app.services.recurring_payment_service import RecurringPaymentService
 from app.services.transaction_deletion_log import TransactionDeletionLog
 from logger.logger import get_logger
 
 logger = get_logger(__name__)
 
-BudgetKey = tuple[Category, int, int]
+# (семья общего лимита или None для личного, категория, месяц, год)
+BudgetKey = tuple[uuid.UUID | None, Category, int, int]
 
 # Насколько расширять окно since назад: запас на транзакции, закоммиченные после отметки прошлой синхронизации
 CHANGES_OVERLAP = timedelta(minutes=1)
@@ -40,8 +42,8 @@ CHANGES_OVERLAP = timedelta(minutes=1)
 class SyncService:
     """Применяет батч изменений клиента одной транзакцией БД.
 
-    Записи с чужим ID или суммой, которую нельзя пересчитать в базовую валюту, не роняют батч,
-    а возвращаются в rejected: иначе клиент бесконечно повторял бы весь батч.
+    Записи с чужим ID, без прав на общую запись семьи или с суммой, которую нельзя пересчитать в базовую валюту,
+    не роняют батч, а возвращаются в rejected: иначе клиент бесконечно повторял бы весь батч.
     """
 
     def __init__(self, db: AsyncSession):
@@ -91,13 +93,14 @@ class SyncService:
         to_upsert_budgets = [item for item in payload.budgets if not item.check_deleted]
 
         try:
-            synced_transactions = await self._upsert_transactions(user_id, base_currency, payload.transactions, rejected)
-            await self._delete_transactions(user_id, payload.deleted_transaction_ids)
-            await self._delete_budgets(user_id, payload, to_delete_budgets)
-            synced_budgets = await self._upsert_budgets(user_id, base_currency, to_upsert_budgets, rejected)
+            access = await SharedAccess.load(self.db, user_id)
+            synced_transactions = await self._upsert_transactions(access, base_currency, payload.transactions, rejected)
+            await self._delete_transactions(access, payload.deleted_transaction_ids, rejected)
+            await self._delete_budgets(access, payload, to_delete_budgets)
+            synced_budgets = await self._upsert_budgets(access, base_currency, to_upsert_budgets, rejected)
             recurring = RecurringPaymentService(self.db)
-            await recurring.delete(user_id, payload.deleted_recurring_payment_ids)
-            synced_recurring = await recurring.upsert(user_id, payload.recurring_payments, rejected)
+            await recurring.delete(access, payload.deleted_recurring_payment_ids)
+            synced_recurring = await recurring.upsert(access, payload.recurring_payments, rejected)
 
             # flush + commit с expire_on_commit=False: объекты остаются загруженными, ответ собирается без refresh()
             await self.db.flush()
@@ -112,7 +115,8 @@ class SyncService:
                 or payload.deleted_budget_ids
                 or to_delete_budgets
             ):
-                await BudgetService.invalidate_etag(user_id)
+                # Общие записи меняют траты и лимиты всех участников: версия ETag семьи тоже сбрасывается
+                await BudgetService.invalidate_etag(user_id, access.family_id)
 
             enriched_budgets = await BudgetService(self.db).enrich_multiple(
                 synced_budgets,
@@ -155,9 +159,11 @@ class SyncService:
         cursor: str | None,
         limit: int,
     ) -> SyncChangesResponse:
-        """Транзакции, изменённые после since, и id удалённых после since.
+        """Транзакции (личные и общие семьи), изменённые после since, и id удалённых после since.
 
-        Без since — все транзакции пользователя (первая синхронизация устройства), удалённых нет.
+        Без since — все видимые транзакции (первая синхронизация устройства), удалённых нет. Удалённые —
+        удаления пользователя и участников его семьи, а также общие записи, которые автор сделал личными;
+        запись, которая сейчас видна пользователю, удалённой не считается.
         Порядок — по (updated_at, id), курсор продолжает с последней записи страницы. Удалённые
         отдаются только с первой страницей (без курсора).
 
@@ -181,7 +187,8 @@ class SyncService:
                 since = since.replace(tzinfo=timezone.utc)
             lower_bound = since - CHANGES_OVERLAP
 
-        query = select(Transaction).where(Transaction.user_id == user_id)
+        access = await SharedAccess.load(self.db, user_id)
+        query = select(Transaction).where(access.visible(Transaction))
         if lower_bound is not None:
             query = query.where(Transaction.updated_at > lower_bound)
         if cursor:
@@ -203,10 +210,15 @@ class SyncService:
 
         deleted_ids: list[uuid.UUID] = []
         if lower_bound is not None and not cursor:
+            mine = TransactionDeletion.user_id == user_id
+            if access.family_id is not None:
+                mine = or_(mine, TransactionDeletion.family_id == access.family_id)
+            still_visible = exists().where(Transaction.id == TransactionDeletion.transaction_id, access.visible(Transaction))
             deleted_result = await self.db.execute(
                 select(TransactionDeletion.transaction_id).where(
-                    TransactionDeletion.user_id == user_id,
+                    mine,
                     TransactionDeletion.deleted_at > lower_bound,
+                    ~still_visible,
                 )
             )
             deleted_ids = list(deleted_result.scalars().all())
@@ -217,6 +229,7 @@ class SyncService:
             has_more=has_more,
             next_cursor=next_cursor,
             server_time=server_time,
+            family_id=access.family_id,
         )
 
     @staticmethod
@@ -240,58 +253,68 @@ class SyncService:
 
     async def _upsert_transactions(
         self,
-        user_id: uuid.UUID,
+        access: SharedAccess,
         base_currency: str,
         items: list[TransactionSyncItem],
         rejected: list[SyncRejectedItem],
     ) -> list[Transaction]:
-        """Создать или обновить транзакции по клиентским ID; повторы ID внутри батча пропускаются."""
-        # Курсы загружаются, только если среди транзакций есть валюта, отличная от базовой
-        rates = None
-        if any((item.currency or base_currency).strip().upper() != base_currency for item in items):
-            rates = (await CurrencyService().get_rates()).rates
+        """Создать или обновить транзакции по клиентским ID; повторы ID внутри батча пропускаются.
 
+        Общую запись семьи правит любой участник, автор не меняется. base_amount ведётся в базовой валюте
+        автора: у чужой общей записи он пересчитывается сервером, курс и сумму клиента в его валюте не берём.
+        """
+        user_id = access.user_id
         existing: dict[uuid.UUID, Transaction] = {}
-        foreign_ids: set[uuid.UUID] = set()
         incoming_ids = [item.id for item in items if item.id is not None]
         if incoming_ids:
             result = await self.db.execute(select(Transaction).where(Transaction.id.in_(incoming_ids)))
-            for t in result.scalars().all():
-                if t.user_id == user_id:
-                    existing[t.id] = t
-                else:
-                    foreign_ids.add(t.id)
+            existing = {t.id: t for t in result.scalars().all()}
+
+        # Базовые валюты других авторов общих записей батча
+        author_ids = {t.user_id for t in existing.values() if t.user_id not in (None, user_id) and access.can_see(t)}
+        author_currencies: dict[uuid.UUID, str] = {}
+        if author_ids:
+            rows = await self.db.execute(select(User.id, User.base_currency).where(User.id.in_(author_ids)))
+            author_currencies = {row_id: (currency or "USD").strip().upper() for row_id, currency in rows.all()}
+
+        def base_of(transaction: Transaction | None) -> str:
+            if transaction is None or transaction.user_id in (None, user_id):
+                return base_currency
+            return author_currencies.get(transaction.user_id, base_currency)
+
+        # Курсы загружаются, только если среди транзакций есть валюта, отличная от базовой валюты автора
+        rates = None
+        if any((item.currency or base_currency).strip().upper() != base_of(existing.get(item.id)) for item in items):
+            rates = (await CurrencyService().get_rates()).rates
 
         synced: list[Transaction] = []
         seen_ids: set[uuid.UUID] = set()
         created_ids: set[uuid.UUID] = set()
+        unshared: dict[uuid.UUID, uuid.UUID] = {}
         for item in items:
             tx_id = item.id or uuid.uuid4()
             if tx_id in seen_ids:
                 continue
 
-            if item.id and item.id in foreign_ids:
-                logger.warning("Конфликт ID транзакции %s: принадлежит другому пользователю", item.id)
-                rejected.append(
-                    SyncRejectedItem(
-                        id=item.id,
-                        code=ErrorCode.ID_CONFLICT,
-                        reason="Идентификатор транзакции отклонен (конфликт идентификатора)",
-                    )
-                )
+            current = existing.get(item.id) if item.id else None
+            error = access.write_error(current, item.is_shared)
+            if error is not None:
+                logger.warning("Транзакция %s отклонена при синхронизации: %s", item.id, error)
+                rejected.append(rejected_item(item.id, error, "транзакции"))
                 continue
 
             # В лог попадает только ID: суммы и описания — персональные финансовые данные
             logger.debug("Обработка транзакции с ID: %s", tx_id)
 
             currency = (item.currency or base_currency).strip().upper()
+            own_amounts = current is None or current.user_id in (None, user_id)
             try:
                 rate, base_amount = CurrencyService.resolve_amounts(
                     amount=item.amount,
                     currency=currency,
-                    base_currency=base_currency,
-                    client_rate=item.exchange_rate,
-                    client_base_amount=item.base_amount,
+                    base_currency=base_of(current),
+                    client_rate=item.exchange_rate if own_amounts else None,
+                    client_base_amount=item.base_amount if own_amounts else None,
                     rates=rates,
                 )
             except AppException as err:
@@ -300,8 +323,12 @@ class SyncService:
                 continue
 
             amount = item.amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            if item.id and item.id in existing:
-                transaction = existing[item.id]
+            family_id = access.target_family(item.is_shared)
+            if current is not None:
+                transaction = current
+                if transaction.family_id is not None and family_id is None:
+                    unshared[transaction.id] = transaction.family_id
+                transaction.family_id = family_id
                 transaction.amount = amount
                 transaction.currency = currency
                 transaction.exchange_rate = rate
@@ -314,6 +341,7 @@ class SyncService:
                 transaction = Transaction(
                     id=tx_id,
                     user_id=user_id,
+                    family_id=family_id,
                     amount=amount,
                     currency=currency,
                     exchange_rate=rate,
@@ -330,90 +358,120 @@ class SyncService:
             seen_ids.add(tx_id)
             synced.append(transaction)
 
+        log = TransactionDeletionLog(self.db)
         # Транзакция, созданная заново с id удалённой, больше не удалена для других устройств
-        await TransactionDeletionLog(self.db).forget(user_id, created_ids)
+        await log.forget(user_id, created_ids)
+        # Общая запись, ставшая личной, у остальных участников пропала: для них это удаление
+        for family_id in set(unshared.values()):
+            await log.record(user_id, [tx_id for tx_id, fid in unshared.items() if fid == family_id], family_id)
         return synced
 
-    async def _delete_transactions(self, user_id: uuid.UUID, ids: list[uuid.UUID]) -> None:
-        """Удалить транзакции пользователя и записать удаления в журнал; чужие и несуществующие ID игнорируются."""
+    async def _delete_transactions(
+        self, access: SharedAccess, ids: list[uuid.UUID], rejected: list[SyncRejectedItem]
+    ) -> None:
+        """Удалить видимые транзакции и записать удаления в журнал (общие — для всей семьи).
+
+        Чужие и несуществующие ID игнорируются; общие записи замороженной семьи не удаляются — в rejected
+        с FAMILY_FROZEN, чтобы клиент вернул запись.
+        """
         if not ids:
             return
         result = await self.db.execute(
-            select(Transaction.id).where(Transaction.user_id == user_id, Transaction.id.in_(set(ids)))
+            select(Transaction.id, Transaction.family_id).where(access.visible(Transaction), Transaction.id.in_(set(ids)))
         )
-        existing_ids = set(result.scalars().all())
-        if not existing_ids:
+        by_family: dict[uuid.UUID | None, set[uuid.UUID]] = {}
+        for tx_id, family_id in result.all():
+            if family_id is not None and access.family is not None and access.family.frozen:
+                rejected.append(rejected_item(tx_id, ErrorCode.FAMILY_FROZEN, "транзакции"))
+                continue
+            by_family.setdefault(family_id, set()).add(tx_id)
+        if not by_family:
             return
+        existing_ids = set().union(*by_family.values())
         logger.debug("Пакетное удаление транзакций: IDs=%s", len(existing_ids))
-        await self.db.execute(delete(Transaction).where(Transaction.user_id == user_id, Transaction.id.in_(existing_ids)))
-        await TransactionDeletionLog(self.db).record(user_id, existing_ids)
+        await self.db.execute(delete(Transaction).where(Transaction.id.in_(existing_ids)))
+        log = TransactionDeletionLog(self.db)
+        for family_id, tx_ids in by_family.items():
+            await log.record(access.user_id, tx_ids, family_id)
 
-    async def _delete_budgets(self, user_id: uuid.UUID, payload: SyncPayload, marked_deleted: list[BudgetSyncItem]) -> None:
-        """Удалить бюджеты пользователя по ID и по ключу (category, month, year) одним запросом."""
+    async def _delete_budgets(
+        self, access: SharedAccess, payload: SyncPayload, marked_deleted: list[BudgetSyncItem]
+    ) -> None:
+        """Удалить личные и общие бюджеты по ID и по ключу (область, category, month, year) одним запросом.
+
+        Удаляется только то, что пользователь может править: общие лимиты замороженной семьи остаются
+        (клиент сверит полный список бюджетов).
+        """
         ids: set[uuid.UUID] = set(payload.deleted_budget_ids)
-        keys: set[BudgetKey] = set()
+        personal_keys: set[tuple[Category, int, int]] = set()
+        shared_keys: set[tuple[Category, int, int]] = set()
         for item in [*payload.deleted_budgets, *marked_deleted]:
             if item.id:
                 ids.add(item.id)
-            keys.add((item.category, item.month, item.year))
+            (shared_keys if item.is_shared else personal_keys).add((item.category, item.month, item.year))
 
+        period = tuple_(Budget.category, Budget.month, Budget.year)
         conditions = []
         if ids:
             conditions.append(Budget.id.in_(ids))
-        if keys:
-            conditions.append(tuple_(Budget.category, Budget.month, Budget.year).in_(keys))
+        if personal_keys:
+            conditions.append(and_(Budget.family_id.is_(None), period.in_(personal_keys)))
+        if shared_keys and access.family_id is not None:
+            conditions.append(and_(Budget.family_id == access.family_id, period.in_(shared_keys)))
         if not conditions:
             return
 
-        logger.debug("Пакетное удаление бюджетов: IDs=%s, tuples=%s", len(ids), len(keys))
-        await self.db.execute(delete(Budget).where(Budget.user_id == user_id, or_(*conditions)))
+        logger.debug("Пакетное удаление бюджетов: IDs=%s, tuples=%s", len(ids), len(personal_keys) + len(shared_keys))
+        await self.db.execute(delete(Budget).where(access.writable(Budget), or_(*conditions)))
 
     async def _upsert_budgets(
         self,
-        user_id: uuid.UUID,
+        access: SharedAccess,
         base_currency: str,
         items: list[BudgetSyncItem],
         rejected: list[SyncRejectedItem],
     ) -> list[Budget]:
-        """Создать или обновить бюджеты без нарушения уникальности (user, category, month, year).
+        """Создать или обновить бюджеты без нарушения уникальности (область, category, month, year).
 
-        Загружаются только бюджеты, затронутые батчем. Совпадение по ключу важнее совпадения по ID:
-        иначе вставка второго бюджета на тот же месяц и категорию нарушила бы уникальное ограничение.
+        Загружаются только видимые бюджеты, затронутые батчем. Совпадение по ключу важнее совпадения по ID:
+        иначе вставка второго бюджета на тот же месяц и категорию нарушила бы уникальное ограничение. Ключ
+        личного лимита — пользователь, общего — семья: личный и общий лимит одной категории не мешают друг другу.
         """
         if not items:
             return []
 
         ids = [item.id for item in items if item.id is not None]
-        keys = [(item.category, item.month, item.year) for item in items]
+        periods = [(item.category, item.month, item.year) for item in items]
 
         foreign_ids: set[uuid.UUID] = set()
         if ids:
-            foreign_res = await self.db.execute(select(Budget.id).where(Budget.id.in_(ids), Budget.user_id != user_id))
+            foreign_res = await self.db.execute(select(Budget.id).where(Budget.id.in_(ids), ~access.visible(Budget)))
             foreign_ids = set(foreign_res.scalars().all())
 
-        conditions = [tuple_(Budget.category, Budget.month, Budget.year).in_(keys)]
+        conditions = [tuple_(Budget.category, Budget.month, Budget.year).in_(periods)]
         if ids:
             conditions.append(Budget.id.in_(ids))
-        result = await self.db.execute(select(Budget).where(Budget.user_id == user_id, or_(*conditions)))
+        result = await self.db.execute(select(Budget).where(access.visible(Budget), or_(*conditions)))
         loaded = list(result.scalars().all())
         by_id: dict[uuid.UUID, Budget] = {b.id: b for b in loaded}
-        by_key: dict[BudgetKey, Budget] = {(b.category, b.month, b.year): b for b in loaded}
+        by_key: dict[BudgetKey, Budget] = {(b.family_id, b.category, b.month, b.year): b for b in loaded}
 
         synced: list[Budget] = []
         seen_ids: set[uuid.UUID] = set()
         for item in items:
             if item.id and item.id in foreign_ids:
                 logger.warning("Конфликт ID бюджета %s: принадлежит другому пользователю", item.id)
-                rejected.append(
-                    SyncRejectedItem(
-                        id=item.id,
-                        code=ErrorCode.ID_CONFLICT,
-                        reason="Идентификатор бюджета отклонен (конфликт идентификатора)",
-                    )
-                )
+                rejected.append(rejected_item(item.id, ErrorCode.ID_CONFLICT, "бюджета"))
                 continue
 
-            key = (item.category, item.month, item.year)
+            key = (access.target_family(item.is_shared), item.category, item.month, item.year)
+            current = by_key.get(key) or (by_id.get(item.id) if item.id else None)
+            error = access.write_error(current, item.is_shared)
+            if error is not None:
+                logger.warning("Бюджет %s отклонён при синхронизации: %s", item.id, error)
+                rejected.append(rejected_item(item.id, error, "бюджета"))
+                continue
+
             if key in by_key:
                 budget = by_key[key]
                 logger.debug("Обновление лимита бюджета по составному ключу: %s", budget.id)
@@ -421,10 +479,11 @@ class SyncService:
                 # Старые клиенты валюту не передают — валюта лимита сохраняется
                 if item.currency:
                     budget.currency = item.currency
-            elif item.id and item.id in by_id:
-                budget = by_id[item.id]
+            elif current is not None:
+                budget = current
                 logger.debug("Обновление бюджета по существующему ID: %s", item.id)
-                by_key.pop((budget.category, budget.month, budget.year), None)
+                by_key.pop((budget.family_id, budget.category, budget.month, budget.year), None)
+                budget.family_id = key[0]
                 budget.category = item.category
                 budget.month = item.month
                 budget.year = item.year
@@ -437,7 +496,8 @@ class SyncService:
                 logger.debug("Создание нового бюджета %s", budget_id)
                 budget = Budget(
                     id=budget_id,
-                    user_id=user_id,
+                    user_id=access.user_id,
+                    family_id=key[0],
                     category=item.category,
                     limit_amount=item.limit_amount,
                     currency=item.currency or base_currency,

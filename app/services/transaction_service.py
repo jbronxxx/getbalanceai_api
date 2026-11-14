@@ -15,6 +15,7 @@ from app.models.models import Transaction, User
 from app.schemas.schemas import TransactionCreate
 from app.services.budget_service import BudgetService
 from app.services.currency_service import CurrencyService
+from app.services.family_access import SharedAccess, raise_access_error
 from app.services.transaction_deletion_log import TransactionDeletionLog
 from logger.logger import get_logger
 
@@ -38,7 +39,15 @@ class TransactionService:
         payload: TransactionCreate,
         user_base_currency: str | None = None,
     ) -> Transaction:
-        """Создать новую транзакцию (доход или расход) для пользователя."""
+        """Создать новую транзакцию (доход или расход) для пользователя: личную или общую семьи (`is_shared`).
+
+        Исключения: FAMILY_NOT_FOUND (404) — общая запись без семьи; FAMILY_FROZEN (403) — семья заморожена.
+        """
+        access = await SharedAccess.load(self.db, user_id)
+        error = access.write_error(None, payload.is_shared)
+        if error is not None:
+            raise_access_error(error)
+        family_id = access.target_family(payload.is_shared)
         if not user_base_currency:
             user_res = await self.db.execute(select(User.base_currency).where(User.id == user_id))
             user_base_currency = (user_res.scalar_one_or_none() or "USD").strip().upper()
@@ -64,6 +73,7 @@ class TransactionService:
 
         tx = Transaction(
             user_id=user_id,
+            family_id=family_id,
             amount=payload.amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
             currency=curr,
             exchange_rate=rate,
@@ -76,7 +86,7 @@ class TransactionService:
         self.db.add(tx)
         await self.db.flush()
         await self.db.refresh(tx)
-        await BudgetService.invalidate_etag(user_id)
+        await BudgetService.invalidate_etag(user_id, family_id)
         logger.info(f"Создана транзакция {tx.id} для пользователя {user_id}")
         return tx
 
@@ -87,9 +97,9 @@ class TransactionService:
         limit: int = 50,
         cursor: str | None = None,
     ) -> tuple[list[Transaction], bool, str | None]:
-        """Получение транзакций с поддержкой курсорной пагинации (keyset pagination) и фильтрации."""
-
-        query = select(Transaction).where(Transaction.user_id == user_id)
+        """Личные и общие транзакции пользователя с курсорной пагинацией (keyset pagination) и фильтрацией."""
+        access = await SharedAccess.load(self.db, user_id)
+        query = select(Transaction).where(access.visible(Transaction))
         if since:
             query = query.where(Transaction.created_at >= since)
 
@@ -133,8 +143,9 @@ class TransactionService:
         return items, has_more, next_cursor
 
     async def delete(self, user_id: uuid.UUID, transaction_id: uuid.UUID) -> None:
-        """Удалить транзакцию по ее идентификатору."""
-        query = select(Transaction).where(Transaction.id == transaction_id, Transaction.user_id == user_id)
+        """Удалить личную или общую транзакцию по её идентификатору; общую в замороженной семье — 403 FAMILY_FROZEN."""
+        access = await SharedAccess.load(self.db, user_id)
+        query = select(Transaction).where(Transaction.id == transaction_id, access.visible(Transaction))
         result = await self.db.execute(query)
         tx = result.scalar_one_or_none()
 
@@ -145,10 +156,14 @@ class TransactionService:
                 message="Транзакция не найдена",
                 details={"transaction_id": str(transaction_id)},
             )
+        error = access.delete_error(tx)
+        if error is not None:
+            raise_access_error(error, {"transaction_id": str(transaction_id)})
+        family_id = tx.family_id
         await self.db.delete(tx)
-        await TransactionDeletionLog(self.db).record(user_id, [tx.id])
+        await TransactionDeletionLog(self.db).record(user_id, [tx.id], family_id)
         await self.db.flush()
-        await BudgetService.invalidate_etag(user_id)
+        await BudgetService.invalidate_etag(user_id, family_id)
         logger.info(f"Транзакция {tx.id} удалена пользователем {user_id}")
 
     async def get_etag(
@@ -158,14 +173,16 @@ class TransactionService:
     ) -> str:
         """Рассчитать глобальный ETag коллекции транзакций пользователя без привязки к пагинации.
 
-        Вычисляется по совокупности: user_id, количеству транзакций, последнему изменению (updated_at)
-        и опциональному фильтру since. Количество ловит удаления, updated_at — создание и правку:
+        Вычисляется по совокупности: user_id, семье, количеству видимых транзакций (личных и общих),
+        последнему изменению (updated_at) и опциональному фильтру since. Количество ловит удаления,
+        updated_at — создание и правку:
         по одной дате создания правка суммы или категории с другого устройства не меняла ETag, и клиент получал 304.
         """
+        access = await SharedAccess.load(self.db, user_id)
         query = select(
             func.count(Transaction.id),
             func.max(Transaction.updated_at),
-        ).where(Transaction.user_id == user_id)
+        ).where(access.visible(Transaction))
 
         if since:
             query = query.where(Transaction.created_at >= since)
@@ -175,5 +192,5 @@ class TransactionService:
 
         max_updated_str = max_updated.isoformat() if max_updated else ""
         since_str = since.isoformat() if since else ""
-        raw_str = f"{user_id}:{total_count}:{max_updated_str}:{since_str}"
+        raw_str = f"{user_id}:{access.family_id or ''}:{total_count}:{max_updated_str}:{since_str}"
         return hashlib.md5(raw_str.encode(), usedforsecurity=False).hexdigest()

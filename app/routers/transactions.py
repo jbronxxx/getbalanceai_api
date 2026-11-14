@@ -25,8 +25,12 @@ router = APIRouter(
     responses={
         400: {"model": ErrorResponse, "description": "Ошибка бизнес-логики"},
         401: {"model": ErrorResponse, "description": "Требуется авторизация"},
-        403: {"model": ErrorResponse, "description": "TERMS_NOT_ACCEPTED — не принята текущая версия соглашения"},
-        404: {"model": ErrorResponse, "description": "Ресурс не найден"},
+        403: {
+            "model": ErrorResponse,
+            "description": "TERMS_NOT_ACCEPTED — не принята текущая версия соглашения; FAMILY_FROZEN — общие записи "
+            "замороженной семьи только для чтения",
+        },
+        404: {"model": ErrorResponse, "description": "Ресурс не найден; FAMILY_NOT_FOUND — общая запись без семьи"},
         422: {"model": ErrorResponse, "description": "Ошибка валидации входных данных"},
         429: {"model": ErrorResponse, "description": "Превышен лимит частоты запросов"},
         500: {"model": ErrorResponse, "description": "Внутренняя ошибка сервера"},

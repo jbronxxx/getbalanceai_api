@@ -20,6 +20,7 @@ from app.schemas.schemas import (
     RevenueCatEvent,
     SubscriptionStatus,
 )
+from app.services.family_access import load_family_context
 from app.services.plan_limits import plan_usage
 from app.services.revenuecat import (
     ProEntitlement,
@@ -39,7 +40,7 @@ MANUAL_STORE = "manual"
 
 
 def _status(row: Subscription | None, now: datetime) -> SubscriptionStatus:
-    """Тариф и срок по строке подписки."""
+    """Тариф и срок по строке своей подписки."""
     if row is None:
         return SubscriptionStatus(plan=PlanCode.free)
     active = row.is_active(now)
@@ -48,6 +49,8 @@ def _status(row: Subscription | None, now: datetime) -> SubscriptionStatus:
         expires_at=row.expires_at_utc(),
         will_renew=active and row.will_renew,
         is_trial=active and row.is_trial,
+        family_plan=active and row.family_active(now),
+        store=row.store.lower() if active else None,
     )
 
 
@@ -60,12 +63,22 @@ class SubscriptionService:
         self.client = client or get_revenuecat_client()
 
     async def status(self, user_id: uuid.UUID) -> SubscriptionStatus:
-        """Действующий тариф и срок подписки по сохранённому снимку."""
+        """Действующий тариф и срок подписки по сохранённому снимку.
+
+        Своя подписка важнее семейной: участник видит её срок и может отменить. Без своего Pro участник
+        незамороженной семьи получает Pro владельца (`via_family`) — в том числе в пробный период владельца.
+        """
         # populate_existing: строка могла быть загружена в сессию до upsert в sync
         row = await self.db.scalar(
             select(Subscription).where(Subscription.user_id == user_id).execution_options(populate_existing=True)
         )
-        return _status(row, datetime.now(timezone.utc))
+        own = _status(row, datetime.now(timezone.utc))
+        if own.plan is PlanCode.pro:
+            return own
+        family = await load_family_context(self.db, user_id)
+        if family is not None and not family.is_owner and not family.frozen:
+            return SubscriptionStatus(plan=PlanCode.pro, via_family=True)
+        return own
 
     async def plan(self, user_id: uuid.UUID) -> PlanCode:
         """Действующий тариф пользователя."""
@@ -145,8 +158,12 @@ class SubscriptionService:
             raise ServiceUnavailableException(message="Сервис подписок недоступен") from err
         logger.info(f"Покупатель RevenueCat пользователя {user_id} удалён")
 
-    async def grant_manual(self, user_id: uuid.UUID, expires_at: datetime | None) -> SubscriptionStatus:
+    async def grant_manual(
+        self, user_id: uuid.UUID, expires_at: datetime | None, family: bool = False
+    ) -> SubscriptionStatus:
         """Выдать Pro вручную (`scripts/grant_pro.py`): строка с магазином `manual`, `expires_at` None — бессрочно.
+
+        `family` — семейный Pro на тот же срок: можно создать семью, участники получают Pro.
 
         Перезаписывает текущий снимок пользователя. Синхронизация с RevenueCat (покупка, «Восстановить покупки»,
         вебхук) заменит строку данными RevenueCat, а без доступа там — удалит.
@@ -159,6 +176,8 @@ class SubscriptionService:
                 is_trial=False,
                 product_id=MANUAL_STORE,
                 store=MANUAL_STORE,
+                family=family,
+                family_expires_at=expires_at if family else None,
             ),
         )
         return await self.status(user_id)
@@ -189,6 +208,8 @@ class SubscriptionService:
             "is_trial": entitlement.is_trial,
             "product_id": entitlement.product_id,
             "store": entitlement.store,
+            "family": entitlement.family,
+            "family_expires_at": entitlement.family_expires_at,
             "updated_at": datetime.now(timezone.utc),
         }
         # Вебхук и запрос приложения после покупки приходят почти одновременно: вставка без гонки

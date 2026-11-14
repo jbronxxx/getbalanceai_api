@@ -62,6 +62,16 @@ class ErrorCode(StrEnum):
     # Валюты
     INVALID_CURRENCY = "INVALID_CURRENCY"
 
+    # Семейный Pro
+    FAMILY_NOT_FOUND = "FAMILY_NOT_FOUND"  # Пользователь не состоит в семье (или участник уже не в ней)
+    FAMILY_PLAN_REQUIRED = "FAMILY_PLAN_REQUIRED"  # Создать семью можно только с действующим семейным Pro
+    FAMILY_ALREADY_MEMBER = "FAMILY_ALREADY_MEMBER"  # Человек уже в семье: сначала выйти из текущей
+    FAMILY_FULL = "FAMILY_FULL"  # Нет свободных мест (с учётом действующих приглашений)
+    FAMILY_INVITE_INVALID = "FAMILY_INVITE_INVALID"  # Код не найден, истёк, использован или отозван
+    FAMILY_OWNER_ONLY = "FAMILY_OWNER_ONLY"  # Действие доступно только владельцу семьи
+    FAMILY_FROZEN = "FAMILY_FROZEN"  # Семья заморожена: общие записи только для чтения, приглашений нет
+    FAMILY_AUTHOR_ONLY = "FAMILY_AUTHOR_ONLY"  # Отметку «личная / общая» меняет только автор записи
+
 
 class AppException(HTTPException):
     """Базовое доменное исключение приложения.

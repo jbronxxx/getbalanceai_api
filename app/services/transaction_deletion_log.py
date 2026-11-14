@@ -11,7 +11,7 @@ from app.models.models import TransactionDeletion
 
 
 class TransactionDeletionLog:
-    """Записывает удаления транзакций, чтобы GET /sync/changes отдал их другим устройствам пользователя."""
+    """Записывает удаления транзакций, чтобы GET /sync/changes отдал их другим устройствам и участникам семьи."""
 
     def __init__(self, db: AsyncSession):
         """Инициализация сервиса с сессией базы данных.
@@ -21,14 +21,25 @@ class TransactionDeletionLog:
         """
         self.db = db
 
-    async def record(self, user_id: uuid.UUID, transaction_ids: Collection[uuid.UUID]) -> None:
-        """Отметить транзакции пользователя удалёнными сейчас; прежние отметки тех же id заменяются."""
+    async def record(
+        self, user_id: uuid.UUID, transaction_ids: Collection[uuid.UUID], family_id: uuid.UUID | None = None
+    ) -> None:
+        """Отметить транзакции удалёнными сейчас; прежние отметки тех же id заменяются.
+
+        `user_id` — кто удалил; `family_id` — семья общих транзакций: удаление получат все её участники. Общая
+        транзакция, которую автор сделал личной, записывается так же: у остальных участников она пропала.
+        """
         ids = set(transaction_ids)
         if not ids:
             return
         await self.db.execute(delete(TransactionDeletion).where(TransactionDeletion.transaction_id.in_(ids)))
         deleted_at = datetime.now(timezone.utc)
-        self.db.add_all([TransactionDeletion(transaction_id=tx_id, user_id=user_id, deleted_at=deleted_at) for tx_id in ids])
+        self.db.add_all(
+            [
+                TransactionDeletion(transaction_id=tx_id, user_id=user_id, family_id=family_id, deleted_at=deleted_at)
+                for tx_id in ids
+            ]
+        )
         await self.db.flush()
 
     async def forget(self, user_id: uuid.UUID, transaction_ids: Collection[uuid.UUID]) -> None:

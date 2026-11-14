@@ -7,6 +7,7 @@
 Использование (на сервере — в контейнере api):
     python scripts/grant_pro.py --email user@example.com                     # бессрочно
     python scripts/grant_pro.py --email user@example.com --until 2027-01-01  # до даты (00:00 UTC)
+    python scripts/grant_pro.py --email user@example.com --family            # семейный Pro (можно создать семью)
     python scripts/grant_pro.py --email user@example.com --revoke            # отозвать выданный вручную
 
 Коды возврата: 0 — выполнено, 1 — пользователь не найден, 2 — неверная дата или нечего отзывать.
@@ -53,8 +54,9 @@ async def grant_pro(
     until: str | None = None,
     revoke: bool = False,
     session_factory: Any = async_session_maker,
+    family: bool = False,
 ) -> int:
-    """Найти пользователя по email (без учёта регистра) и выдать или отозвать Pro; вернуть код."""
+    """Найти пользователя по email (без учёта регистра) и выдать (`family` — семейный) или отозвать Pro; вернуть код."""
     try:
         expires_at = None if revoke else _parse_until(until)
     except ValueError as err:
@@ -73,22 +75,23 @@ async def grant_pro(
                 print(f"У {user_email} нет Pro, выданного вручную. Ничего не изменено.")
                 return EXIT_INVALID
         else:
-            await service.grant_manual(user_id, expires_at)
+            await service.grant_manual(user_id, expires_at, family=family)
 
     if revoke:
         logger.info(f"Ручной Pro пользователя {user_id} отозван (CLI)")
         print(f"Pro, выданный вручную, у {user_email} (ID: {user_id}) отозван.")
     else:
         term = f"до {expires_at:%Y-%m-%d} (UTC)" if expires_at else "бессрочно"
-        logger.info(f"Пользователю {user_id} выдан Pro вручную {term} (CLI)")
-        print(f"{user_email} (ID: {user_id}): Pro {term}. В приложении — после перезапуска или открытия «Профиля».")
+        plan = "семейный Pro" if family else "Pro"
+        logger.info(f"Пользователю {user_id} выдан {plan} вручную {term} (CLI)")
+        print(f"{user_email} (ID: {user_id}): {plan} {term}. В приложении — после перезапуска или открытия «Профиля».")
     return EXIT_OK
 
 
-async def _run(email: str, until: str | None, revoke: bool) -> int:
+async def _run(email: str, until: str | None, revoke: bool, family: bool) -> int:
     """Выполнить команду и корректно освободить соединения с БД и Redis."""
     try:
-        return await grant_pro(email, until=until, revoke=revoke)
+        return await grant_pro(email, until=until, revoke=revoke, family=family)
     finally:
         await close_redis()
         await engine.dispose()
@@ -101,9 +104,12 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--until", help="Дата окончания ГГГГ-ММ-ДД (00:00 UTC); без неё — бессрочно")
     group.add_argument("--revoke", action="store_true", help="Отозвать Pro, выданный вручную")
+    parser.add_argument("--family", action="store_true", help="Семейный Pro: можно создать семью и приглашать")
     args = parser.parse_args()
+    if args.family and args.revoke:
+        parser.error("--family не сочетается с --revoke")
 
-    sys.exit(asyncio.run(_run(args.email, args.until, args.revoke)))
+    sys.exit(asyncio.run(_run(args.email, args.until, args.revoke, args.family)))
 
 
 if __name__ == "__main__":

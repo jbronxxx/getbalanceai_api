@@ -60,6 +60,13 @@ erDiagram
     users ||--o{ recurring_payments : "has"
     users |o--o{ user_consents : "accepted"
     users ||--o| subscriptions : "has"
+    users ||--o| families : "owns"
+    families ||--|{ family_members : "has"
+    users ||--o| family_members : "belongs"
+    families ||--o{ family_invites : "has"
+    families ||--o{ transactions : "shared"
+    families ||--o{ budgets : "shared"
+    families ||--o{ recurring_payments : "shared"
 
     users {
         uuid id PK
@@ -97,7 +104,8 @@ erDiagram
 
     transactions {
         uuid id PK
-        uuid user_id FK
+        uuid user_id FK "автор; null — бывший участник"
+        uuid family_id FK "null — личная"
         numeric amount
         string currency
         numeric exchange_rate
@@ -113,12 +121,14 @@ erDiagram
     transaction_deletions {
         uuid transaction_id PK
         uuid user_id FK
+        uuid family_id FK "общая операция"
         datetime deleted_at
     }
 
     budgets {
         uuid id PK
-        uuid user_id FK
+        uuid user_id FK "автор"
+        uuid family_id FK "null — личный"
         enum category
         numeric limit_amount
         string currency
@@ -129,7 +139,8 @@ erDiagram
 
     recurring_payments {
         uuid id PK
-        uuid user_id FK
+        uuid user_id FK "автор"
+        uuid family_id FK "null — личный"
         enum type
         enum category
         numeric amount
@@ -151,14 +162,40 @@ erDiagram
         bool is_trial
         string product_id
         string store
+        bool family "право семейного Pro"
+        datetime family_expires_at
         datetime updated_at
+    }
+
+    families {
+        uuid id PK
+        uuid owner_id FK,UK
+        datetime created_at
+    }
+
+    family_members {
+        uuid id PK
+        uuid family_id FK
+        uuid user_id FK,UK
+        string role "owner, member"
+        datetime joined_at
+    }
+
+    family_invites {
+        uuid id PK
+        uuid family_id FK
+        string code_hash UK "HMAC кода"
+        datetime created_at
+        datetime expires_at
     }
 ```
 
 ### Таблицы:
 * `users`: Пользователи системы (email в нижнем регистре; имя, аватар `avatar_url`, базовая расчетная валюта `base_currency`). `email` и `name` хранятся зашифрованными (`TEXT`, AES-256-GCM, см. «Шифрование имени и email»), поиск — по уникальному слепому индексу `email_hash` (HMAC-SHA256 адреса в нижнем регистре): один адрес в разном регистре даёт один аккаунт. `accepted_terms_version` / `accepted_privacy_version` — последние принятые версии документов (см. «Принятие юридических документов»)
 * `user_consents`: История принятия соглашения и политики (GDPR ст. 7(1)): документ (CHECK `ck_user_consents_document`), версия, время, язык, платформа и версия приложения из заголовков OBS-02, слепой индекс email; имени, email и IP нет. Записи только добавляются. `user_id` → `users` — `ON DELETE SET NULL`: при удалении аккаунта запись остаётся с `account_deleted_at` и удаляется регламентной очисткой через 3 года
-* `subscriptions`: Снимок доступа Pro из RevenueCat — одна строка на пользователя (`user_id` уникален): окончание оплаченного периода `expires_at` (дата продления или окончания; с учётом льготного периода магазина; null — бессрочный доступ, выданный вручную), `will_renew`, `is_trial`, `product_id`, `store`. Строки нет — тариф Free; строка с прошедшим `expires_at` — тоже Free (см. «Тарифы и подписка»)
+* `subscriptions`: Снимок доступа Pro из RevenueCat — одна строка на пользователя (`user_id` уникален): окончание оплаченного периода `expires_at` (дата продления или окончания; с учётом льготного периода магазина; null — бессрочный доступ, выданный вручную), `will_renew`, `is_trial`, `product_id`, `store`, право семейного Pro `family` и его срок `family_expires_at`. Строки нет — тариф Free; строка с прошедшим `expires_at` — тоже Free (см. «Тарифы и подписка»)
+* `families`, `family_members`, `family_invites`: семейный Pro (FEAT-03, см. «Семейный Pro»). Владелец (`owner_id` уникален) тоже строка `family_members` с ролью `owner` (CHECK `ck_family_members_role`); `family_members.user_id` уникален — человек в одной семье. Приглашение хранит только HMAC кода (`app/pii.py` `secret_hash`), использованное и отозванное удаляется.
+* Общие записи: `transactions`, `budgets`, `recurring_payments` имеют `family_id` (NULL — личная) и допускают `user_id` NULL — общая запись участника, удалившего аккаунт; CHECK `ck_<таблица>_owner` — есть автор или семья. FK `family_id` — `ON DELETE RESTRICT`: семью удаляет сервис, раздав записи авторам. Уникальность лимита — два частичных индекса: `uq_budgets_personal_period` (user_id, category, month, year) WHERE family_id IS NULL и `uq_budgets_family_period` (family_id, …) WHERE family_id IS NOT NULL. Индексы `transactions (family_id, date)`, `(family_id, updated_at)`
 * Внешние ключи `transactions`, `budgets`, `tokens`, `transaction_deletions`, `recurring_payments`, `subscriptions` → `users` — `ON DELETE CASCADE`; связи `User` с `passive_deletes=True`: удаление аккаунта — один `DELETE` пользователя, без загрузки его данных в память
 * `tokens`: refresh-токены сессий пользователей (SHA-256 хеш) со статусом (`active`, `revoked`, `expired`), временем отзыва `revoked_at` и преемником по ротации `replaced_by_id` (без внешнего ключа: пакетная очистка токенов не сканирует таблицу на каждую удалённую строку)
 * `transactions`: Финансовые операции (доход/расход с категорией, датой и мультивалютными полями стандарта `NUMERIC(18, 2)` и `NUMERIC(18, 6)`: `amount`, `currency`, `exchange_rate`, `base_amount`; `updated_at` — время последней правки для ETag списка и выборки `GET /sync/changes`, индекс `(user_id, updated_at)`)
@@ -450,9 +487,20 @@ getbalanceai_api/
 * **Тарифы и лимиты** (`app/services/plan_limits.py`, настройки `FREE_*` / `PRO_*`): Free — ИИ-отчёт 1 в календарный месяц, голос 5 в сутки; Pro — отчёт 5 и голос 30 в сутки. Окна — сутки и месяц по часам клиента (`X-Timezone-Offset`). Счётчики — `plan_usage:{feature}:{user_id}:{окно}` (окно `2026-11-14` или `2026-11`: суточный и месячный счётчики не пересекаются, при смене тарифа считается окно нового тарифа), TTL — до конца окна плюс сутки. Префикс не `insights_`: очистка кэша отчётов (`invalidate_cache`) счётчики не трогает. Сверх лимита вызов сразу возвращается (`DECR`), счётчик не растёт выше лимита. Сменой часового пояса можно получить соседнее окно раньше времени — не больше одного лишнего окна, это приемлемо при стоимости вызова.
 * **Ошибка лимита** — `PlanLimitReachedException`: 403 `PLAN_LIMIT_REACHED`, `details`: `feature` (`ai_report`, `voice`), `plan`, `limit`, `period` (`day`, `month`), `resets_at` (UTC, `Z`). Это условие тарифа, а не частота: 429 `RATE_LIMIT_EXCEEDED` остаётся для slowapi. Счётчик Prometheus `plan_limit_reached_total{feature,plan}`.
 * **Профиль** `GET /auth/me` (`UserProfileResponse`): `subscription` (`plan`, `expires_at`, `will_renew`, `is_trial`) и `limits` (на каждую функцию — `limit`, `used`, `remaining`, `period`, `resets_at` по часам клиента). Redis недоступен — `used`/`remaining` = null, профиль отдаётся.
-* **Подписка из RevenueCat** (`subscription_service.py`, `revenuecat.py`): пользователь RevenueCat (app_user_id) = id аккаунта (`logIn` в приложении после входа). Снимок в `subscriptions` обновляется по вебхуку `POST /api/v1/subscriptions/webhooks/revenuecat` и по `POST /api/v1/subscriptions/refresh` (приложение — после покупки и восстановления покупок). Состояние берётся из REST API (`GET /v1/subscribers/{id}`, доступ `REVENUECAT_PRO_ENTITLEMENT`), а не из тела события: события приходят с повторами и не по порядку. Вебхук проверяет заголовок `Authorization` (`REVENUECAT_WEBHOOK_AUTH`, `hmac.compare_digest`); обновляются все покупатели события (`app_user_id`, `original_app_user_id`, `aliases`, `transferred_from`/`to`), анонимные и неизвестные id пропускаются (200). Сбой RevenueCat — 503: RevenueCat повторит вебхук. Upsert по `user_id` — `ON CONFLICT DO UPDATE` (вебхук и `refresh` приходят почти одновременно); доступа больше нет — строка удаляется. Тариф Pro — пока не наступил `expires_at` (`Subscription.is_active`). Ручной Pro — `scripts/grant_pro.py` (`SubscriptionService.grant_manual`/`revoke_manual`, `store = manual`, без даты — бессрочно); синхронизация с RevenueCat его перезаписывает или удаляет. Семейный Pro — в FEAT-03.
+* **Подписка из RevenueCat** (`subscription_service.py`, `revenuecat.py`): пользователь RevenueCat (app_user_id) = id аккаунта (`logIn` в приложении после входа). Снимок в `subscriptions` обновляется по вебхуку `POST /api/v1/subscriptions/webhooks/revenuecat` и по `POST /api/v1/subscriptions/refresh` (приложение — после покупки и восстановления покупок). Состояние берётся из REST API (`GET /v1/subscribers/{id}`, доступ `REVENUECAT_PRO_ENTITLEMENT`), а не из тела события: события приходят с повторами и не по порядку. Вебхук проверяет заголовок `Authorization` (`REVENUECAT_WEBHOOK_AUTH`, `hmac.compare_digest`); обновляются все покупатели события (`app_user_id`, `original_app_user_id`, `aliases`, `transferred_from`/`to`), анонимные и неизвестные id пропускаются (200). Сбой RevenueCat — 503: RevenueCat повторит вебхук. Upsert по `user_id` — `ON CONFLICT DO UPDATE` (вебхук и `refresh` приходят почти одновременно); доступа больше нет — строка удаляется. Тариф Pro — пока не наступил `expires_at` (`Subscription.is_active`). Ручной Pro — `scripts/grant_pro.py` (`SubscriptionService.grant_manual`/`revoke_manual`, `store = manual`, без даты — бессрочно); синхронизация с RevenueCat его перезаписывает или удаляет; `--family` — семейный Pro. Семейный Pro — ниже.
 * **Удаление аккаунта** удаляет покупателя RevenueCat (`DELETE /v1/subscribers/{id}`, 404 — успех) до удаления из БД: при сбое RevenueCat — 503, аккаунт остаётся, приложение повторит. Без `REVENUECAT_API_KEY` шаг пропускается. Подписку в магазине это не отменяет — приложение предупреждает.
 * **Без ключей** (`REVENUECAT_API_KEY`, `REVENUECAT_WEBHOOK_AUTH` пусты): вебхук и `refresh` — 503, все пользователи на Free, лимиты работают.
+
+### Семейный Pro (FEAT-03)
+
+* **Право**: семейный продукт RevenueCat даёт entitlements `pro` и `family` (`REVENUECAT_FAMILY_ENTITLEMENT`); оба читаются из одного `GET /subscribers` в `subscriptions` (`family`, `family_expires_at`, с льготным периодом). `Subscription.family_active` — право действует. Переход на личный Pro: `family` истекает, Pro остаётся — семья замораживается.
+* **Pro участника** считается на бэке (`SubscriptionService.status`): своя активная подписка важнее; без неё участник незамороженной семьи — Pro с `via_family=true` (и в пробный период владельца). Лимиты функций — у каждого свои. Вебхук `EXPIRATION` владельца обновляет только его строку: Pro участников и заморозка вычисляются по ней на каждом запросе.
+* **Семья** (`family_service.py`, `/api/v1/families`): до `FAMILY_MAX_MEMBERS` (5) человек вместе с владельцем. Создать — нужен свой `family`. Приглашение — одноразовый код из 8 символов (без 0/O/1/I/L) на 7 дней, показывается один раз; действующих приглашений не больше свободных мест (`FAMILY_FULL`), строка семьи блокируется `FOR UPDATE` при приглашении и вступлении. Лимиты частоты: 10 приглашений в сутки, 10 вводов кода в час (`shared_limit` на просмотр и вступление). Вступает только сам участник (`POST /families/join`), уже состоящий в семье — 409 `FAMILY_ALREADY_MEMBER`. Передачи владения нет.
+* **Доступ к записям** (`family_access.py`, `SharedAccess`): видны свои личные и общие своей семьи (`visible`); общие правят все участники, автор (`user_id`) не меняется; отметку меняет только автор (`FAMILY_AUTHOR_ONLY`); в замороженной семье общие — только чтение (`FAMILY_FROZEN`). В `/sync` отказы — в `rejected`, в REST — 403/404. `base_amount` — в базовой валюте автора: правка чужой общей записи пересчитывает его по валюте автора, курс клиента не берётся; итоги в своей валюте клиент считает по `amount`/`currency`.
+* **Бюджеты**: личный лимит считает личные траты владельца, общий — общие траты семьи; общий переводится в валюту лимита по `amount` и кросс-курсу (у общих записей `base_amount` в разных валютах). ETag бюджетов учитывает версию семьи `budgets_version:family:{id}` — правка общих записей сбрасывает её.
+* **Синхронизация между людьми**: `GET /sync/changes` отдаёт видимые транзакции; `transaction_deletions.family_id` — удаления общих записей для всех участников; общая запись, ставшая личной, тоже пишется туда; удалённой считается только запись, которая сейчас не видна. `family_id` в ответе — текущая семья: сменилась — клиент удаляет локальные общие записи и синхронизируется без `since`. Бюджеты и регулярные платежи клиент сверяет полным списком.
+* **Выход и исключение**: общие записи остаются в семье, транзакции участника копируются ему как личные (новые id). **Роспуск** (владелец вышел или удалил аккаунт): общие записи — авторам как личные, записи без автора удаляются, общий лимит, совпавший с личным лимитом автора, удаляется; отчёты семьи в Redis удаляются. **Удаление аккаунта участника**: его общие записи (во всех семьях, включая прежние) остаются без автора (`user_id = NULL`).
+* **ИИ-отчёт** `GET /insights?scope=family`: все общие записи и общие лимиты семьи, кэш `insights_family:{family_id}:{locale}:{currency}:{m}:{y}` с тем же отпечатком месяца — участники с тем же языком и валютой видят готовый отчёт без вызова LLM, генерация тратит лимит запросившего. `scope=personal` — личные записи и общие, добавленные мной в текущей семье (общие бывшей семьи не входят: при выходе они скопированы).
 
 ---
 

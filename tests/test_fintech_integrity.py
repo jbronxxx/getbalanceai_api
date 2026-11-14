@@ -135,10 +135,13 @@ class TestDatabaseConstraintsAndIndexes:
         assert "ix_transactions_user_id_date" in indexes
         assert "ix_transactions_user_id_created_at" in indexes
 
-    def test_budget_model_unique_constraint_metadata(self):
-        """Проверка наличия UniqueConstraint на (user_id, category, month, year) в модели Budget."""
-        constraints = [arg.name for arg in Budget.__table_args__ if hasattr(arg, "name")]
-        assert "uq_budget_user_cat_period" in constraints
+    def test_budget_model_unique_indexes_metadata(self):
+        """Уникальность лимита: личного — по (user_id, category, month, year), общего — по семье."""
+        indexes = {arg.name: arg for arg in Budget.__table_args__ if hasattr(arg, "unique")}
+        personal = indexes["uq_budgets_personal_period"]
+        shared = indexes["uq_budgets_family_period"]
+        assert personal.unique and [c.name for c in personal.columns] == ["user_id", "category", "month", "year"]
+        assert shared.unique and [c.name for c in shared.columns] == ["family_id", "category", "month", "year"]
 
     @pytest.mark.asyncio
     async def test_budget_duplicate_insert_violates_unique_constraint(self, db_session: AsyncSession, test_user: User):
