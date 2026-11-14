@@ -41,6 +41,21 @@ LEGAL_HISTORY: dict[str, tuple[LegalVersion, ...]] = {
                 ],
             },
         ),
+        LegalVersion(
+            effective=date(2026, 11, 15),
+            changes={
+                "ru": [
+                    "Новый раздел «Тарифы и подписка»: бесплатный тариф и Pro, лимиты функций, пробный период, "
+                    "автопродление, отмена и возвраты.",
+                    "В ЕС от подписки можно отказаться в течение 14 дней со дня покупки.",
+                ],
+                "en": [
+                    "New section “Plans and subscription”: the free plan and Pro, feature limits, free trial, "
+                    "auto-renewal, cancellation and refunds.",
+                    "In the EU you may withdraw from a subscription within 14 days of purchase.",
+                ],
+            },
+        ),
     ),
     "privacy": (
         LegalVersion(
@@ -70,6 +85,21 @@ LEGAL_HISTORY: dict[str, tuple[LegalVersion, ...]] = {
                     "AI insights and voice input are now handled by Claude (Anthropic); Google Gemini is the backup "
                     "when Claude is unavailable.",
                     "The data we send has not changed: no name, email or transaction descriptions.",
+                ],
+            },
+        ),
+        LegalVersion(
+            effective=date(2026, 11, 15),
+            changes={
+                "ru": [
+                    "Подписки учитывает RevenueCat: он получает идентификатор аккаунта (без имени и email) "
+                    "и данные покупок.",
+                    "При удалении аккаунта данные в RevenueCat тоже удаляются.",
+                ],
+                "en": [
+                    "Subscriptions are managed by RevenueCat: it receives your account identifier (without your "
+                    "name or email) and purchase data.",
+                    "When you delete your account, your data in RevenueCat is deleted too.",
                 ],
             },
         ),

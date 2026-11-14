@@ -36,6 +36,7 @@ from app.schemas.schemas import (
 from app.services.budget_service import BudgetService
 from app.services.consent_service import ConsentService, terms_accepted
 from app.services.currency_service import CurrencyService
+from app.services.subscription_service import SubscriptionService
 from config_reader.config_reader import config
 from logger.logger import get_logger
 
@@ -359,6 +360,9 @@ class AuthService:
                 message="Пользователь не найден",
             )
 
+        # Покупатель RevenueCat (GDPR) удаляется первым: при сбое RevenueCat аккаунт остаётся,
+        # приложение повторит запрос, и покупатель не переживёт аккаунт
+        await SubscriptionService(self.db).delete_customer(user_id)
         # Записи о согласии остаются на срок хранения (без user_id — его обнулит БД)
         await ConsentService(self.db).mark_account_deleted(user_id)
         await self.db.delete(user)

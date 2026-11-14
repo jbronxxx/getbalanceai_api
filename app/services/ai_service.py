@@ -9,14 +9,15 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.exceptions import PlanLimitReachedException
 from app.models.models import Budget, Transaction, TransactionType
-from app.redis import (
-    get_insights_cache_key,
-    get_insights_daily_quota_key,
-    get_insights_user_patterns,
-    get_redis,
+from app.redis import get_insights_cache_key, get_insights_user_patterns, get_redis
+from app.schemas.schemas import (
+    BudgetResponse,
+    InsightResponse,
+    InsightState,
+    PlanFeature,
 )
-from app.schemas.schemas import BudgetResponse, InsightResponse, InsightState
 from app.services.ai_usage import AIRequestKind
 from app.services.budget_service import BudgetService
 from app.services.insights_formatting import category_name, format_money
@@ -27,12 +28,11 @@ from app.services.llm import (
     ai_configured,
     extract_json,
     get_llm_client,
-    release_daily_quota,
-    take_daily_quota,
 )
 from app.services.period import current_month as client_current_month
 from app.services.period import month_bounds
-from config_reader.config_reader import config
+from app.services.plan_limits import release_plan_quota, take_plan_quota
+from app.services.subscription_service import SubscriptionService
 from logger.logger import get_logger
 
 logger = get_logger(__name__)
@@ -193,6 +193,10 @@ class AIService:
         меньше `MIN_TRANSACTIONS_FOR_INSIGHTS` (`not_enough_data`), при совпадении
         данных периода с сохранённым отчётом и при `generate=False` (`not_generated`, если
         отчёта нет). Отчёты хранятся в Redis вместе с отпечатком данных месяца.
+
+        Генерация расходует лимит тарифа (`plan_limits`): Free — отчёты в календарный месяц, Pro — в сутки,
+        за любой месяц отчёта. Лимит исчерпан — `PlanLimitReachedException` (403 PLAN_LIMIT_REACHED);
+        сохранённый отчёт клиент берёт запросом с `generate=false`.
         """
         now = datetime.now(timezone.utc)
         # Текущий месяц — по часам клиента: в UTC+5 1-го числа до 05:00 по UTC ещё прошлый месяц
@@ -238,34 +242,18 @@ class AIService:
                 return self._response_from_cache(cached, is_outdated=True)
             return InsightResponse(insights=[], generated_at=now, state=InsightState.not_generated)
 
-        # Суточная квота занимается до вызова LLM (атомарный INCR, см. take_daily_quota)
-        date_str = now.strftime("%Y-%m-%d")
-        daily_quota_key = get_insights_daily_quota_key(user_id, date_str)
+        # Лимит тарифа занимается до вызова LLM (атомарный INCR); сверх лимита — PlanLimitReachedException (403)
+        plan = await SubscriptionService(self.db).plan(user_id)
         try:
-            daily_calls = await take_daily_quota(redis_client, daily_quota_key)
+            ticket = await take_plan_quota(user_id, plan, PlanFeature.ai_report, tz)
+        except PlanLimitReachedException:
+            raise
         except Exception as err:
             # Без счётчика лимит не проверить, а каждый вызов LLM платный: генерацию не запускаем
-            logger.warning(f"Не удалось занять квоту AI в Redis для пользователя {user_id}: {err}")
+            logger.warning(f"Не удалось занять лимит ИИ-отчёта в Redis для пользователя {user_id}: {err}")
             if cached:
                 return self._response_from_cache(cached, is_outdated=True, state=InsightState.busy)
             return InsightResponse(insights=list(texts.busy), generated_at=now, state=InsightState.busy)
-
-        if daily_calls > config.ai_daily_limit_per_user:
-            logger.warning(
-                "Суточный лимит вызовов AI исчерпан для пользователя %s (%s/%s)",
-                user_id,
-                daily_calls - 1,
-                config.ai_daily_limit_per_user,
-            )
-            if cached:
-                # Старые клиенты показывают insights как есть; новые по state пишут, что обновить можно завтра
-                return self._response_from_cache(cached, is_outdated=True, state=InsightState.quota_exceeded)
-
-            return InsightResponse(
-                insights=list(texts.quota_exceeded),
-                generated_at=now,
-                state=InsightState.quota_exceeded,
-            )
 
         start_date, end_date = self._month_bounds(target_month, target_year, tz)
         query = (
@@ -305,7 +293,7 @@ class AIService:
             response = InsightResponse(insights=insights, generated_at=datetime.now(timezone.utc))
         except Exception as e:
             logger.error(f"Ошибка запроса инсайтов к LLM для пользователя {user_id}: {type(e).__name__}: {e}")
-            await release_daily_quota(redis_client, daily_quota_key)
+            await release_plan_quota(ticket)
             # Сообщение остаётся в insights для старых клиентов; новые по state показывают свою карточку
             return InsightResponse(
                 insights=list(texts.busy),
@@ -329,7 +317,7 @@ class AIService:
 
         logger.info(
             f"Сгенерированы AI-инсайты для пользователя {user_id} за {target_month}/{target_year}: "
-            f"{len(insights)} советов, вызовов за сутки {daily_calls}/{config.ai_daily_limit_per_user}"
+            f"{len(insights)} советов, тариф {plan.value}, отчётов в окне {ticket.used}/{ticket.limit}"
         )
         return response
 

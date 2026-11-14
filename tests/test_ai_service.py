@@ -6,13 +6,14 @@ import logging
 import re
 import time
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from google import genai
 
+from app.exceptions import PlanLimitReachedException
 from app.models.models import (
     Budget,
     Category,
@@ -21,7 +22,7 @@ from app.models.models import (
     TransactionType,
     User,
 )
-from app.schemas.schemas import BudgetResponse, InsightResponse, InsightState
+from app.schemas.schemas import BudgetResponse, InsightResponse, InsightState, PlanCode
 from app.services.ai_service import (
     MIN_TRANSACTIONS_FOR_INSIGHTS,
     AIService,
@@ -29,6 +30,19 @@ from app.services.ai_service import (
 )
 from app.services.ai_usage import AIRequestKind
 from app.services.llm import LLMClient, extract_json
+from app.services.subscription_service import SubscriptionService
+
+
+@pytest.fixture(autouse=True)
+def pro_plan():
+    """Тариф пользователя в тестах сервиса — Pro (5 отчётов в сутки); тесты тарифа Free подменяют его сами."""
+    with patch.object(SubscriptionService, "plan", AsyncMock(return_value=PlanCode.pro)) as plan:
+        yield plan
+
+
+def _report_counter_key(user_id: uuid.UUID, window: str | None = None) -> str:
+    """Ключ счётчика ИИ-отчётов в окне (по умолчанию — сегодня по UTC)."""
+    return f"plan_usage:ai_report:{user_id}:{window or datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
 
 
 def _patch_fingerprint(tx_count: int = MIN_TRANSACTIONS_FOR_INSIGHTS, signature: str = "sig"):
@@ -154,7 +168,7 @@ class TestAIService:
         mock_db.commit = AsyncMock()
         service = AIService(db=mock_db)
 
-        with patch("app.services.ai_service.config.gemini_api_key", "sk-your-key-here"):
+        with patch("config_reader.config_reader.config.gemini_api_key", "sk-your-key-here"):
             result = await service.get_insights(uuid.uuid4(), locale="ru")
 
         assert isinstance(result, InsightResponse)
@@ -168,7 +182,7 @@ class TestAIService:
         mock_db.commit = AsyncMock()
         service = AIService(db=mock_db)
 
-        with patch("app.services.ai_service.config.gemini_api_key", ""):
+        with patch("config_reader.config_reader.config.gemini_api_key", ""):
             result = await service.get_insights(uuid.uuid4(), locale="ru")
 
         assert isinstance(result, InsightResponse)
@@ -182,7 +196,7 @@ class TestAIService:
         mock_client.generate = AsyncMock()
         service = AIService(db=MagicMock(commit=AsyncMock()), client=mock_client)
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint(tx_count=0):
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"), _patch_fingerprint(tx_count=0):
             result = await service.get_insights(uuid.uuid4(), locale="ru")
 
         assert isinstance(result, InsightResponse)
@@ -218,7 +232,7 @@ class TestAIService:
         service = AIService(db=mock_db, client=mock_client)
 
         user_id = uuid.uuid4()
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
             with patch("app.services.ai_service.redis_client.get", AsyncMock(return_value=None)):
                 with caplog.at_level(logging.INFO):
                     result = await service.get_insights(user_id, locale="ru")
@@ -260,7 +274,7 @@ class TestAIService:
 
         service = AIService(db=mock_db, client=mock_client)
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
             with patch("app.services.ai_service.redis_client.get", AsyncMock(return_value=None)):
                 with patch("app.services.ai_service.redis_client.setex", AsyncMock()) as mock_setex:
                     result = await service.get_insights(uuid.uuid4(), locale="ru")
@@ -330,7 +344,7 @@ class TestAIService:
         async def mock_redis_get(key):
             return cached_json if "insights_cache" in key else None
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"):
             with _patch_fingerprint(tx_count=10, signature="same"):
                 with patch("app.services.ai_service.redis_client.get", side_effect=mock_redis_get):
                     resp = await service.get_insights(user_id, locale="ru")
@@ -384,7 +398,7 @@ class TestAIService:
 
         service = AIService(db=mock_db, client=mock_client)
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
             with patch(
                 "app.services.ai_service.redis_client.get", AsyncMock(side_effect=Exception("Redis connection refused"))
             ):
@@ -419,7 +433,7 @@ class TestAIService:
 
         service = AIService(db=mock_db, client=mock_client)
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
             with patch("app.services.ai_service.redis_client.get", AsyncMock(return_value=None)):
                 with patch(
                     "app.services.ai_service.redis_client.setex", AsyncMock(side_effect=Exception("Redis write error"))
@@ -521,14 +535,14 @@ class TestAIService:
         service = AIService(db=mock_db)
 
         # 1. Заглушка при тестовом/пустом ключе
-        with patch("app.services.ai_service.config.gemini_api_key", ""):
+        with patch("config_reader.config_reader.config.gemini_api_key", ""):
             res_stub = await service.get_insights(uuid.uuid4(), locale="en")
             assert res_stub.insights == ["In development..."]
             res_unknown = await service.get_insights(uuid.uuid4(), locale="de")
             assert res_unknown.insights == ["In development..."]
 
         # 2. Нет операций за месяц — без сообщений, клиент показывает своё состояние
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint(tx_count=0):
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"), _patch_fingerprint(tx_count=0):
             res_empty = await service.get_insights(uuid.uuid4(), locale="en")
             assert res_empty.state == InsightState.no_data
 
@@ -549,7 +563,7 @@ class TestAIService:
         mock_client.generate = AsyncMock(side_effect=Exception("API failure"))
         service_error = AIService(db=mock_db, client=mock_client)
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
             with patch("app.services.ai_service.redis_client.get", AsyncMock(return_value=None)):
                 res_err = await service_error.get_insights(uuid.uuid4(), locale="en")
                 assert "Unfortunately" in res_err.insights[0]
@@ -596,7 +610,7 @@ class TestAIService:
 
         service = AIService(db=mock_db, client=mock_client)
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"):
             with patch("app.services.budget_service.BudgetService.get_all", AsyncMock(return_value=[budget_nov])):
                 with _patch_fingerprint(tx_count=8, signature="nov-sig"):
                     mock_db.execute = AsyncMock(side_effect=[mock_txs])
@@ -618,69 +632,74 @@ class TestAIService:
         assert cached_data["tx_count"] == 8
 
     # =========================================================================
-    # TASK-AI-QUOTA: Тестирование защиты суточного лимита
+    # Лимит ИИ-отчётов по тарифу
     # =========================================================================
 
     @pytest.mark.asyncio
-    async def test_get_insights_daily_quota_protection_with_fallback_cache(self):
-        """Квота исчерпана, данные изменились: LLM не вызывается, отдаётся кэш периода с пометкой устаревания."""
-        user_id = uuid.uuid4()
-        mock_db = MagicMock()
-        mock_db.commit = AsyncMock()
+    async def test_pro_daily_limit_raises_plan_limit_reached(self):
+        """Pro: 6-й отчёт за сутки — PlanLimitReachedException с функцией и временем сброса, LLM не вызывается."""
+        from app.services.ai_service import redis_client
 
+        user_id = uuid.uuid4()
+        await redis_client.set(_report_counter_key(user_id), 5)
         mock_client = MagicMock(spec=LLMClient)
         mock_client.generate = AsyncMock()
-        service = AIService(db=mock_db, client=mock_client)
+        service = AIService(db=MagicMock(commit=AsyncMock()), client=mock_client)
 
-        cached_payload = json.dumps(
-            {
-                "insights": ["Ранее сохраненный совет"],
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-            }
-        )
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"), _patch_fingerprint(tx_count=10):
+            with pytest.raises(PlanLimitReachedException) as exc_info:
+                await service.get_insights(user_id, locale="ru")
 
-        async def fake_redis_get(key):
-            if "insights_cache" in key:
-                return cached_payload
-            return None
-
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint(tx_count=10):
-            with (
-                patch("app.services.ai_service.redis_client.get", side_effect=fake_redis_get),
-                patch("app.services.ai_service.redis_client.incr", AsyncMock(return_value=6)),
-            ):
-                result = await service.get_insights(user_id, locale="ru")
-
-        assert result.insights == ["Ранее сохраненный совет"]
-        assert result.state == InsightState.quota_exceeded
-        assert result.is_outdated is True
+        details = exc_info.value.details
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.code == "PLAN_LIMIT_REACHED"
+        assert details["feature"] == "ai_report" and details["plan"] == "pro"
+        assert details["limit"] == 5 and details["period"] == "day"
+        today = datetime.now(timezone.utc).date()
+        assert datetime.fromisoformat(details["resets_at"]).date() > today
         mock_client.generate.assert_not_called()
+        # Отказ по лимиту вызов не расходует: счётчик не растёт выше лимита
+        assert await redis_client.get(_report_counter_key(user_id)) == "5"
 
     @pytest.mark.asyncio
-    async def test_get_insights_daily_quota_protection_without_cache(self):
-        """Квота исчерпана и отчёта за период нет: сообщение о лимите, отчёт другого месяца не подставляется."""
+    async def test_free_monthly_limit_counts_any_month(self, pro_plan):
+        """Free: 1 отчёт в календарный месяц по часам клиента — второй (даже за другой месяц) упирается в лимит."""
+        from app.services.ai_service import redis_client
+
+        pro_plan.return_value = PlanCode.free
         user_id = uuid.uuid4()
-        mock_db = MagicMock()
-        mock_db.commit = AsyncMock()
-
+        tz = timezone(timedelta(hours=5))
         mock_client = MagicMock(spec=LLMClient)
-        mock_client.generate = AsyncMock()
-        service = AIService(db=mock_db, client=mock_client)
+        mock_client.generate = AsyncMock(return_value='{"insights": ["Совет"]}')
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint(tx_count=10):
-            # Лимит исчерпан: INCR возвращает 6 при лимите 5
-            with patch("app.services.ai_service.redis_client.incr", AsyncMock(return_value=6)):
-                result_ru = await service.get_insights(user_id, locale="ru")
-                result_en = await service.get_insights(user_id, locale="en")
+        def db():
+            txs = MagicMock()
+            txs.scalars.return_value.all.return_value = []
+            return MagicMock(commit=AsyncMock(), execute=AsyncMock(return_value=txs))
 
-        assert result_ru.state == InsightState.quota_exceeded
-        assert "Вы достигли дневного лимита запросов" in result_ru.insights[0]
-        assert "You have reached your daily limit" in result_en.insights[0]
-        mock_client.generate.assert_not_called()
+        with (
+            patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"),
+            _patch_fingerprint(),
+            patch("app.services.ai_service.BudgetService.get_all", AsyncMock(return_value=[])),
+        ):
+            first = await AIService(db=db(), client=mock_client).get_insights(user_id, month=1, year=2026, tz=tz)
+            with pytest.raises(PlanLimitReachedException) as exc_info:
+                await AIService(db=db(), client=mock_client).get_insights(user_id, month=2, year=2026, tz=tz)
+
+        assert first.state == InsightState.ready
+        assert mock_client.generate.await_count == 1
+        details = exc_info.value.details
+        assert details["plan"] == "free" and details["period"] == "month" and details["limit"] == 1
+        local_now = datetime.now(tz)
+        next_month = (local_now.year + local_now.month // 12, local_now.month % 12 + 1)
+        resets_at = datetime.fromisoformat(details["resets_at"])
+        assert resets_at == datetime(*next_month, 1, tzinfo=tz)
+        window = local_now.strftime("%Y-%m")
+        assert await redis_client.get(_report_counter_key(user_id, window)) == "1"
 
     @pytest.mark.asyncio
-    async def test_get_insights_increments_daily_quota_on_success(self):
-        """Успешный вызов LLM инкрементирует счетчик суточной квоты в Redis."""
+    async def test_get_insights_increments_plan_counter_on_success(self):
+        """Успешная генерация расходует один отчёт в окне тарифа."""
         from app.services.ai_service import redis_client
 
         user_id = uuid.uuid4()
@@ -701,20 +720,15 @@ class TestAIService:
         mock_db.execute = AsyncMock(side_effect=[mock_txs, mock_budgets])
 
         mock_client = MagicMock(spec=LLMClient)
-        mock_resp = '{"insights": ["Свежий совет"]}'
-        mock_client.generate = AsyncMock(return_value=mock_resp)
+        mock_client.generate = AsyncMock(return_value='{"insights": ["Свежий совет"]}')
 
         service = AIService(db=mock_db, client=mock_client)
 
-        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        quota_key = f"insights_daily_calls:{user_id}:{now_str}"
-
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
             result = await service.get_insights(user_id, locale="ru")
 
         assert result.insights == ["Свежий совет"]
-        val = await redis_client.get(quota_key)
-        assert val == "1"
+        assert await redis_client.get(_report_counter_key(user_id)) == "1"
 
     # =========================================================================
     # Хранение отчётов: отпечаток месяца, generate=false, будущие и пустые месяцы
@@ -765,7 +779,7 @@ class TestAIService:
         service = AIService(db=mock_db, client=client)
         next_year = datetime.now(timezone.utc).year + 1
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"):
             result = await service.get_insights(uuid.uuid4(), month=1, year=next_year, locale="ru")
 
         assert result.state == InsightState.no_data
@@ -779,7 +793,7 @@ class TestAIService:
         client = self._llm_client()
         service = AIService(db=MagicMock(commit=AsyncMock()), client=client)
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
             result = await service.get_insights(uuid.uuid4(), month=3, year=2025, generate=False, locale="ru")
 
         assert result.state == InsightState.not_generated
@@ -796,7 +810,7 @@ class TestAIService:
         client = self._llm_client()
         service = AIService(db=MagicMock(commit=AsyncMock()), client=client)
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"):
             with _patch_fingerprint(tx_count=9, signature="new"):
                 result = await service.get_insights(user_id, currency="EUR", month=3, year=2025, generate=False, locale="ru")
 
@@ -815,7 +829,7 @@ class TestAIService:
         client = self._llm_client()
         service = AIService(db=MagicMock(commit=AsyncMock()), client=client)
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"):
             with _patch_fingerprint(tx_count=20, signature="same"):
                 result = await service.get_insights(user_id, currency="EUR", month=3, year=2025, locale="ru")
 
@@ -834,7 +848,7 @@ class TestAIService:
         client = self._llm_client()
         service = AIService(db=self._db_with_month_data(), client=client)
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"):
             with _patch_fingerprint(tx_count=21, signature="after"):
                 result = await service.get_insights(user_id, currency="EUR", month=3, year=2025, locale="ru")
 
@@ -854,7 +868,7 @@ class TestAIService:
         client = self._llm_client()
         service = AIService(db=self._db_with_month_data(), client=client)
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"):
             with _patch_fingerprint(tx_count=8, signature="new"):
                 result = await service.get_insights(user_id, currency="EUR", locale="ru")
 
@@ -875,7 +889,7 @@ class TestAIService:
         db = MagicMock(commit=AsyncMock(), execute=AsyncMock())
         service = AIService(db=db, client=client)
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"):
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"):
             with _patch_fingerprint(tx_count=MIN_TRANSACTIONS_FOR_INSIGHTS - 1, signature="new"):
                 result = await service.get_insights(user_id, currency="EUR", generate=generate, locale="ru")
 
@@ -884,7 +898,7 @@ class TestAIService:
         assert result.is_outdated is False
         client.generate.assert_not_called()
         db.execute.assert_not_called()
-        assert await redis_client.keys("insights_daily_calls:*") == []
+        assert await redis_client.keys("plan_usage:*") == []
 
     @pytest.mark.asyncio
     async def test_insights_endpoint_requires_min_transactions(
@@ -914,7 +928,7 @@ class TestAIService:
         await db_session.commit()
 
         with (
-            patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"),
+            patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"),
             patch.object(AIService, "_call_model", new_callable=AsyncMock, return_value=["Совет"]) as llm,
         ):
             short = await client.get("/api/v1/insights/?currency=USD", headers=auth_headers)
@@ -1148,7 +1162,7 @@ class TestAIService:
         client = self._llm_client('{"insights": ["Совет 1", "Совет 2", "Совет 3"]}')
         service = AIService(db=db_session, client=client)
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), caplog.at_level(logging.DEBUG):
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"), caplog.at_level(logging.DEBUG):
             result = await service.get_insights(user_id, currency="USD", locale=locale, month=3, year=2025)
 
         assert result.state == InsightState.ready
@@ -1229,13 +1243,9 @@ class TestInsightsQuotaAndTimeout:
         db.execute = AsyncMock(side_effect=[txs, budgets])
         return db
 
-    @staticmethod
-    def _quota_key(user_id: uuid.UUID) -> str:
-        return f"insights_daily_calls:{user_id}:{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
-
     @pytest.mark.asyncio
     async def test_parallel_requests_do_not_exceed_daily_limit(self):
-        """Из 10 одновременных запросов LLM вызывается не больше суточного лимита."""
+        """Из 10 одновременных запросов LLM вызывается не больше суточного лимита тарифа."""
         user_id = uuid.uuid4()
         client = MagicMock(spec=LLMClient)
 
@@ -1245,28 +1255,29 @@ class TestInsightsQuotaAndTimeout:
 
         client.generate = AsyncMock(side_effect=slow_generate)
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
             results = await asyncio.gather(
-                *(AIService(db=self._db(), client=client).get_insights(user_id, locale="ru") for _ in range(10))
+                *(AIService(db=self._db(), client=client).get_insights(user_id, locale="ru") for _ in range(10)),
+                return_exceptions=True,
             )
 
         assert client.generate.await_count == 5
-        assert sum(r.state == InsightState.quota_exceeded for r in results) == 5
+        assert sum(isinstance(r, PlanLimitReachedException) for r in results) == 5
 
     @pytest.mark.asyncio
     async def test_failed_generation_returns_quota(self):
-        """Ошибка LLM не расходует суточный лимит."""
+        """Ошибка LLM не расходует лимит тарифа."""
         from app.services.ai_service import redis_client
 
         user_id = uuid.uuid4()
         client = MagicMock(spec=LLMClient)
         client.generate = AsyncMock(side_effect=RuntimeError("LLM 503"))
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
             result = await AIService(db=self._db(), client=client).get_insights(user_id, locale="ru")
 
         assert result.state == InsightState.busy
-        assert await redis_client.get(self._quota_key(user_id)) == "0"
+        assert await redis_client.get(_report_counter_key(user_id)) == "0"
 
     @pytest.mark.asyncio
     async def test_hanging_llm_is_cut_by_timeout(self):
@@ -1280,8 +1291,8 @@ class TestInsightsQuotaAndTimeout:
         client = LLMClient(claude=MagicMock(), gemini=gemini)
 
         with (
-            patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"),
-            patch("app.services.ai_service.config.ai_request_timeout", 0.05),
+            patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"),
+            patch("config_reader.config_reader.config.ai_request_timeout", 0.05),
             _patch_fingerprint(),
         ):
             started = time.monotonic()
@@ -1296,7 +1307,7 @@ class TestInsightsQuotaAndTimeout:
         client = MagicMock(spec=LLMClient)
         client.generate = AsyncMock()
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
             with patch("app.services.ai_service.redis_client.incr", AsyncMock(side_effect=ConnectionError("down"))):
                 result = await AIService(db=self._db(), client=client).get_insights(uuid.uuid4(), locale="ru")
 
@@ -1317,7 +1328,7 @@ class TestInsightsQuotaAndTimeout:
 
         client.generate = AsyncMock(side_effect=generate)
 
-        with patch("app.services.ai_service.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
+        with patch("config_reader.config_reader.config.gemini_api_key", "valid-real-key"), _patch_fingerprint():
             await AIService(db=db, client=client).get_insights(uuid.uuid4(), locale="ru")
 
         assert order == ["commit", "llm"]

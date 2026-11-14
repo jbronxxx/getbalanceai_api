@@ -484,3 +484,52 @@ class RecurringPayment(Base):
     )
 
     user: Mapped["User"] = relationship(back_populates="recurring_payments")
+
+
+class Subscription(Base):
+    """ORM-модель подписки Pro пользователя по данным RevenueCat.
+
+    Таблица: subscriptions
+
+    Одна строка на пользователя: снимок доступа Pro (entitlement) из RevenueCat, который обновляется по вебхуку
+    и по запросу приложения после покупки. Пользователь RevenueCat — id аккаунта. Строки нет — доступа Pro
+    никогда не было или RevenueCat его больше не возвращает; тариф Pro действует, пока не наступил `expires_at`.
+
+    Поля:
+        id (uuid.UUID): Идентификатор (Primary Key).
+        user_id (uuid.UUID): Внешний ключ на пользователя (users.id), уникален.
+        expires_at (datetime | None): Окончание оплаченного периода — дата продления или окончания доступа;
+            None — бессрочный доступ (выдан вручную в RevenueCat).
+        will_renew (bool): Подписка продлится автоматически (отмена в магазине не обнаружена).
+        is_trial (bool): Идёт бесплатный пробный период.
+        product_id (str): Идентификатор продукта в магазине (месячная или годовая подписка).
+        store (str): Магазин покупки по классификации RevenueCat (PLAY_STORE, APP_STORE, TEST_STORE...).
+        updated_at (datetime): Момент последней синхронизации с RevenueCat.
+    """
+
+    __tablename__ = "subscriptions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    will_renew: Mapped[bool] = mapped_column(nullable=False)
+    is_trial: Mapped[bool] = mapped_column(nullable=False)
+    product_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    store: Mapped[str] = mapped_column(String(30), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    def expires_at_utc(self) -> datetime | None:
+        """Окончание периода с поясом UTC (SQLite отдаёт время без пояса)."""
+        if self.expires_at is None or self.expires_at.tzinfo:
+            return self.expires_at
+        return self.expires_at.replace(tzinfo=timezone.utc)
+
+    def is_active(self, now: datetime) -> bool:
+        """Доступ Pro действует на момент `now`."""
+        expires_at = self.expires_at_utc()
+        return expires_at is None or expires_at > now

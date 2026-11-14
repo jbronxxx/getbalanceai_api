@@ -55,9 +55,11 @@ class Settings(BaseSettings):
     ai_model: str = Field("claude-haiku-5-5", alias="AI_MODEL")
     # Глубина размышлений Claude (output_config.effort): low выбран по итогу проверки качества AI-02
     ai_effort: Literal["low", "medium", "high"] = Field("low", alias="AI_EFFORT")
-    ai_daily_limit_per_user: int = Field(5, alias="AI_DAILY_LIMIT_PER_USER")
-    # Суточный лимит разборов голосового ввода через LLM на пользователя
-    voice_daily_limit_per_user: int = Field(30, alias="VOICE_DAILY_LIMIT_PER_USER")
+    # Лимиты тарифов (app/services/plan_limits.py): окна — в часовом поясе пользователя (X-Timezone-Offset)
+    free_ai_reports_per_month: int = Field(1, ge=0, alias="FREE_AI_REPORTS_PER_MONTH")
+    free_voice_per_day: int = Field(5, ge=0, alias="FREE_VOICE_PER_DAY")
+    pro_ai_reports_per_day: int = Field(5, ge=0, alias="PRO_AI_REPORTS_PER_DAY")
+    pro_voice_per_day: int = Field(30, ge=0, alias="PRO_VOICE_PER_DAY")
     # Предел ожидания ответа LLM: зависший вызов иначе держал бы воркер и запрос клиента без ответа
     ai_request_timeout: float = Field(30.0, alias="AI_REQUEST_TIMEOUT")
     # Предел одной попытки: HTTP-запрос к LLM обрывается по таймауту клиента, дальше —
@@ -66,6 +68,16 @@ class Settings(BaseSettings):
     # Запасная модель другого провайдера: последняя попытка, если основная перегружена, отказала в ответе
     # или недоступна (ключ, оплата); пусто — все попытки на основной
     ai_fallback_model: str = Field("gemini-3.5-flash-lite", alias="AI_FALLBACK_MODEL")
+
+    # RevenueCat: секретный ключ REST API (sk_...) — статус подписки и удаление покупателя; значение заголовка
+    # Authorization вебхука, заданное в панели RevenueCat. Пусто — вебхук отвечает 503, удаление аккаунта
+    # покупателя в RevenueCat не трогает
+    revenuecat_api_key: str = Field("", alias="REVENUECAT_API_KEY")
+    revenuecat_webhook_auth: str = Field("", alias="REVENUECAT_WEBHOOK_AUTH")
+    revenuecat_api_url: str = Field("https://api.revenuecat.com/v1", alias="REVENUECAT_API_URL")
+    revenuecat_timeout: float = Field(10.0, alias="REVENUECAT_TIMEOUT")
+    # Идентификатор доступа (entitlement) в RevenueCat, который даёт тариф Pro
+    revenuecat_pro_entitlement: str = Field("pro", alias="REVENUECAT_PRO_ENTITLEMENT")
 
     redis_url: str = Field("redis://localhost:6379/0", alias="REDIS_URL")
     # Хранилище счётчиков rate limiting; в Docker — Redis, чтобы лимит был общим для всех воркеров gunicorn

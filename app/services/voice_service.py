@@ -10,7 +10,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.exceptions import AIQuotaExceededException, ServiceUnavailableException
+from app.exceptions import PlanLimitReachedException, ServiceUnavailableException
 from app.models.models import (
     EXPENSE_CATEGORIES,
     INCOME_CATEGORIES,
@@ -19,11 +19,11 @@ from app.models.models import (
     CurrencyCode,
     TransactionType,
 )
-from app.redis import get_redis, get_voice_daily_quota_key
 from app.schemas.schemas import (
     DESCRIPTION_MAX_LENGTH,
     MAX_MONEY_AMOUNT,
     VOICE_RECORDS_MAX,
+    PlanFeature,
     VoiceParseResponse,
     VoiceRecordDraft,
 )
@@ -35,18 +35,14 @@ from app.services.llm import (
     ai_configured,
     extract_json,
     get_llm_client,
-    release_daily_quota,
     sanitize_prompt_text,
-    take_daily_quota,
 )
+from app.services.plan_limits import release_plan_quota, take_plan_quota
+from app.services.subscription_service import SubscriptionService
 from app.services.voice_texts import voice_texts
-from config_reader.config_reader import config
 from logger.logger import get_logger
 
 logger = get_logger(__name__)
-
-# Единый клиент Redis приложения
-redis_client = get_redis()
 
 _CENT = Decimal("0.01")
 # Порядок категорий в инструкции — как в приложении; «Прочее» — последней
@@ -55,7 +51,7 @@ _INCOME_ORDER = [c for c in Category if c in INCOME_CATEGORIES and c is not Cate
 
 
 class VoiceParseService:
-    """Разбор фразы на записи через LLM с суточной квотой на пользователя."""
+    """Разбор фразы на записи через LLM с суточным лимитом по тарифу пользователя."""
 
     def __init__(self, db: AsyncSession, client: LLMClient | None = None):
         """Сессия запроса (только чтобы отпустить соединение до вызова LLM); клиент LLM подменяется в тестах."""
@@ -72,7 +68,7 @@ class VoiceParseService:
     ) -> VoiceParseResponse:
         """Разобрать фразу на черновики записей.
 
-        Исключения: `AIQuotaExceededException` (429) — суточная квота исчерпана;
+        Исключения: `PlanLimitReachedException` (403) — суточный лимит тарифа исчерпан;
         `ServiceUnavailableException` (503) — ключи LLM не заданы, Redis или модель недоступны, ответ модели
         не разобран. Неудачный вызов модели квоту не расходует.
         """
@@ -81,19 +77,16 @@ class VoiceParseService:
             logger.warning("Ключи LLM не заданы (ANTHROPIC_API_KEY, GEMINI_API_KEY): голосовой ввод недоступен")
             raise ServiceUnavailableException(message="Разбор голосового ввода недоступен")
 
-        now = datetime.now(timezone.utc)
-        quota_key = get_voice_daily_quota_key(user_id, now.strftime("%Y-%m-%d"))
+        plan = await SubscriptionService(self.db).plan(user_id)
         try:
-            calls = await take_daily_quota(redis_client, quota_key)
+            ticket = await take_plan_quota(user_id, plan, PlanFeature.voice, tz)
+        except PlanLimitReachedException:
+            raise
         except Exception as err:
-            logger.warning(f"Не удалось занять квоту голосового ввода в Redis для пользователя {user_id}: {err}")
+            logger.warning(f"Не удалось занять лимит голосового ввода в Redis для пользователя {user_id}: {err}")
             raise ServiceUnavailableException(message="Разбор голосового ввода недоступен") from err
 
-        limit = config.voice_daily_limit_per_user
-        if calls > limit:
-            logger.warning(f"Суточный лимит голосового ввода исчерпан для пользователя {user_id} ({calls - 1}/{limit})")
-            raise AIQuotaExceededException()
-
+        now = datetime.now(timezone.utc)
         today = now.astimezone(tz).date()
         # Пользователь прочитан при авторизации: завершаем читающую транзакцию, чтобы соединение вернулось
         # в пул и не простаивало весь вызов LLM (до AI_REQUEST_TIMEOUT секунд)
@@ -101,14 +94,14 @@ class VoiceParseService:
         try:
             raw_records = await self._call_model(phrase, locale, currency, today)
         except Exception as err:
-            await release_daily_quota(redis_client, quota_key)
+            await release_plan_quota(ticket)
             logger.error(f"Ошибка разбора голосового ввода в LLM для пользователя {user_id}: {type(err).__name__}: {err}")
             raise ServiceUnavailableException(message="Разбор голосового ввода недоступен") from err
 
         records = self._normalize(raw_records, currency, today)
         logger.info(
             f"Голосовой ввод пользователя {user_id}: длина фразы {len(phrase)}, записей {len(records)} "
-            f"из {len(raw_records)}, вызовов за сутки {calls}/{limit}"
+            f"из {len(raw_records)}, тариф {plan.value}, разборов за сутки {ticket.used}/{ticket.limit}"
         )
         return VoiceParseResponse(records=records)
 

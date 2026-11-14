@@ -21,13 +21,23 @@ from app.services.voice_service import VoiceParseService
 router = APIRouter(
     responses={
         401: {"model": ErrorResponse, "description": "Требуется авторизация"},
-        403: {"model": ErrorResponse, "description": "TERMS_NOT_ACCEPTED — не принята текущая версия соглашения"},
-        422: {"model": ErrorResponse, "description": "Пустой или слишком длинный текст, неподдерживаемая валюта"},
+        403: {
+            "model": ErrorResponse,
+            "description": "TERMS_NOT_ACCEPTED — не принята текущая версия соглашения; PLAN_LIMIT_REACHED — "
+            "исчерпан суточный лимит голосового ввода тарифа (details: feature=voice, plan, limit, period, resets_at)",
+        },
+        422: {
+            "model": ErrorResponse,
+            "description": "Пустой или слишком длинный текст, неподдерживаемая валюта",
+        },
         429: {
             "model": ErrorResponse,
-            "description": "AI_QUOTA_EXCEEDED — суточная квота разборов исчерпана; RATE_LIMIT_EXCEEDED — частота",
+            "description": "RATE_LIMIT_EXCEEDED — превышен лимит частоты запросов",
         },
-        503: {"model": ErrorResponse, "description": "Модель или Redis недоступны, ключи LLM не заданы"},
+        503: {
+            "model": ErrorResponse,
+            "description": "Модель или Redis недоступны, ключи LLM не заданы",
+        },
     }
 )
 
@@ -49,8 +59,8 @@ async def parse_voice(
     """Вернуть черновики записей из фразы, распознанной на устройстве; сервер ничего не сохраняет.
 
     «Сегодня» и «вчера» считаются по часам клиента (заголовок X-Timezone-Offset). Пустой список — в фразе
-    нет ни одной суммы. Квота — `VOICE_DAILY_LIMIT_PER_USER` разборов в сутки (UTC); неудачный разбор
-    квоту не расходует.
+    нет ни одной суммы. Лимит — разборов в сутки по тарифу (`FREE_VOICE_PER_DAY` / `PRO_VOICE_PER_DAY`), сутки —
+    по часовому поясу клиента; сверх лимита — 403 `PLAN_LIMIT_REACHED`, неудачный разбор лимит не расходует.
     """
     result = await VoiceParseService(db).parse(
         current_user.id,

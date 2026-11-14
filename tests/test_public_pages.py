@@ -79,9 +79,24 @@ class TestLegalContent:
         assert "Cloudflare" in text and "R2" in text
         # ИИ: основной обработчик — Anthropic (Claude), запасной — Google (Gemini)
         assert "Anthropic (Claude API)" in text and "Google (Gemini API)" in text
+        # Подписки: RevenueCat — обработчик данных покупок, удаляется вместе с аккаунтом
+        assert "RevenueCat" in text
         assert "GDPR" in text
         assert "парол" not in text.replace("Пароль от аккаунта Google", "")
         assert "password hash" not in text and "password hashing" not in text
+
+    @pytest.mark.parametrize(
+        ("lang", "title", "phrases"),
+        [
+            ("ru", "5. Тарифы и подписка", ("автоматически", "Пробный период", "14 дней", "Google Play")),
+            ("en", "5. Plans and subscription", ("automatically", "free trial", "14 days", "Google Play")),
+        ],
+    )
+    def test_terms_have_subscription_section(self, lang: str, title: str, phrases: tuple[str, ...]):
+        """Раздел о подписке (FEAT-02): тарифы, пробный период, автопродление, отмена, отказ в ЕС за 14 дней."""
+        sections = dict(PAGES["terms"][lang]["sections"])
+        text = " ".join(block for block in sections[title] if isinstance(block, str))
+        assert all(phrase in text for phrase in phrases)
 
     @pytest.mark.parametrize("lang", list(LANGUAGES))
     def test_terms_have_no_governing_law(self, lang: str):

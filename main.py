@@ -30,6 +30,7 @@ from app.routers import (
     legal,
     public,
     recurring_payments,
+    subscriptions,
     sync,
     transactions,
     voice,
@@ -88,9 +89,11 @@ async def lifespan(app_instance: FastAPI):
     await engine.dispose()
     from app.redis import close_redis
     from app.services.currency_service import close_http_client
+    from app.services.revenuecat import close_revenuecat_client
 
     await close_redis()
     await close_http_client()
+    await close_revenuecat_client()
     logger.info("Stopping GetBalance AI API")
 
 
@@ -243,6 +246,7 @@ app.include_router(voice.router, prefix="/api/v1/voice", tags=["voice"])
 app.include_router(sync.router, prefix="/api/v1/sync", tags=["sync"])
 app.include_router(currencies.router, prefix="/api/v1/currencies", tags=["currencies"])
 app.include_router(legal.router, prefix="/api/v1/legal", tags=["legal"])
+app.include_router(subscriptions.router, prefix="/api/v1/subscriptions", tags=["subscriptions"])
 app.include_router(public.router)
 
 

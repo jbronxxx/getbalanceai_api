@@ -42,6 +42,9 @@ PRIVACY: dict[str, PageContent] = {
                         "сервис распознавания речи вашего устройства, приложение не записывает и не хранит звук. "
                         "Распознанный текст фразы передаётся на наш сервер только для разбора на записи, "
                         "которые вы подтверждаете сами; текст не сохраняется и не попадает в журналы.",
+                        "Подписка (если вы её оформляете): тариф, продукт, магазин покупки, даты начала, продления "
+                        "и окончания, пробный период и история покупок — вместе с идентификатором аккаунта. Данные "
+                        "банковской карты нам недоступны.",
                     ],
                 ],
             ),
@@ -54,6 +57,7 @@ PRIVACY: dict[str, PageContent] = {
                         "Синхронизация операций, бюджетов и регулярных платежей между устройствами.",
                         "Формирование персонализированной финансовой аналитики с помощью ИИ.",
                         "Разбор фраз голосового ввода на записи.",
+                        "Предоставление тарифа Pro и учёт лимитов функций по тарифу.",
                         "Поиск и исправление ошибок в приложении.",
                         "Защита от злоупотреблений, поддержка и улучшение сервиса.",
                     ],
@@ -82,6 +86,10 @@ PRIVACY: dict[str, PageContent] = {
                         "только сам запрос (в том числе IP-адрес); ваши данные ему не передаются.",
                         "Google Play и Apple App Store — распространение приложения и оплата платных функций. "
                         "Данные банковской карты обрабатывает магазин; мы их не получаем и не храним.",
+                        "RevenueCat (RevenueCat, Inc., США) — учёт подписок: получает идентификатор аккаунта (без "
+                        "имени и email), данные покупок из магазина и технические данные, которые передаёт его "
+                        "модуль в приложении (модель устройства, версия операционной системы и приложения, страна "
+                        "магазина, IP-адрес). RevenueCat обрабатывает эти данные по нашему поручению.",
                         "Хостинг-провайдер — хранение и обработка данных на серверах (см. раздел 6).",
                         "Cloudflare (хранилище R2) — хранение резервных копий базы данных вне сервера. Копии "
                         "шифруются на нашем сервере до отправки, ключа шифрования у Cloudflare нет; копии "
@@ -96,7 +104,8 @@ PRIVACY: dict[str, PageContent] = {
                     "бюджеты, регулярные платежи, сессии и кэш аналитики удаляются из базы данных безвозвратно. "
                     "Резервные копии базы данных создаются ежедневно и хранятся не более 7 суток, серверные "
                     "технические журналы — не более 30 дней; по истечении этих сроков удалённые данные "
-                    "исчезают и оттуда.",
+                    "исчезают и оттуда. Данные покупателя в RevenueCat при удалении аккаунта тоже удаляются; "
+                    "оформленная подписка при этом не отменяется — её нужно отменить в магазине.",
                     "Исключение — запись о принятии условий (версии документов, дата и время, язык, платформа "
                     "и версия приложения, ключевой хэш email, по которому нельзя восстановить адрес). Имени и "
                     "email в ней нет. После удаления аккаунта она хранится 3 года — чтобы при споре подтвердить, "
@@ -107,10 +116,10 @@ PRIVACY: dict[str, PageContent] = {
                 "6. Расположение серверов и международная передача",
                 [
                     "Серверная инфраструктура GetBalance AI расположена в Европейском Союзе (г. Хельсинки, "
-                    "Финляндия). Сервисы Anthropic, Google и Cloudflare из раздела 4 могут обрабатывать данные за "
-                    "пределами ЕС, в том числе в США; такая передача выполняется с мерами защиты, предусмотренными "
-                    "законодательством ЕС о защите данных (например, стандартными договорными условиями "
-                    "Европейской комиссии).",
+                    "Финляндия). Сервисы Anthropic, Google, RevenueCat и Cloudflare из раздела 4 могут "
+                    "обрабатывать данные за пределами ЕС, в том числе в США; такая передача выполняется с мерами "
+                    "защиты, предусмотренными законодательством ЕС о защите данных (например, стандартными "
+                    "договорными условиями Европейской комиссии).",
                 ],
             ),
             (
@@ -192,6 +201,9 @@ PRIVACY: dict[str, PageContent] = {
                         "device's speech recognition service, and the app does not record or store audio. The "
                         "recognized text is sent to our server only to turn it into records that you confirm "
                         "yourself; the text is not stored and is not written to logs.",
+                        "Subscription (if you purchase one): plan, product, store, start, renewal and end dates, "
+                        "trial period and purchase history, linked to your account identifier. We never have access "
+                        "to your card details.",
                     ],
                 ],
             ),
@@ -204,6 +216,7 @@ PRIVACY: dict[str, PageContent] = {
                         "To sync transactions, budgets and recurring payments across your devices.",
                         "To generate personalized financial insights using AI.",
                         "To turn voice input phrases into records.",
+                        "To provide the Pro plan and track feature limits for your plan.",
                         "To find and fix errors in the app.",
                         "To prevent abuse, provide support and improve the service.",
                     ],
@@ -232,6 +245,10 @@ PRIVACY: dict[str, PageContent] = {
                         "only the request itself (including the IP address); none of your data is sent to it.",
                         "Google Play and the Apple App Store distribute the app and process payments for paid "
                         "features. Card details are handled by the store; we never receive or store them.",
+                        "RevenueCat (RevenueCat, Inc., USA) manages subscriptions: it receives your account "
+                        "identifier (without your name or email), purchase data from the store and technical data "
+                        "sent by its module in the app (device model, operating system and app version, store "
+                        "country, IP address). RevenueCat processes this data on our behalf.",
                         "A hosting provider stores and processes data on servers (see section 6).",
                         "Cloudflare (R2 storage) stores off-server backups of the database. Backups are encrypted "
                         "on our server before upload and Cloudflare does not have the encryption key; they are kept "
@@ -246,7 +263,8 @@ PRIVACY: dict[str, PageContent] = {
                     "transactions, budgets, recurring payments, sessions and analytics cache are permanently "
                     "erased from the database. Database backups are created daily and kept for no more than "
                     "7 days, and server technical logs for no more than 30 days; after that the deleted data "
-                    "disappears from them too.",
+                    "disappears from them too. Your customer data in RevenueCat is also deleted with your "
+                    "account; this does not cancel an active subscription — cancel it in the store.",
                     "The exception is the record of your acceptance of terms (document versions, date and time, "
                     "language, platform and app version, and a keyed hash of your email from which the address "
                     "cannot be recovered). It contains no name or email. After account deletion it is kept for "
@@ -258,9 +276,10 @@ PRIVACY: dict[str, PageContent] = {
                 "6. Server location and international transfers",
                 [
                     "GetBalance AI server infrastructure is located in the European Union (Helsinki, Finland). "
-                    "The Anthropic, Google and Cloudflare services listed in section 4 may process data outside the EU, "
-                    "including in the United States; such transfers are made with the safeguards provided by EU "
-                    "data protection law (for example, the European Commission's Standard Contractual Clauses).",
+                    "The Anthropic, Google, RevenueCat and Cloudflare services listed in section 4 may process data "
+                    "outside the EU, including in the United States; such transfers are made with the safeguards "
+                    "provided by EU data protection law (for example, the European Commission's Standard "
+                    "Contractual Clauses).",
                 ],
             ),
             (

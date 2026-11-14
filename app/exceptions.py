@@ -55,8 +55,9 @@ class ErrorCode(StrEnum):
 
     # Безопасность и лимиты
     RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED"
-    # Суточная квота вызовов ИИ исчерпана (голосовой ввод): обновится в 00:00 UTC
-    AI_QUOTA_EXCEEDED = "AI_QUOTA_EXCEEDED"
+
+    # Тарифы: лимит функции на тарифе пользователя исчерпан (details: feature, limit, resets_at) → пейволл
+    PLAN_LIMIT_REACHED = "PLAN_LIMIT_REACHED"
 
     # Валюты
     INVALID_CURRENCY = "INVALID_CURRENCY"
@@ -193,18 +194,14 @@ class ServiceUnavailableException(AppException):
         )
 
 
-class AIQuotaExceededException(AppException):
-    """Исключение при исчерпании суточной квоты вызовов ИИ (HTTP 429)."""
+class PlanLimitReachedException(AppException):
+    """Лимит функции на тарифе исчерпан (HTTP 403): не частота запросов (429), а условие тарифа."""
 
-    def __init__(
-        self,
-        message: str = "Суточный лимит запросов к ИИ исчерпан",
-        details: Optional[dict[str, Any]] = None,
-    ):
+    def __init__(self, details: dict[str, Any], message: str = "Лимит функции на текущем тарифе исчерпан"):
         super().__init__(
-            code=ErrorCode.AI_QUOTA_EXCEEDED,
+            code=ErrorCode.PLAN_LIMIT_REACHED,
             message=message,
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            status_code=status.HTTP_403_FORBIDDEN,
             details=details,
         )
 

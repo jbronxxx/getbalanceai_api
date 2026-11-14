@@ -1,6 +1,7 @@
 """Вызовы LLM для ИИ-отчёта и голосового разбора: Claude (основная модель) и Gemini (запасная).
 
-Повторы и таймауты, переход на запасную модель, учёт токенов и сбоев, разбор JSON, суточная квота в Redis.
+Повторы и таймауты, переход на запасную модель, учёт токенов и сбоев, разбор JSON.
+Лимиты тарифов — в `plan_limits`.
 """
 
 import asyncio
@@ -15,7 +16,6 @@ import httpx
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
-from redis import asyncio as aioredis
 
 from app.services.ai_usage import (
     AIFailureReason,
@@ -32,8 +32,6 @@ from logger.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Срок жизни суточного счётчика вызовов: ключ содержит дату UTC, через сутки он больше не нужен
-DAILY_QUOTA_TTL_SECONDS = 86400
 
 # Паузы перед повторами на той же модели: попыток на одну больше, чем пауз. К запасной модели — без паузы
 RETRY_PAUSES_SECONDS = (0.5, 1.5)
@@ -52,7 +50,12 @@ CLAUDE_MAX_TOKENS = 16000
 # Таймаут HTTP-запроса и сбой соединения Gemini (SDK google-genai ходит через httpx)
 _GEMINI_TRANSPORT_ERRORS = (httpx.TimeoutException, httpx.TransportError)
 # Ошибки одной попытки, после которых решается: повтор, запасная модель или отказ
-_ATTEMPT_ERRORS = (TimeoutError, anthropic.APIError, genai_errors.APIError, *_GEMINI_TRANSPORT_ERRORS)
+_ATTEMPT_ERRORS = (
+    TimeoutError,
+    anthropic.APIError,
+    genai_errors.APIError,
+    *_GEMINI_TRANSPORT_ERRORS,
+)
 # Запас сверх HTTP-таймаута попытки: запрос обрывает сам HTTP-клиент, wait_for — страховка
 _ATTEMPT_GRACE_SECONDS = 1.0
 
@@ -140,7 +143,10 @@ def failure_reason(err: BaseException) -> AIFailureReason:
     if isinstance(err, LLMFailure):
         return err.reason
     # Лимит расходов организации (429) и приостановленная организация (400) — проблема оплаты: повтор не поможет
-    if isinstance(err, (anthropic.EnforcedSpendLimitReachedError, anthropic.OrganizationOnHoldError)):
+    if isinstance(
+        err,
+        (anthropic.EnforcedSpendLimitReachedError, anthropic.OrganizationOnHoldError),
+    ):
         return AIFailureReason.billing
     if isinstance(err, (TimeoutError, anthropic.APITimeoutError, httpx.TimeoutException)):
         return AIFailureReason.timeout
@@ -173,15 +179,19 @@ def _record_usage(model: str, kind: AIRequestKind, usage: TokenUsage) -> None:
 class LLMClient:
     """Клиенты Anthropic и Gemini и вызов с повторами; сервисы получают его в конструкторе, тесты — мок `generate`."""
 
-    def __init__(self, claude: anthropic.AsyncAnthropic | None = None, gemini: genai.Client | None = None):
+    def __init__(
+        self,
+        claude: anthropic.AsyncAnthropic | None = None,
+        gemini: genai.Client | None = None,
+    ):
         # Повторы ведёт generate: у SDK Anthropic свои отключены (max_retries=0), у google-genai их нет.
         # Без настоящего ключа — заглушка: attempt_models() не даёт моделей провайдера без ключа
         self.claude = claude or anthropic.AsyncAnthropic(
-            api_key=config.anthropic_api_key if _provider_configured(LLMProvider.anthropic) else "placeholder",
+            api_key=(config.anthropic_api_key if _provider_configured(LLMProvider.anthropic) else "placeholder"),
             max_retries=0,
         )
         self.gemini = gemini or genai.Client(
-            api_key=config.gemini_api_key if _provider_configured(LLMProvider.google) else "placeholder"
+            api_key=(config.gemini_api_key if _provider_configured(LLMProvider.google) else "placeholder")
         )
 
     async def generate(self, request: LLMRequest) -> str:
@@ -204,7 +214,8 @@ class LLMClient:
             attempt_timeout = min(config.ai_attempt_timeout, deadline - loop.time())
             try:
                 text = await asyncio.wait_for(
-                    self._call(model, request, attempt_timeout), timeout=attempt_timeout + _ATTEMPT_GRACE_SECONDS
+                    self._call(model, request, attempt_timeout),
+                    timeout=attempt_timeout + _ATTEMPT_GRACE_SECONDS,
                 )
             except (*_ATTEMPT_ERRORS, LLMFailure) as err:
                 reason = failure_reason(err)
@@ -231,7 +242,10 @@ class LLMClient:
         """Номер следующей попытки: временный сбой — по порядку, прочие — первая попытка на другой модели."""
         if reason in RETRYABLE_REASONS:
             return index + 1 if index + 1 < len(models) else None
-        return next((i for i in range(index + 1, len(models)) if models[i] != models[index]), None)
+        return next(
+            (i for i in range(index + 1, len(models)) if models[i] != models[index]),
+            None,
+        )
 
     async def _call(self, model: str, request: LLMRequest, timeout: float) -> str:
         if provider_of(model) is LLMProvider.anthropic:
@@ -305,24 +319,3 @@ def sanitize_prompt_text(raw: str) -> str:
     cleaned = re.sub(r"[\r\n\t|]+", " ", raw)
     cleaned = "".join(ch for ch in cleaned if ch >= " ")
     return re.sub(r"\s+", " ", cleaned).strip()
-
-
-async def take_daily_quota(redis: aioredis.Redis, key: str) -> int:
-    """Занять один вызов суточной квоты и вернуть номер вызова за сутки.
-
-    Атомарный INCR до вызова LLM: при чтении и последующей записи параллельные запросы видели одно
-    значение счётчика и все проходили лимит. Ошибка Redis пробрасывается: без счётчика лимит не проверить,
-    а каждый вызов LLM платный.
-    """
-    calls = await redis.incr(key)
-    if calls == 1:
-        await redis.expire(key, DAILY_QUOTA_TTL_SECONDS)
-    return calls
-
-
-async def release_daily_quota(redis: aioredis.Redis, key: str) -> None:
-    """Вернуть занятый вызов: неудачный вызов LLM не должен расходовать суточный лимит."""
-    try:
-        await redis.decr(key)
-    except Exception as err:
-        logger.warning(f"Не удалось вернуть квоту AI в Redis ({key}): {err}")

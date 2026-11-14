@@ -56,11 +56,15 @@ ACCESS_TOKEN_EXPIRE_MINUTES=60
 REFRESH_TOKEN_EXPIRE_DAYS=7
 ANTHROPIC_API_KEY=sk-ant-api03-...
 GEMINI_API_KEY=AIza...
+REVENUECAT_API_KEY=sk_...
+REVENUECAT_WEBHOOK_AUTH=<openssl rand -hex 32>
 GRAFANA_ADMIN_USER=admin
 GRAFANA_ADMIN_PASSWORD=admin
 ```
 > [!NOTE]
 > ИИ-отчёт и голосовой разбор идут в Claude (`ANTHROPIC_API_KEY`); при сбое, отказе модели или проблеме с ключом и оплатой Anthropic последняя попытка — на Gemini (`GEMINI_API_KEY`). Задан только один ключ — все попытки на его модели. Если не задан ни один, сервис AI-инсайтов переключится на безопасный режим заглушек и приложение продолжит работать без ошибок; голосовой ввод (`/voice/parse`) в этом режиме отвечает 503.
+>
+> Подписки: `REVENUECAT_API_KEY` — секретный ключ REST API RevenueCat (Project settings → API keys, v1 secret key), `REVENUECAT_WEBHOOK_AUTH` — то же значение, что в поле Authorization вебхука RevenueCat (Integrations → Webhooks, URL `https://<домен>/api/v1/subscriptions/webhooks/revenuecat`). Доступ (entitlement), дающий Pro, — `REVENUECAT_PRO_ENTITLEMENT` (по умолчанию `pro`). Без ключей все пользователи на Free, вебхук и `/subscriptions/refresh` отвечают 503. Лимиты тарифов — `FREE_AI_REPORTS_PER_MONTH`, `FREE_VOICE_PER_DAY`, `PRO_AI_REPORTS_PER_DAY`, `PRO_VOICE_PER_DAY` (по умолчанию 1, 5, 5, 30).
 
 ### 2. Запуск контейнеров (Локальная разработка)
 ```bash
@@ -266,11 +270,14 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000 --timeout-keep-alive 75
   - `POST /api/v1/auth/google`, `POST /api/v1/auth/apple` — вход или регистрация по ID-токену провайдера (с `accept_legal: true` — принятие соглашения и политики) и получение пары `access_token` и `refresh_token`
   - `POST /api/v1/auth/refresh` — бессрочное/бесшовное обновление `access_token` с помощью `refresh_token` (механизм Refresh Token Rotation)
   - `POST /api/v1/auth/logout` — выход из системы и отзыв активного токена
-  - `GET /api/v1/auth/me` — получение данных текущего авторизованного пользователя
+  - `GET /api/v1/auth/me` — профиль текущего пользователя: тариф, срок подписки, остатки лимитов со временем сброса
   - `PATCH /api/v1/auth/me` — обновление профиля (имя, аватар, базовая валюта `base_currency`)
 - **Юридические документы (`/api/v1/legal`):**
   - `GET /api/v1/legal` — текущие версии соглашения и политики и «Что изменилось» (без авторизации)
   - `POST /api/v1/legal/accept` — принятие показанных версий; без принятой текущей версии соглашения остальные эндпоинты данных отвечают `403 TERMS_NOT_ACCEPTED`
+- **Подписка (`/api/v1/subscriptions`):**
+  - `POST /api/v1/subscriptions/refresh` — обновить статус подписки из RevenueCat (после покупки и восстановления)
+  - `POST /api/v1/subscriptions/webhooks/revenuecat` — вебхук RevenueCat (заголовок `Authorization`)
 - **Публичные страницы (без авторизации):**
   - `GET /privacy` — политика конфиденциальности (ru/en)
   - `GET /terms` — пользовательское соглашение (ru/en)
@@ -382,6 +389,17 @@ python scripts/cleanup_tokens.py --days 14
 docker compose -f docker-compose.yml -f docker-compose.prod.yml exec api python scripts/delete_user_by_email.py --email user@example.com
 ```
 Скрипт ищет пользователя без учёта регистра по слепому индексу email (HMAC адреса, сам email в базе зашифрован), просит повторно ввести email (флаг `--yes` пропускает подтверждение) и удаляет аккаунт теми же шагами, что и `DELETE /api/v1/auth/me`. Коды возврата: `0` — удалён, `1` — не найден, `3` — отменено.
+
+## ⭐ Ручная выдача Pro
+
+Pro себе, тестерам и знакомым без покупки в магазине:
+```bash
+DC="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
+$DC exec -T api python scripts/grant_pro.py --email user@example.com                     # бессрочно
+$DC exec -T api python scripts/grant_pro.py --email user@example.com --until 2027-01-01  # до даты (00:00 UTC)
+$DC exec -T api python scripts/grant_pro.py --email user@example.com --revoke            # отозвать
+```
+Скрипт находит пользователя по email (как `delete_user_by_email.py`) и пишет в `subscriptions` строку с магазином `manual`; в приложении тариф обновится после перезапуска или открытия «Профиля». `--revoke` удаляет только строку `manual`, подписку из RevenueCat не трогает. Синхронизация с RevenueCat (покупка, «Восстановить покупки», вебхук) заменяет строку данными RevenueCat, а без доступа там — удаляет: после подключения RevenueCat Pro надёжнее выдавать в его панели (Grant entitlement у покупателя с id аккаунта). Коды возврата: `0` — выполнено, `1` — не найден, `2` — неверная дата или нечего отзывать.
 
 ## 🔑 Ротация ключей шифрования имени и email
 
