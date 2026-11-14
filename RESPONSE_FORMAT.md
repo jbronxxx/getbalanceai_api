@@ -122,7 +122,7 @@ API использует единообразный формат ответов 
     "base_currency": "EUR",
     "created_at": "2026-09-10T10:30:00Z",
     "legal": {"terms_version": "2026-11-15", "terms_accepted": true, "privacy_version": "2026-11-15", "privacy_accepted": true},
-    "subscription": {"plan": "free", "expires_at": null, "will_renew": false, "is_trial": false},
+    "subscription": {"plan": "free", "expires_at": null, "will_renew": false, "is_trial": false, "family_plan": false, "via_family": false, "store": null},
     "limits": [
       {"feature": "ai_report", "period": "month", "limit": 1, "used": 0, "remaining": 1, "resets_at": "2026-11-30T19:00:00Z"},
       {"feature": "voice", "period": "day", "limit": 5, "used": 3, "remaining": 2, "resets_at": "2026-11-14T19:00:00Z"}
@@ -131,7 +131,7 @@ API использует единообразный формат ответов 
 }
 ```
 
-* `subscription.plan` — `free` или `pro`. `expires_at` — у Pro дата продления (`will_renew=true`) или окончания доступа; null — Free без прошлой подписки или бессрочный Pro; у Free после окончания подписки — дата её окончания. `is_trial` — идёт пробный период.
+* `subscription.plan` — `free` или `pro`. `expires_at` — у Pro дата продления (`will_renew=true`) или окончания доступа; null — Free без прошлой подписки или бессрочный Pro; у Free после окончания подписки — дата её окончания. `is_trial` — идёт пробный период. `family_plan` — у пользователя свой семейный Pro (можно создать семью и приглашать). `via_family` — Pro получен от владельца семьи (своей подписки нет; `expires_at`, `will_renew`, `is_trial` тогда пустые). `store` — магазин своей действующей подписки (`play_store`, `app_store`, `promotional`, `manual` — выдан вручную; значения RevenueCat в нижнем регистре); null у Free и у Pro от семьи. Кнопку «Управлять в Google Play» клиент показывает только при `play_store`.
 * `limits` — по одной записи на функцию: `ai_report` (генерация ИИ-отчёта, `GET /insights` с `generate=true`) и `voice` (`POST /voice/parse`). Free — `ai_report` 1 в месяц, `voice` 5 в сутки; Pro — 5 и 30 в сутки. `used`/`remaining` — null, если счётчик временно недоступен (проверку сделает сервер при вызове).
 
 #### Подписка (POST /api/v1/subscriptions/refresh)
@@ -139,7 +139,7 @@ API использует единообразный формат ответов 
 Приложение вызывает после покупки и восстановления покупок: сервер запрашивает статус в RevenueCat (пользователь RevenueCat — id аккаунта) и сохраняет его, не дожидаясь вебхука. Требует принятой текущей версии соглашения; 10 запросов в минуту. Ответ — `subscription` из профиля:
 
 ```json
-{"status": "success", "data": {"plan": "pro", "expires_at": "2026-12-14T10:00:00Z", "will_renew": true, "is_trial": true}}
+{"status": "success", "data": {"plan": "pro", "expires_at": "2026-12-14T10:00:00Z", "will_renew": true, "is_trial": true, "family_plan": false, "via_family": false, "store": "play_store"}}
 ```
 
 `503 SERVICE_UNAVAILABLE` — RevenueCat не настроен или недоступен. Вебхук `POST /api/v1/subscriptions/webhooks/revenuecat` — только для RevenueCat (заголовок `Authorization` из настроек вебхука; неверный — `401 UNAUTHORIZED`, не настроен или сбой RevenueCat — `503`).
@@ -193,10 +193,14 @@ API использует единообразный формат ответов 
     "category": "salary",
     "type": "income",
     "date": "2026-09-10T10:00:00Z",
-    "created_at": "2026-09-10T10:30:00Z"
+    "created_at": "2026-09-10T10:30:00Z",
+    "author_id": "550e8400-e29b-41d4-a716-446655440000",
+    "is_shared": false
   }
 }
 ```
+
+*Общие записи (FEAT-03):* в запросе `is_shared` (по умолчанию `false`) — запись в общий кошелёк семьи. У транзакций, бюджетов и регулярных платежей в ответах `is_shared` и `author_id` (кто добавил; `null` — бывший участник, удаливший аккаунт). Общую запись без семьи — `404 FAMILY_NOT_FOUND`, в замороженной семье — `403 FAMILY_FROZEN`. `base_amount` и `exchange_rate` — в базовой валюте автора: итоги общих записей в своей валюте клиент считает по `amount` и `currency`. Бюджет: `is_shared` в `POST /budgets` и `/sync` — общий лимит (считает общие траты всех участников; личный — только ваши личные), ключ `(category, month, year)` свой у личных и у общих; `DELETE /budgets/category/{c}/{m}/{y}?shared=true` — удалить общий.
 
 ##### Мультивалютные правила для транзакций (`POST /api/v1/transactions` и `POST /api/v1/sync`):
 1. **Валидация валюты (`currency`)**: разрешены только поддерживаемые ISO-коды (`USD`, `EUR`). Любой иной код отклоняется со статусом `422 Unprocessable Entity` (`code: VALIDATION_ERROR`).
@@ -289,6 +293,8 @@ API использует единообразный формат ответов 
 * `busy` — LLM временно недоступен (ошибка/перегрузка провайдера, ответ дольше `AI_REQUEST_TIMEOUT`) или недоступен счётчик лимита в Redis; `insights` — локализованное сообщение (или сохранённый отчёт с `is_outdated=true`), ответ не кэшируется, лимит не тратится.
 
 Генерация (`generate=true`, а сохранённого актуального отчёта нет) расходует лимит тарифа `ai_report` — за любой месяц отчёта; лимит исчерпан — `403 PLAN_LIMIT_REACHED` (см. реестр ошибок), сохранённый отчёт (в том числе устаревший) — запросом с `generate=false`.
+
+`scope` — `personal` (по умолчанию, «Мой»: личные записи и общие, добавленные мной) или `family` («Семья»: все общие записи и общие лимиты семьи). Отчёт по семье один на семью для того же языка и валюты: участники получают готовый отчёт без нового вызова ИИ, генерация тратит лимит запросившего. Не в семье — `404 FAMILY_NOT_FOUND`.
 
 Параметры: `currency` — только `USD`, `EUR`; `locale` — код языка `ru` или с регионом `ru_RU` (используется язык; по умолчанию и для языка, которого нет, — `en`). Иначе `422 VALIDATION_ERROR`: оба значения попадают в промпт LLM и ключ кэша.
 
@@ -441,10 +447,50 @@ API использует единообразный формат ответов 
     "deleted_transaction_ids": ["770e8400-e29b-41d4-a716-446655440042"],
     "has_more": false,
     "next_cursor": null,
-    "server_time": "2026-11-06T13:05:41.120394Z"
+    "server_time": "2026-11-06T13:05:41.120394Z",
+    "family_id": null
   }
 }
 ```
+
+*Семья:* `transactions` — и общие записи семьи (их правят все участники); `deleted_transaction_ids` — и удаления общих записей другими участниками, и общие записи, которые автор сделал личными (для остальных они пропали). `family_id` — текущая семья пользователя: если она отличается от сохранённой с прошлой синхронизации (вступил, вышел, исключён, семья распущена), клиент удаляет локальные общие записи и синхронизируется заново без `since`. В `/sync` отказы по правам — в `rejected`: `FAMILY_NOT_FOUND` (общая без семьи), `FAMILY_FROZEN` (семья заморожена; и для `deleted_transaction_ids` — запись не удалена, клиент её возвращает), `FAMILY_AUTHOR_ONLY` (отметку меняет только автор), `ID_CONFLICT` (чужая запись).
+
+#### Семья (FEAT-03, /api/v1/families)
+
+Все ручки требуют входа и принятой версии соглашения.
+
+| Метод и путь | Кто | Ответ | Ошибки |
+| :--- | :--- | :--- | :--- |
+| `GET /families/me` | любой | `FamilyResponse` или `data: null` (не в семье) | — |
+| `POST /families/` | владелец семейного Pro | 201 `FamilyResponse` | 403 `FAMILY_PLAN_REQUIRED`, 409 `FAMILY_ALREADY_MEMBER` |
+| `POST /families/me/invites` | владелец, ≤ 10 в сутки | 201 `{id, code, created_at, expires_at}` — код показывается только здесь | 403 `FAMILY_OWNER_ONLY` / `FAMILY_FROZEN`, 404 `FAMILY_NOT_FOUND`, 409 `FAMILY_FULL`, 429 |
+| `DELETE /families/me/invites/{invite_id}` | владелец | `BaseResponse` | 403 `FAMILY_OWNER_ONLY`, 404 `FAMILY_INVITE_INVALID` |
+| `POST /families/invites/preview` `{code}` | любой | `{owner_name, members_count, max_members, expires_at}` | 404 `FAMILY_INVITE_INVALID`, 422, 429 |
+| `POST /families/join` `{code}` | не в семье | `FamilyResponse` | 404 `FAMILY_INVITE_INVALID`, 409 `FAMILY_ALREADY_MEMBER` / `FAMILY_FULL`, 403 `FAMILY_FROZEN`, 422, 429 |
+| `DELETE /families/me/members/{user_id}` | владелец | `BaseResponse` | 400 (себя), 403 `FAMILY_OWNER_ONLY`, 404 `FAMILY_NOT_FOUND` |
+| `POST /families/me/leave` | участник или владелец | `BaseResponse` | 404 `FAMILY_NOT_FOUND` |
+
+Код — 8 символов из `ABCDEFGHJKMNPQRSTUVWXYZ23456789`, регистр, пробелы и дефисы при вводе не важны; другой формат — `422`. Просмотр и вступление вместе — не больше 10 попыток в час. Выход участника и исключение: общие записи остаются в семье, транзакции участника копируются ему как личные. Выход владельца — роспуск: общие записи достаются авторам как личные.
+
+```json
+{
+  "status": "success",
+  "data": {
+    "id": "a1b2c3d4-0000-4000-8000-000000000001",
+    "role": "owner",
+    "owner_id": "550e8400-e29b-41d4-a716-446655440000",
+    "is_frozen": false,
+    "max_members": 5,
+    "members": [
+      {"user_id": "550e8400-e29b-41d4-a716-446655440000", "name": "John", "email": "john@example.com", "role": "owner", "joined_at": "2026-11-14T10:00:00Z"},
+      {"user_id": "660e8400-e29b-41d4-a716-446655440000", "name": "Anna", "email": "anna@example.com", "role": "member", "joined_at": "2026-11-14T10:05:00Z"}
+    ],
+    "invites": [{"id": "b1b2c3d4-0000-4000-8000-000000000002", "created_at": "2026-11-14T10:10:00Z", "expires_at": "2026-11-21T10:10:00Z"}]
+  }
+}
+```
+
+`email` участников и `invites` — только в ответе владельцу (участнику — `null` и `[]`). `is_frozen` — у владельца нет семейного Pro: общие записи только для чтения, приглашений и новых общих нет, участники без своего Pro — на Free; продлит — всё вернётся.
 
 ---
 
@@ -495,6 +541,14 @@ API использует единообразный формат ответов 
 | `NOT_FOUND` | 404 | Запрашиваемый ресурс или URL не найден |
 | `RATE_LIMIT_EXCEEDED` | 429 | Превышен лимит частоты запросов (Rate Limiting) |
 | `PLAN_LIMIT_REACHED` | 403 | Исчерпан лимит функции на тарифе (`GET /insights` с генерацией, `POST /voice/parse`) — приложение показывает пейволл. `details`: `feature` (`ai_report`, `voice`), `plan` (`free`, `pro`), `limit`, `period` (`day`, `month`), `resets_at` (UTC) — начало следующего окна по часам клиента. Не путать с 429 `RATE_LIMIT_EXCEEDED` (частота запросов) |
+| `FAMILY_NOT_FOUND` | 404 | Пользователь не в семье (ручки семьи, общая запись, `GET /insights?scope=family`) или участник не найден; в `/sync` — `rejected` |
+| `FAMILY_PLAN_REQUIRED` | 403 | Создать семью можно только с действующим семейным Pro |
+| `FAMILY_ALREADY_MEMBER` | 409 | Уже в семье: сначала выйти из текущей |
+| `FAMILY_FULL` | 409 | В семье нет свободных мест (с учётом действующих приглашений) |
+| `FAMILY_INVITE_INVALID` | 404 | Код приглашения не найден, истёк, использован или отозван |
+| `FAMILY_OWNER_ONLY` | 403 | Приглашать, отзывать и исключать может только владелец |
+| `FAMILY_FROZEN` | 403 | Семья заморожена: общие записи только для чтения, приглашений и вступления нет; в `/sync` — `rejected` |
+| `FAMILY_AUTHOR_ONLY` | 403 | Отметку «личная / общая» у готовой записи меняет только автор; в `/sync` — `rejected` |
 | `INTERNAL_SERVER_ERROR` | 500 | Непредвиденная внутренняя ошибка сервера |
 | `SERVICE_UNAVAILABLE` | 503 | Сервис, база данных или Redis временно недоступны; любой авторизованный запрос — нельзя проверить отзыв токена (сессия не завершена, запрос нужно повторить, refresh не нужен); при logout и `DELETE /auth/me` — не удалось записать отзыв токена (токен действует, запрос нужно повторить); при `DELETE /auth/me` — ещё и RevenueCat недоступен (покупатель не удалён, аккаунт цел, запрос нужно повторить). `/health` возвращает 503 с `details: {database, redis}` |
 

@@ -26,6 +26,7 @@ from app.routers import (
     auth,
     budgets,
     currencies,
+    families,
     insights,
     legal,
     public,
@@ -247,6 +248,7 @@ app.include_router(sync.router, prefix="/api/v1/sync", tags=["sync"])
 app.include_router(currencies.router, prefix="/api/v1/currencies", tags=["currencies"])
 app.include_router(legal.router, prefix="/api/v1/legal", tags=["legal"])
 app.include_router(subscriptions.router, prefix="/api/v1/subscriptions", tags=["subscriptions"])
+app.include_router(families.router, prefix="/api/v1/families", tags=["families"])
 app.include_router(public.router)
 
 

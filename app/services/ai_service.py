@@ -4,22 +4,38 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone, tzinfo
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.exceptions import PlanLimitReachedException
-from app.models.models import Budget, Transaction, TransactionType
-from app.redis import get_insights_cache_key, get_insights_user_patterns, get_redis
+from app.exceptions import ErrorCode, PlanLimitReachedException
+from app.models.models import (
+    Budget,
+    Category,
+    FamilyMember,
+    Transaction,
+    TransactionType,
+)
+from app.redis import (
+    get_family_insights_cache_key,
+    get_family_insights_pattern,
+    get_insights_cache_key,
+    get_insights_user_patterns,
+    get_redis,
+)
 from app.schemas.schemas import (
     BudgetResponse,
     InsightResponse,
+    InsightScope,
     InsightState,
     PlanFeature,
 )
 from app.services.ai_usage import AIRequestKind
-from app.services.budget_service import BudgetService
+from app.services.budget_service import BudgetScope, BudgetService
+from app.services.currency_service import CurrencyService
+from app.services.family_access import SharedAccess, raise_access_error
 from app.services.insights_formatting import category_name, format_money
 from app.services.insights_texts import insight_texts
 from app.services.llm import (
@@ -47,6 +63,54 @@ INSIGHTS_CACHE_TTL_SECONDS = 400 * 86400
 # Меньше операций за месяц — советы ИИ получаются пустыми, а генерация тратит суточную квоту.
 # Такое же значение в мобильном приложении (карточка «нужно хотя бы 7 операций»).
 MIN_TRANSACTIONS_FOR_INSIGHTS = 7
+
+
+@dataclass(frozen=True)
+class ReportScope:
+    """Чьи записи входят в отчёт: условия на операции и лимиты, ключ кэша."""
+
+    transactions: Any  # Условие SQL на Transaction
+    budgets: Any  # Условие SQL на Budget
+    budget_scope: BudgetScope
+    family_id: uuid.UUID | None = None  # Отчёт по общим записям семьи: кэш общий на участников
+
+    @classmethod
+    def personal(cls, user_id: uuid.UUID) -> "ReportScope":
+        """«Мой»: личные записи и общие, добавленные мной в текущей семье.
+
+        Общие записи семьи, из которой я вышел, не входят: при выходе они скопированы мне как личные.
+        """
+        current_family = select(FamilyMember.family_id).where(FamilyMember.user_id == user_id).scalar_subquery()
+        return cls(
+            transactions=and_(
+                Transaction.user_id == user_id,
+                or_(Transaction.family_id.is_(None), Transaction.family_id == current_family),
+            ),
+            budgets=and_(Budget.user_id == user_id, Budget.family_id.is_(None)),
+            budget_scope=BudgetScope.personal,
+        )
+
+    @classmethod
+    def family(cls, family_id: uuid.UUID) -> "ReportScope":
+        """«Семья»: все общие записи и общие лимиты семьи."""
+        return cls(
+            transactions=Transaction.family_id == family_id,
+            budgets=Budget.family_id == family_id,
+            budget_scope=BudgetScope.family,
+            family_id=family_id,
+        )
+
+
+@dataclass(frozen=True)
+class SummaryTransaction:
+    """Операция для сводки отчёта по семье: base_amount — эквивалент в валюте отчёта."""
+
+    date: datetime
+    type: TransactionType
+    category: Category
+    amount: Decimal
+    currency: str
+    base_amount: Decimal
 
 
 @dataclass(frozen=True)
@@ -84,6 +148,17 @@ class AIService:
             logger.warning(f"Ошибка инвалидации кэша Redis для пользователя {user_id}: {err}")
 
     @classmethod
+    async def invalidate_family_cache(cls, family_id: uuid.UUID) -> None:
+        """Удалить отчёты семьи (роспуск): без семьи они никому не видны."""
+        try:
+            client = get_redis()
+            batch = [key async for key in client.scan_iter(match=get_family_insights_pattern(family_id), count=500)]
+            if batch:
+                await client.unlink(*batch)
+        except Exception as err:
+            logger.warning(f"Ошибка очистки отчётов семьи {family_id} в Redis: {err}")
+
+    @classmethod
     async def clear_cache(cls) -> None:
         """Очистить весь кэш инсайтов без блокировки Redis и без удаления других данных."""
         try:
@@ -105,7 +180,7 @@ class AIService:
         return month_bounds(year, month, tz)
 
     async def _month_fingerprint(
-        self, user_id: uuid.UUID, month: int, year: int, tz: tzinfo = timezone.utc
+        self, scope: ReportScope, month: int, year: int, tz: tzinfo = timezone.utc
     ) -> MonthFingerprint:
         """Отпечаток данных месяца: итоги операций по категории, типу и валюте и лимиты с валютой.
 
@@ -125,7 +200,7 @@ class AIService:
                     func.coalesce(func.sum(Transaction.base_amount), 0),
                 )
                 .where(
-                    Transaction.user_id == user_id,
+                    scope.transactions,
                     Transaction.date >= start,
                     Transaction.date < end,
                 )
@@ -135,7 +210,7 @@ class AIService:
         budget_rows = (
             await self.db.execute(
                 select(Budget.category, Budget.currency, Budget.limit_amount).where(
-                    Budget.user_id == user_id,
+                    scope.budgets,
                     Budget.month == month,
                     Budget.year == year,
                 )
@@ -186,8 +261,13 @@ class AIService:
         year: int | None = None,
         generate: bool = True,
         tz: tzinfo = timezone.utc,
+        scope: InsightScope = InsightScope.personal,
     ) -> InsightResponse:
         """Вернуть AI-отчёт за месяц, по возможности без вызова LLM.
+
+        `scope`: «Мой» — личные записи и общие, добавленные мной; «Семья» — все общие записи семьи. Отчёт
+        по семье хранится один на семью (язык и валюта — в ключе): участники видят его без повторного вызова
+        LLM, генерация тратит лимит запросившего. Не в семье — `NotFoundException` FAMILY_NOT_FOUND (404).
 
         LLM не вызывается для будущего месяца и месяца без операций (`no_data`), при числе операций
         меньше `MIN_TRANSACTIONS_FOR_INSIGHTS` (`not_enough_data`), при совпадении
@@ -205,6 +285,13 @@ class AIService:
         target_year = year or current_year
         texts = insight_texts(locale)
 
+        report_scope = ReportScope.personal(user_id)
+        if scope is InsightScope.family:
+            access = await SharedAccess.load(self.db, user_id)
+            if access.family_id is None:
+                raise_access_error(ErrorCode.FAMILY_NOT_FOUND)
+            report_scope = ReportScope.family(access.family_id)
+
         if (target_year, target_month) > (current_year, current_month):
             return InsightResponse(insights=[], generated_at=now, state=InsightState.no_data)
 
@@ -212,14 +299,17 @@ class AIService:
             logger.warning("Ключи LLM не заданы (ANTHROPIC_API_KEY, GEMINI_API_KEY): отчёт — заглушка")
             return InsightResponse(insights=[texts.stub], generated_at=now)
 
-        fingerprint = await self._month_fingerprint(user_id, target_month, target_year, tz)
+        fingerprint = await self._month_fingerprint(report_scope, target_month, target_year, tz)
         if fingerprint.tx_count == 0:
             return InsightResponse(insights=[], generated_at=now, state=InsightState.no_data)
         if fingerprint.tx_count < MIN_TRANSACTIONS_FOR_INSIGHTS:
             # Сохранённый отчёт (сделан, когда операций было больше) тоже не отдаём: он про другие данные
             return InsightResponse(insights=[], generated_at=now, state=InsightState.not_enough_data)
 
-        cache_key = get_insights_cache_key(user_id, locale, currency, month=target_month, year=target_year)
+        if report_scope.family_id is not None:
+            cache_key = get_family_insights_cache_key(report_scope.family_id, locale, currency, target_month, target_year)
+        else:
+            cache_key = get_insights_cache_key(user_id, locale, currency, month=target_month, year=target_year)
 
         cached: dict | None = None
         try:
@@ -259,7 +349,7 @@ class AIService:
         query = (
             select(Transaction)
             .where(
-                Transaction.user_id == user_id,
+                report_scope.transactions,
                 Transaction.date >= start_date,
                 Transaction.date < end_date,
             )
@@ -267,7 +357,10 @@ class AIService:
             .limit(50)
         )
         result = await self.db.execute(query)
-        transactions = list(result.scalars().all())
+        loaded: list[Transaction] = list(result.scalars().all())
+        transactions: list[Transaction] | list[SummaryTransaction] = loaded
+        if report_scope.family_id is not None:
+            transactions = await self._in_report_currency(loaded, currency)
 
         # Загружаем активные лимиты бюджетов за выбранный период
         budgets: list[BudgetResponse] = []
@@ -279,6 +372,7 @@ class AIService:
                 year=target_year,
                 user_base_currency=currency,
                 tz=tz,
+                scope=report_scope.budget_scope,
             )
         except Exception as err:
             logger.warning(f"Не удалось загрузить бюджеты для пользователя {user_id}: {err}")
@@ -322,8 +416,34 @@ class AIService:
         return response
 
     @staticmethod
+    async def _in_report_currency(transactions: list[Transaction], currency: str) -> list[SummaryTransaction]:
+        """Операции с эквивалентом в валюте отчёта: base_amount общих записей — в базовых валютах разных авторов."""
+        rates = None
+        if any(tx.currency != currency for tx in transactions):
+            rates = (await CurrencyService().get_rates()).rates
+        converted = []
+        for tx in transactions:
+            amount = Decimal(str(tx.amount))
+            if tx.currency != currency:
+                rate = CurrencyService.calculate_cross_rate(tx.currency, currency, rates)
+                amount_in_report = (amount * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            else:
+                amount_in_report = amount
+            converted.append(
+                SummaryTransaction(
+                    date=tx.date,
+                    type=tx.type,
+                    category=tx.category,
+                    amount=amount,
+                    currency=tx.currency,
+                    base_amount=amount_in_report,
+                )
+            )
+        return converted
+
+    @staticmethod
     def build_summary(
-        transactions: list[Transaction],
+        transactions: list[Transaction] | list[SummaryTransaction],
         budgets: list[BudgetResponse] | str | None = None,
         currency: str = "USD",
         locale: str = "en",

@@ -105,6 +105,13 @@ class PiiCipher:
         """HMAC-SHA256 нормализованного email в hex (64 символа)."""
         return hmac.new(self.hmac_key, normalize_email(email).encode("utf-8"), hashlib.sha256).hexdigest()
 
+    def secret_hash(self, value: str, context: str) -> str:
+        """HMAC-SHA256 короткого секрета (код приглашения) в hex; `context` разводит секреты разных назначений.
+
+        Без ключа короткий код по хешу из утёкшей базы подбирался бы перебором.
+        """
+        return hmac.new(self.hmac_key, f"{context}:{value}".encode("utf-8"), hashlib.sha256).hexdigest()
+
 
 def cipher_from_settings(encryption_keys: list[str], hmac_key: str) -> PiiCipher:
     """Собрать шифр из значений настроек; ошибка формата — `PiiKeyError`."""
@@ -121,3 +128,8 @@ def get_pii_cipher() -> PiiCipher:
 def blind_index(email: str) -> str:
     """Слепой индекс email на ключе из конфигурации."""
     return get_pii_cipher().blind_index(email)
+
+
+def secret_hash(value: str, context: str) -> str:
+    """HMAC короткого секрета на ключе слепого индекса из конфигурации."""
+    return get_pii_cipher().secret_hash(value, context)

@@ -8,7 +8,7 @@ from typing import Optional
 
 from sqlalchemy import JSON, CheckConstraint, Date, DateTime
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import ForeignKey, Index, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import ForeignKey, Index, Numeric, String, Text, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 from sqlalchemy.types import TypeDecorator
@@ -102,6 +102,19 @@ class LegalDocument(str, enum.Enum):
 
 
 LEGAL_DOCUMENT_VALUES: tuple[str, ...] = tuple(d.value for d in LegalDocument)
+
+
+class FamilyRole(str, enum.Enum):
+    """Роль участника семьи."""
+
+    owner = "owner"  # Владелец: платит за семейный Pro, приглашает и исключает участников
+    member = "member"  # Участник: получает Pro владельца, видит и правит общие записи
+
+
+FAMILY_ROLE_VALUES: tuple[str, ...] = tuple(r.value for r in FamilyRole)
+
+# Общая запись принадлежит семье; личная — автору. Запись без автора (аккаунт удалён) может быть только общей
+_OWNER_OR_FAMILY = "user_id IS NOT NULL OR family_id IS NOT NULL"
 
 # Наибольшее значение денежной колонки Numeric(18, 2): сумма больше не запишется в БД
 MONEY_DB_MAX = Decimal("9999999999999999.99")
@@ -258,11 +271,13 @@ class Transaction(Base):
 
     Поля:
         id (uuid.UUID): Уникальный идентификатор транзакции (Primary Key).
-        user_id (uuid.UUID): Внешний ключ на владельца операции (users.id).
+        user_id (uuid.UUID | None): Автор операции (users.id); у личной — владелец. None — общая операция
+            участника, удалившего аккаунт («Бывший участник»).
+        family_id (uuid.UUID | None): Семья общей операции (families.id); None — личная операция автора.
         amount (Decimal): Сумма операции в валюте чека.
         currency (str): Код валюты операции (USD, EUR).
-        exchange_rate (Decimal): Курс валюты операции к базовой валюте.
-        base_amount (Decimal): Эквивалент суммы в базовой валюте пользователя.
+        exchange_rate (Decimal): Курс валюты операции к базовой валюте автора.
+        base_amount (Decimal): Эквивалент суммы в базовой валюте автора.
         description (str): Описание / комментарий к операции.
         category (Category): Категория транзакции (Enum).
         type (TransactionType): Тип транзакции (income / expense).
@@ -279,14 +294,21 @@ class Transaction(Base):
         Index("ix_transactions_user_id_type_date", "user_id", "type", "date"),
         # Выборка изменений с момента прошлой синхронизации (GET /sync/changes)
         Index("ix_transactions_user_id_updated_at", "user_id", "updated_at"),
+        # Общие операции семьи: по дате (отчёт, бюджеты) и по изменению (GET /sync/changes)
+        Index("ix_transactions_family_id_date", "family_id", "date"),
+        Index("ix_transactions_family_id_updated_at", "family_id", "updated_at"),
         CheckConstraint(
             f"currency IN {SUPPORTED_CURRENCIES}",
             name="ck_transactions_currency",
         ),
+        CheckConstraint(_OWNER_OR_FAMILY, name="ck_transactions_owner"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    # Удаление пользователя удаляет его личные операции; общие сервис заранее отвязывает от автора (user_id = NULL)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    # RESTRICT: семью нельзя удалить, пока сервис не раздал её общие операции авторам
+    family_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("families.id", ondelete="RESTRICT"), nullable=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(precision=18, scale=2), nullable=False)
     currency: Mapped[str] = mapped_column(String(10), default="USD", server_default="USD", nullable=False)
     exchange_rate: Mapped[Decimal] = mapped_column(
@@ -365,20 +387,27 @@ class TransactionDeletion(Base):
     Таблица: transaction_deletions
 
     Удаление транзакции не оставляет следа в transactions, поэтому другие устройства пользователя
-    узнают о нём только отсюда (GET /sync/changes). Ключ — id удалённой транзакции: при повторном
-    создании транзакции с тем же id запись удаляется. Хранится бессрочно, удаляется вместе с пользователем.
+    и участники семьи узнают о нём только отсюда (GET /sync/changes). Ключ — id удалённой транзакции: при повторном
+    создании транзакции с тем же id запись удаляется. Общая операция, которую автор сделал личной, тоже
+    записывается сюда с семьёй: для остальных участников она пропала. Отдаётся только тем, кому операция
+    сейчас не видна. Хранится бессрочно, удаляется вместе с пользователем или семьёй.
 
     Поля:
         transaction_id (uuid.UUID): Идентификатор удалённой транзакции (Primary Key).
-        user_id (uuid.UUID): Внешний ключ на владельца транзакции (users.id).
+        user_id (uuid.UUID): Кто удалил (users.id): автор личной операции или участник семьи.
+        family_id (uuid.UUID | None): Семья общей операции (families.id); None — личная операция.
         deleted_at (datetime): Момент удаления.
     """
 
     __tablename__ = "transaction_deletions"
-    __table_args__ = (Index("ix_transaction_deletions_user_id_deleted_at", "user_id", "deleted_at"),)
+    __table_args__ = (
+        Index("ix_transaction_deletions_user_id_deleted_at", "user_id", "deleted_at"),
+        Index("ix_transaction_deletions_family_id_deleted_at", "family_id", "deleted_at"),
+    )
 
     transaction_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    family_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("families.id", ondelete="CASCADE"), nullable=True)
     deleted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -394,7 +423,9 @@ class Budget(Base):
 
     Поля:
         id (uuid.UUID): Уникальный идентификатор бюджета (Primary Key).
-        user_id (uuid.UUID): Внешний ключ на владельца бюджета (users.id).
+        user_id (uuid.UUID | None): Автор бюджета (users.id); у личного — владелец. None — общий бюджет
+            участника, удалившего аккаунт.
+        family_id (uuid.UUID | None): Семья общего бюджета (families.id); None — личный бюджет.
         category (Category): Категория расходов, для которой установлен лимит.
         limit_amount (Decimal): Установленный лимит суммы на месяц в валюте лимита.
         currency (str): Валюта лимита (USD, EUR); не зависит от базовой валюты пользователя.
@@ -406,15 +437,37 @@ class Budget(Base):
 
     __tablename__ = "budgets"
     __table_args__ = (
-        UniqueConstraint("user_id", "category", "month", "year", name="uq_budget_user_cat_period"),
+        # Один личный лимит пользователя и один общий лимит семьи на категорию и месяц; они не мешают друг другу
+        Index(
+            "uq_budgets_personal_period",
+            "user_id",
+            "category",
+            "month",
+            "year",
+            unique=True,
+            postgresql_where=text("family_id IS NULL"),
+            sqlite_where=text("family_id IS NULL"),
+        ),
+        Index(
+            "uq_budgets_family_period",
+            "family_id",
+            "category",
+            "month",
+            "year",
+            unique=True,
+            postgresql_where=text("family_id IS NOT NULL"),
+            sqlite_where=text("family_id IS NOT NULL"),
+        ),
         CheckConstraint(
             f"currency IN {SUPPORTED_CURRENCIES}",
             name="ck_budgets_currency",
         ),
+        CheckConstraint(_OWNER_OR_FAMILY, name="ck_budgets_owner"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    family_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("families.id", ondelete="RESTRICT"), nullable=True)
     category: Mapped[Category] = mapped_column(SAEnum(Category), nullable=False)
     limit_amount: Mapped[Decimal] = mapped_column(Numeric(precision=18, scale=2), nullable=False)
     currency: Mapped[str] = mapped_column(String(10), default="USD", server_default="USD", nullable=False)
@@ -438,7 +491,9 @@ class RecurringPayment(Base):
 
     Поля:
         id (uuid.UUID): Идентификатор (Primary Key), создаётся на клиенте.
-        user_id (uuid.UUID): Внешний ключ на владельца (users.id).
+        user_id (uuid.UUID | None): Автор (users.id); у личного — владелец. None — общий платёж участника,
+            удалившего аккаунт.
+        family_id (uuid.UUID | None): Семья общего платежа (families.id); None — личный платёж.
         type (TransactionType): Расход или доход.
         category (Category): Категория будущих записей.
         amount (Decimal): Ожидаемая сумма в валюте платежа (при оплате её можно исправить).
@@ -456,15 +511,18 @@ class RecurringPayment(Base):
     __tablename__ = "recurring_payments"
     __table_args__ = (
         Index("ix_recurring_payments_user_id", "user_id"),
+        Index("ix_recurring_payments_family_id", "family_id"),
         CheckConstraint(
             f"currency IN {SUPPORTED_CURRENCIES}",
             name="ck_recurring_payments_currency",
         ),
         CheckConstraint("day_of_month BETWEEN 1 AND 31", name="ck_recurring_payments_day_of_month"),
+        CheckConstraint(_OWNER_OR_FAMILY, name="ck_recurring_payments_owner"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    family_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("families.id", ondelete="RESTRICT"), nullable=True)
     type: Mapped[TransactionType] = mapped_column(SAEnum(TransactionType), nullable=False)
     category: Mapped[Category] = mapped_column(SAEnum(Category), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(precision=18, scale=2), nullable=False)
@@ -503,7 +561,10 @@ class Subscription(Base):
         will_renew (bool): Подписка продлится автоматически (отмена в магазине не обнаружена).
         is_trial (bool): Идёт бесплатный пробный период.
         product_id (str): Идентификатор продукта в магазине (месячная или годовая подписка).
-        store (str): Магазин покупки по классификации RevenueCat (PLAY_STORE, APP_STORE, TEST_STORE...).
+        store (str): Магазин покупки по классификации RevenueCat (play_store, app_store, promotional...);
+            manual — Pro выдан вручную.
+        family (bool): Есть право семейного Pro (entitlement `family`): можно создать семью, участники получают Pro.
+        family_expires_at (datetime | None): Окончание права `family`; None при family — бессрочно.
         updated_at (datetime): Момент последней синхронизации с RevenueCat.
     """
 
@@ -516,6 +577,8 @@ class Subscription(Base):
     is_trial: Mapped[bool] = mapped_column(nullable=False)
     product_id: Mapped[str] = mapped_column(String(100), nullable=False)
     store: Mapped[str] = mapped_column(String(30), nullable=False)
+    family: Mapped[bool] = mapped_column(default=False, server_default=text("false"), nullable=False)
+    family_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -525,11 +588,115 @@ class Subscription(Base):
 
     def expires_at_utc(self) -> datetime | None:
         """Окончание периода с поясом UTC (SQLite отдаёт время без пояса)."""
-        if self.expires_at is None or self.expires_at.tzinfo:
-            return self.expires_at
-        return self.expires_at.replace(tzinfo=timezone.utc)
+        return _as_utc(self.expires_at)
 
     def is_active(self, now: datetime) -> bool:
         """Доступ Pro действует на момент `now`."""
         expires_at = self.expires_at_utc()
         return expires_at is None or expires_at > now
+
+    def family_active(self, now: datetime) -> bool:
+        """Право семейного Pro действует на момент `now` (переход на личный Pro его снимает, Pro остаётся)."""
+        if not self.family:
+            return False
+        expires_at = _as_utc(self.family_expires_at)
+        return expires_at is None or expires_at > now
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Время с поясом UTC (SQLite отдаёт время без пояса)."""
+    if value is None or value.tzinfo:
+        return value
+    return value.replace(tzinfo=timezone.utc)
+
+
+class Family(Base):
+    """ORM-модель семьи — группы семейного Pro.
+
+    Таблица: families
+
+    Владелец платит за семейный Pro, участники получают Pro бесплатно, пока право `family` владельца действует.
+    Право закончилось — семья заморожена: общие записи только для чтения, новых общих и приглашений нет.
+    Владелец уходит или удаляет аккаунт — семья распускается: общие записи достаются авторам как личные.
+
+    Поля:
+        id (uuid.UUID): Идентификатор семьи (Primary Key).
+        owner_id (uuid.UUID): Владелец (users.id), уникален: у человека одна семья.
+        created_at (datetime): Дата создания.
+    """
+
+    __tablename__ = "families"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+
+    members: Mapped[list["FamilyMember"]] = relationship(
+        back_populates="family", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class FamilyMember(Base):
+    """ORM-модель участника семьи (включая владельца с ролью owner).
+
+    Таблица: family_members
+
+    Поля:
+        id (uuid.UUID): Идентификатор (Primary Key).
+        family_id (uuid.UUID): Семья (families.id).
+        user_id (uuid.UUID): Участник (users.id), уникален: человек состоит только в одной семье.
+        role (str): owner или member.
+        joined_at (datetime): Момент вступления.
+    """
+
+    __tablename__ = "family_members"
+    __table_args__ = (
+        CheckConstraint(f"role IN {FAMILY_ROLE_VALUES}", name="ck_family_members_role"),
+        Index("ix_family_members_family_id", "family_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    family_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("families.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
+    role: Mapped[str] = mapped_column(String(10), nullable=False)
+    joined_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+
+    family: Mapped["Family"] = relationship(back_populates="members")
+    user: Mapped["User"] = relationship()
+
+
+class FamilyInvite(Base):
+    """ORM-модель приглашения в семью по одноразовому коду.
+
+    Таблица: family_invites
+
+    Код (8 символов) показывается владельцу один раз при создании, в БД — только его HMAC (`app/pii.py`):
+    по утечке базы код не восстановить. Использованное или отозванное приглашение удаляется; истёкшее
+    не принимается и не занимает место, удаляется при следующем приглашении семьи.
+
+    Поля:
+        id (uuid.UUID): Идентификатор (Primary Key).
+        family_id (uuid.UUID): Семья (families.id).
+        code_hash (str): HMAC кода, уникален.
+        created_at (datetime): Момент создания.
+        expires_at (datetime): Окончание действия (через 7 дней).
+    """
+
+    __tablename__ = "family_invites"
+    __table_args__ = (Index("ix_family_invites_family_id", "family_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    family_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("families.id", ondelete="CASCADE"), nullable=False)
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    def expires_at_utc(self) -> datetime:
+        """Окончание действия с поясом UTC."""
+        return _as_utc(self.expires_at)

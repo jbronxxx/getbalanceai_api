@@ -9,7 +9,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import Category, Transaction, TransactionType, User
-from app.services.ai_service import AIService
+from app.services.ai_service import AIService, ReportScope
 from app.services.period import month_bounds, timezone_from_offset, timezone_key
 
 UTC_PLUS_5 = {"X-Timezone-Offset": "300"}
@@ -117,6 +117,6 @@ class TestInsightsInClientTimezone:
         service = AIService(db=db_session, client=object())
         plus5 = timezone(timedelta(hours=5))
 
-        assert (await service._month_fingerprint(user_id, 11, 2026, plus5)).tx_count == 1
-        assert (await service._month_fingerprint(user_id, 10, 2026, plus5)).tx_count == 0
-        assert (await service._month_fingerprint(user_id, 10, 2026)).tx_count == 1
+        assert (await service._month_fingerprint(ReportScope.personal(user_id), 11, 2026, plus5)).tx_count == 1
+        assert (await service._month_fingerprint(ReportScope.personal(user_id), 10, 2026, plus5)).tx_count == 0
+        assert (await service._month_fingerprint(ReportScope.personal(user_id), 10, 2026)).tx_count == 1

@@ -9,7 +9,12 @@ from app.database import get_db
 from app.limiter import limiter
 from app.models.models import CurrencyCode, User
 from app.routers.dependencies import get_client_timezone
-from app.schemas.schemas import ApiResponse, ErrorResponse, InsightResponse
+from app.schemas.schemas import (
+    ApiResponse,
+    ErrorResponse,
+    InsightResponse,
+    InsightScope,
+)
 from app.services.ai_service import AIService
 from app.services.auth_service import get_consented_user
 from app.services.period import current_month as client_current_month
@@ -26,6 +31,7 @@ router = APIRouter(
             "description": "TERMS_NOT_ACCEPTED — не принята текущая версия соглашения; PLAN_LIMIT_REACHED — "
             "исчерпан лимит ИИ-отчётов тарифа (details: feature=ai_report, plan, limit, period, resets_at)",
         },
+        404: {"model": ErrorResponse, "description": "FAMILY_NOT_FOUND — отчёт по семье, а пользователь не в семье"},
         429: {"model": ErrorResponse, "description": "Превышен лимит частоты запросов"},
         500: {"model": ErrorResponse, "description": "Внутренняя ошибка сервера"},
     }
@@ -53,6 +59,13 @@ async def get_insights(
         True,
         description="Разрешить генерацию через LLM; при false — только сохранённый отчёт или state=not_generated",
     ),
+    scope: InsightScope = Query(
+        InsightScope.personal,
+        description=(
+            "personal — мои личные записи и общие, добавленные мной; family — все общие записи семьи "
+            "(готовый отчёт видят все участники, генерация тратит лимит запросившего)"
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_consented_user),
     tz: tzinfo = Depends(get_client_timezone),
@@ -76,5 +89,6 @@ async def get_insights(
         year=target_year,
         generate=generate,
         tz=tz,
+        scope=scope,
     )
     return {"status": "success", "data": insights}

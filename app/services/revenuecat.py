@@ -1,4 +1,4 @@
-"""Клиент REST API RevenueCat (v1): статус доступа Pro покупателя и удаление покупателя.
+"""Клиент REST API RevenueCat (v1): статус доступа Pro (и семейного Pro) покупателя и удаление покупателя.
 
 Покупатель RevenueCat (app_user_id) — id аккаунта бэкенда: приложение вызывает `logIn` после входа.
 Секретный ключ (`REVENUECAT_API_KEY`) в журналы не пишется.
@@ -25,6 +25,8 @@ class ProEntitlement:
     is_trial: bool
     product_id: str
     store: str
+    family: bool = False  # Есть право семейного Pro (entitlement `family`)
+    family_expires_at: datetime | None = None  # Окончание права семейного Pro; None при family — бессрочно
 
 
 def _parse_time(value: str | None) -> datetime | None:
@@ -34,20 +36,31 @@ def _parse_time(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def parse_pro_entitlement(subscriber: dict, entitlement_id: str) -> ProEntitlement | None:
-    """Доступ Pro из объекта `subscriber` ответа GET /subscribers; доступа нет — None.
-
-    Срок — позднейшее из окончания периода и окончания льготного периода магазина (grace period): пока магазин
-    пытается списать оплату, доступ сохраняется. Истёкший доступ тоже возвращается: тариф считается по сроку.
-    """
-    entitlement = (subscriber.get("entitlements") or {}).get(entitlement_id)
-    if not isinstance(entitlement, dict):
-        return None
-    product_id = str(entitlement.get("product_identifier") or "")
+def _entitlement_expiry(entitlement: dict) -> datetime | None:
+    """Срок доступа — позднейшее из окончания периода и окончания льготного периода магазина (grace period)."""
     expires_at = _parse_time(entitlement.get("expires_date"))
     grace_until = _parse_time(entitlement.get("grace_period_expires_date"))
     if expires_at is not None and grace_until is not None:
         expires_at = max(expires_at, grace_until)
+    return expires_at
+
+
+def parse_pro_entitlement(
+    subscriber: dict, entitlement_id: str, family_entitlement_id: str | None = None
+) -> ProEntitlement | None:
+    """Доступ Pro из объекта `subscriber` ответа GET /subscribers; доступа нет — None.
+
+    Пока магазин пытается списать оплату (grace period), доступ сохраняется. Истёкший доступ тоже возвращается:
+    тариф считается по сроку. Право семейного Pro (`family_entitlement_id`) читается вместе с Pro: семейный
+    продукт даёт оба; после перехода на личный Pro право семьи истекает, а Pro остаётся.
+    """
+    entitlements = subscriber.get("entitlements") or {}
+    entitlement = entitlements.get(entitlement_id)
+    if not isinstance(entitlement, dict):
+        return None
+    product_id = str(entitlement.get("product_identifier") or "")
+    expires_at = _entitlement_expiry(entitlement)
+    family = entitlements.get(family_entitlement_id) if family_entitlement_id else None
     subscription = (subscriber.get("subscriptions") or {}).get(product_id) or {}
     return ProEntitlement(
         expires_at=expires_at,
@@ -56,6 +69,8 @@ def parse_pro_entitlement(subscriber: dict, entitlement_id: str) -> ProEntitleme
         is_trial=subscription.get("period_type") == "trial",
         product_id=product_id[:100],
         store=str(subscription.get("store") or "unknown")[:30],
+        family=isinstance(family, dict),
+        family_expires_at=_entitlement_expiry(family) if isinstance(family, dict) else None,
     )
 
 
@@ -89,7 +104,7 @@ class RevenueCatClient:
             subscriber = response.json()["subscriber"]
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as err:
             raise RevenueCatError(f"Не удалось получить покупателя RevenueCat: {type(err).__name__}: {err}") from err
-        return parse_pro_entitlement(subscriber, config.revenuecat_pro_entitlement)
+        return parse_pro_entitlement(subscriber, config.revenuecat_pro_entitlement, config.revenuecat_family_entitlement)
 
     async def delete_subscriber(self, app_user_id: str) -> None:
         """Удалить покупателя и историю его покупок в RevenueCat (подписку в магазине это не отменяет).

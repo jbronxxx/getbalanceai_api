@@ -156,7 +156,7 @@ class TestGrantPro:
             with pytest.raises(SystemExit) as exc_info:
                 cli_main()
         assert exc_info.value.code == EXIT_OK
-        mock_run.assert_called_once_with("a@b.com", "2027-01-01", False)
+        mock_run.assert_called_once_with("a@b.com", "2027-01-01", False, False)
         mock_asyncio_run.assert_called_once()
 
     def test_cli_until_and_revoke_are_exclusive(self, monkeypatch: pytest.MonkeyPatch):
